@@ -1,0 +1,42 @@
+{
+  "_comment": "Futures/Spot Arbitrage configuration. Env overrides: FUTURES_ARB_<FIELD_NAME_UPPER>.",
+
+  "enabled": false,
+  "mode": "paper",
+
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "exchange_combos": ["mexc_spot+mexc_futures"],
+
+  "entry_threshold_bps": 30.0,
+  "exit_threshold_bps": 5.0,
+  "max_basis_divergence_bps": 100.0,
+  "target_profit_bps": 50.0,
+
+  "funding_entry_threshold": 0.001,
+  "funding_consecutive_periods_exit": 3,
+
+  "position_notional_usdt": 1000.0,
+  "max_concurrent_positions": 5,
+  "max_per_symbol_notional_usdt": 3000.0,
+  "max_total_exposure_usdt": 10000.0,
+  "futures_leverage": 3,
+
+  "max_hold_duration_hours": 168.0,
+  "max_leg_pending_sec": 30.0,
+  "loop_interval_sec": 1.0,
+  "expected_hold_hours": 24.0,
+
+  "margin_warning_threshold": 0.5,
+  "margin_critical_threshold": 0.3,
+  "max_delta_imbalance_percent": 5.0,
+  "critical_delta_imbalance_percent": 15.0,
+  "kill_switch": false,
+
+  "spot_taker_fee_bps": 1.0,
+  "futures_taker_fee_bps": 2.0,
+
+  "basis_history_interval_sec": 60.0,
+  "basis_history_retention_days": 90,
+
+  "funding_alert_threshold": 0.005
+}

@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: 248 250 252;
+  --surface-elevated: 255 255 255;
+  --ink: 15 23 42;
+  --ink-muted: 100 116 139;
+  --accent: 14 165 233;
+  --accent-dim: 125 211 252;
+  --line: 226 232 240;
+}
+
+.dark {
+  --surface: 15 23 42;
+  --surface-elevated: 30 41 59;
+  --ink: 248 250 252;
+  --ink-muted: 148 163 184;
+  --accent: 56 189 248;
+  --accent-dim: 14 116 144;
+  --line: 51 65 85;
+}
+
+@layer base {
+  body {
+    @apply bg-surface font-sans text-ink antialiased;
+  }
+}
+
+/* Тонкая прокрутка таблицы */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--ink-muted) / 0.35) transparent;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-ink-muted/30;
+}
+
+/* Page wrappers: neutralize modal overlay when component is used as a page */
+.page-no-modal > div {
+  position: relative !important;
+  inset: auto !important;
+  z-index: auto !important;
+  background: transparent !important;
+  padding: 0 !important;
+  display: flex !important;
+  height: 100% !important;
+}
+.page-no-modal > div > div {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}

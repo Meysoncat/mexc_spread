@@ -1,0 +1,26 @@
+[project]
+name = "mexc-spread-monitor"
+version = "0.1.0"
+description = "MEXC spot/futures bid/ask spread monitor (Streamlit + optional FastAPI/React UI)"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27.0",
+  "sqlalchemy>=2.0.0",
+  "websocket-client>=1.6.0",
+  "pandas>=2.0.0",
+  "streamlit>=1.33.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mexc_monitor*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

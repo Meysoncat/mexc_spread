@@ -1,0 +1,235 @@
+{
+  "_comment": "MEXC_MONITOR_EXTERNAL_APIS_CONFIG. Исполнение: MEXC_SPOT_TAKER_FEE_BPS, MEXC_FUTURES_TAKER_FEE_BPS, MEXC_EXEC_REFERENCE_QUOTE_NOTIONAL. WS стакан фьючерсов: MEXC_FUTURES_ORDERBOOK_WS_ENABLED, MEXC_FUTURES_ORDERBOOK_WS_SYMBOLS (через запятую), MEXC_FUTURES_ORDERBOOK_WS_STALE_AFTER_SEC. WS стакан спота: MEXC_SPOT_ORDERBOOK_WS_ENABLED, MEXC_SPOT_ORDERBOOK_WS_SYMBOLS (через запятую), MEXC_SPOT_ORDERBOOK_WS_STALE_AFTER_SEC.",
+
+  "mexc": {
+    "http_timeout_sec": 30,
+    "http_max_retries": 3,
+    "http_retry_backoff_sec": 0.5,
+    "http_max_retry_wait_sec": 8,
+    "http_min_request_interval_sec": 0,
+    "spot_ws_url": "wss://wbs.mexc.com/ws",
+    "spot_orderbook_ws_enabled": true,
+    "spot_orderbook_ws_symbols": [],
+    "spot_orderbook_ws_stale_after_sec": 3,
+    "futures_ticker_source": "rest",
+    "futures_ws_url": "wss://contract.mexc.com/edge",
+    "futures_ws_stale_after_sec": 12,
+    "futures_orderbook_ws_enabled": false,
+    "futures_orderbook_ws_symbols": [],
+    "futures_orderbook_ws_stale_after_sec": 3,
+
+    "spot": {
+      "base_url": "https://api.mexc.com",
+      "book_ticker_path": "/api/v3/ticker/bookTicker",
+      "ticker_24hr_path": "/api/v3/ticker/24hr",
+      "klines_path": "/api/v3/klines",
+      "symbols_whitelist": [],
+      "symbols_blacklist": []
+    },
+
+    "futures": {
+      "base_url": "https://api.mexc.com",
+      "contract_ticker_path": "/api/v1/contract/ticker",
+      "contract_kline_path_prefix": "/api/v1/contract/kline",
+      "symbols_whitelist": [],
+      "symbols_blacklist": []
+    }
+  },
+
+  "history": {
+    "enabled": false,
+    "db_path": "data/spread_history.sqlite",
+    "interval_sec": 60,
+    "markets": ["spot", "futures"]
+  },
+
+  "execution": {
+    "_comment": "Оценка чистого спреда: net = gross_bps − 2×taker(one-way). reference_quote_notional — порог в USDT: l1_covers_reference_notional на споте по L1.",
+    "spot_taker_fee_bps": 0,
+    "futures_taker_fee_bps": 0,
+    "reference_quote_notional": 0
+  },
+
+  "charting": {
+    "provider": "tradingview_lightweight_charts",
+    "npm_package": "lightweight-charts",
+    "documentation_url": "https://tradingview.github.io/lightweight-charts/",
+    "note": "Библиотека подключается через npm во frontend; отдельного HTTP API TradingView в проекте нет."
+  },
+
+  "lighter": {
+    "_comment": "Lighter — DEX перпетуальных фьючерсов на zkSync. Публичный API без аутентификации.",
+    "base_url": "https://mainnet.zklighter.elliot.ai",
+    "timeout_sec": 15,
+    "endpoints": {
+      "orderbooks": "/api/v1/orderBooks",
+      "orderbook_details": "/api/v1/orderBookDetails",
+      "orderbook_orders": "/api/v1/orderBookOrders",
+      "funding_rates": "/api/v1/funding-rates",
+      "candles": "/api/v1/candles"
+    }
+  },
+
+  "asterdex": {
+    "_comment": "AsterDEX — DEX перпетуальных фьючерсов. API совместим с Binance Futures. Ключи: ASTER_API_KEY, ASTER_API_SECRET (env vars).",
+    "base_url": "https://fapi.asterdex.com",
+    "timeout_sec": 15,
+    "ws": {
+      "enabled": false,
+      "url": "wss://fstream.asterdex.com/ws",
+      "symbols": [],
+      "ping_interval_sec": 30
+    },
+    "endpoints": {
+      "ping": "/fapi/v1/ping",
+      "time": "/fapi/v1/time",
+      "exchange_info": "/fapi/v1/exchangeInfo",
+      "book_ticker": "/fapi/v1/ticker/bookTicker",
+      "ticker_24hr": "/fapi/v1/ticker/24hr",
+      "depth": "/fapi/v1/depth",
+      "klines": "/fapi/v1/klines",
+      "premium_index": "/fapi/v1/premiumIndex",
+      "funding_rate": "/fapi/v1/fundingRate",
+      "order": "/fapi/v1/order",
+      "open_orders": "/fapi/v1/openOrders",
+      "account": "/fapi/v1/account",
+      "position_risk": "/fapi/v1/positionRisk"
+    },
+    "auth": {
+      "header": "X-MBX-APIKEY",
+      "signature": "HMAC SHA256",
+      "note": "Подпись идентична Binance Futures: timestamp + recvWindow + HMAC SHA256 от query string"
+    }
+  },
+
+  "binance": {
+    "spot_base_url": "https://api.binance.com",
+    "futures_base_url": "https://fapi.binance.com",
+    "timeout_sec": 15,
+    "endpoints": {
+      "spot_book_ticker": "/api/v3/ticker/bookTicker",
+      "futures_book_ticker": "/fapi/v1/ticker/bookTicker",
+      "spot_ticker_24hr": "/api/v3/ticker/24hr",
+      "futures_ticker_24hr": "/fapi/v1/ticker/24hr",
+      "spot_klines": "/api/v3/klines",
+      "futures_klines": "/fapi/v1/klines"
+    }
+  },
+
+  "bybit": {
+    "base_url": "https://api.bybit.com",
+    "timeout_sec": 15,
+    "endpoints": {
+      "tickers": "/v5/market/tickers",
+      "klines": "/v5/market/kline"
+    }
+  },
+
+  "okx": {
+    "base_url": "https://www.okx.com",
+    "timeout_sec": 15,
+    "endpoints": {
+      "tickers": "/api/v5/market/tickers",
+      "candles": "/api/v5/market/candles"
+    }
+  },
+
+  "gateio": {
+    "spot_base_url": "https://api.gateio.ws",
+    "futures_base_url": "https://api.gateio.ws",
+    "timeout_sec": 15,
+    "endpoints": {
+      "spot_tickers": "/api/v4/spot/tickers",
+      "futures_tickers": "/api/v4/futures/usdt/tickers",
+      "spot_klines": "/api/v4/spot/candlesticks",
+      "futures_klines": "/api/v4/futures/usdt/candlesticks"
+    }
+  },
+
+  "htx": {
+    "spot_base_url": "https://api.huobi.pro",
+    "futures_base_url": "https://api.hbdm.com",
+    "timeout_sec": 15,
+    "endpoints": {
+      "spot_tickers": "/market/tickers",
+      "futures_tickers": "/linear-swap-ex/market/detail/batch_merged",
+      "spot_klines": "/market/history/kline",
+      "futures_klines": "/linear-swap-ex/market/history/kline"
+    }
+  },
+
+  "bitget": {
+    "base_url": "https://api.bitget.com",
+    "timeout_sec": 15,
+    "endpoints": {
+      "tickers": "/api/v2/mix/market/tickers",
+      "klines": "/api/v2/mix/market/candles"
+    }
+  },
+
+  "dydx": {
+    "base_url": "https://indexer.dydx.trade",
+    "timeout_sec": 15,
+    "endpoints": {
+      "perpetual_markets": "/v4/perpetualMarkets",
+      "orderbook": "/v4/orderbooks/perpetualMarket/{market}",
+      "candles": "/v4/candles/perpetualMarkets/{market}"
+    }
+  },
+
+  "hyperliquid": {
+    "base_url": "https://api.hyperliquid.xyz",
+    "timeout_sec": 15,
+    "endpoints": {
+      "info": "/info"
+    }
+  },
+
+  "arbitrage": {
+    "_comment": "Cross-exchange arbitrage MEXC ↔ AsterDEX. Env: ASTER_API_KEY, ASTER_API_SECRET, MEXC_API_KEY, MEXC_API_SECRET.",
+    "enabled": false,
+    "mode": "paper",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "entry_threshold_bps": 15.0,
+    "exit_threshold_bps": 3.0,
+    "max_position_notional_usdt": 500.0,
+    "max_concurrent_trades": 3,
+    "max_pending_sec": 10.0,
+    "max_hold_sec": 600.0,
+    "kill_switch": true,
+    "mexc_taker_fee_bps": 1.0,
+    "aster_taker_fee_bps": 2.0
+  },
+
+  "cross_spread_history": {
+    "enabled": false,
+    "db_path": "data/cross_spread_history.sqlite",
+    "interval_sec": 60,
+    "retention_days": 30
+  },
+
+  "lead_lag": {
+    "enabled": false,
+    "leader_exchange": "binance",
+    "lagger_exchanges": ["mexc", "bybit", "okx"],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "MATICUSDT"],
+    "market": "futures",
+    "z_score_entry_threshold": 2.0,
+    "z_score_exit_threshold": 0.5,
+    "signal_timeout_sec": 10.0,
+    "rolling_window_sec": 300.0,
+    "min_spread_bps": 3.0,
+    "lag_estimation_interval_sec": 30.0,
+    "price_buffer_history_sec": 60.0,
+    "db_path": "data/lead_lag_signals.sqlite",
+    "assumed_taker_fee_bps": 2.0,
+    "ws_urls": {
+      "binance_futures": "wss://fstream.binance.com/ws",
+      "binance_spot": "wss://stream.binance.com:9443/ws",
+      "mexc_futures": "wss://contract.mexc.com/edge",
+      "mexc_spot": "wss://wbs.mexc.com/ws",
+      "bybit": "wss://stream.bybit.com/v5/public/linear",
+      "okx": "wss://ws.okx.com:8443/ws/v5/public"
+    }
+  }
+}

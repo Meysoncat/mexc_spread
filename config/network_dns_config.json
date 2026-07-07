@@ -1,0 +1,394 @@
+{
+  "_comment": "Network & DNS configuration for all exchanges with monitoring.",
+  "_instructions": {
+    "use_custom_dns": "Enable/disable custom DNS resolution per exchange",
+    "dns_type": "Options: 'system', 'custom', 'doh'",
+    "monitoring_enabled": "Enable DNS resolution metrics collection",
+    "ui_dashboard": "Access via http://localhost:8000/dns-dashboard"
+  },
+
+  "global": {
+    "_comment": "Global DNS settings applied to all exchanges.",
+    "use_custom_dns": false,
+    "dns_type": "system",
+    "dns_fallback_enabled": true,
+    "dns_timeout_sec": 5.0,
+    "dns_retry_count": 3,
+    "monitoring_enabled": true,
+    "dns_cache_enabled": true,
+    "dns_cache_ttl_sec": 60,
+    "dns_log_enabled": true,
+    "dns_log_file": "logs/dns_queries.log",
+    "alert_on_failure": true,
+    "alert_email": "",
+    "alert_webhook": ""
+  },
+
+  "exchanges": {
+    "mexc": {
+      "_comment": "MEXC-specific DNS settings.",
+      "use_custom_dns": true,
+      "dns_type": "custom",
+      "custom_dns_servers": [
+        {
+          "address": "185.212.113.7",
+          "port": 53
+        },
+        {
+          "address": "185.212.113.9",
+          "port": 53
+        }
+      ],
+      "custom_dns_fallback": [
+        {
+          "address": "94.140.14.15",
+          "port": 53
+        },
+        {
+          "address": "94.140.14.16",
+          "port": 53
+        }
+      ],
+      "dns_over_https_enabled": false,
+      "dns_fallback_enabled": true,
+      "dns_timeout_sec": 5.0,
+      "monitoring_enabled": true
+    },
+
+    "asterdex": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "custom_dns_fallback_enabled": true,
+      "custom_dns_fallback": [
+        {
+          "address": "185.212.113.7",
+          "port": 53
+        }
+      ],
+      "dns_timeout_sec": 5.0,
+      "monitoring_enabled": true
+    },
+
+    "binance": {
+      "_comment": "Binance-specific settings.",
+      "use_custom_dns": true,
+      "dns_type": "doh",
+      "dns_over_https_enabled": true,
+      "doh_endpoint": {
+        "url": "https://1.1.1.1/dns-query",
+        "timeout_sec": 5.0,
+        "headers": [
+          [
+            "User-Agent",
+            "MEXC-Spread-Monitor/1.0"
+          ]
+        ]
+      },
+      "custom_dns_fallback": [
+        {
+          "address": "185.212.113.7",
+          "port": 53
+        }
+      ],
+      "dns_fallback_enabled": true,
+      "dns_timeout_sec": 5.0,
+      "monitoring_enabled": true
+    },
+
+    "bybit": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "custom_dns_fallback_enabled": true,
+      "custom_dns_fallback": [
+        {
+          "address": "185.212.113.7",
+          "port": 53
+        }
+      ],
+      "dns_timeout_sec": 5.0,
+      "monitoring_enabled": true
+    },
+
+    "okx": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    },
+
+    "gateio": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    },
+
+    "htx": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    },
+
+    "bitget": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    },
+
+    "dydx": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    },
+
+    "hyperliquid": {
+      "use_custom_dns": false,
+      "dns_type": "system",
+      "monitoring_enabled": true
+    }
+  },
+
+  "dns_providers": {
+    "_comment": "Predefined DNS provider presets for quick setup.",
+    "xbox_dns": {
+      "_comment": "Xbox DNS — доступен из России.",
+      "primary": "185.212.113.7",
+      "secondary": "185.212.113.9"
+    },
+    "cloudflare_doh": {
+      "_comment": "Cloudflare DNS-over-HTTPS.",
+      "endpoint": "https://1.1.1.1/dns-query"
+    },
+    "google_doh": {
+      "_comment": "Google DNS-over-HTTPS.",
+      "endpoint": "https://dns.google/dns-query"
+    },
+    "adguard": {
+      "_comment": "AdGuard DNS (антивирус + ads blocking).",
+      "primary": "94.140.14.15",
+      "secondary": "94.140.14.16"
+    },
+    "quad9": {
+      "_comment": "Quad9 (phishing protection).",
+      "primary": "9.9.9.9",
+      "secondary": "9.9.9.10"
+    }
+  },
+
+  "presets": {
+    "russian_exchanges_only": {
+      "_comment": "DNS для всех бирж из России.",
+      "global": {
+        "use_custom_dns": true,
+        "dns_type": "custom",
+        "dns_fallback_enabled": true
+      },
+      "exchanges": {
+        "mexc": {
+          "use_custom_dns": true,
+          "dns_type": "custom",
+          "custom_dns_servers": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            },
+            {
+              "address": "185.212.113.9",
+              "port": 53
+            }
+          ],
+          "custom_dns_fallback": [
+            {
+              "address": "94.140.14.15",
+              "port": 53
+            },
+            {
+              "address": "94.140.14.16",
+              "port": 53
+            }
+          ]
+        },
+        "asterdex": {
+          "use_custom_dns": true,
+          "dns_type": "custom",
+          "custom_dns_servers": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            },
+            {
+              "address": "185.212.113.9",
+              "port": 53
+            }
+          ],
+          "custom_dns_fallback": [
+            {
+              "address": "94.140.14.15",
+              "port": 53
+            },
+            {
+              "address": "94.140.14.16",
+              "port": 53
+            }
+          ]
+        },
+        "binance": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        },
+        "bybit": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        },
+        "okx": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        },
+        "gateio": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        },
+        "htx": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        },
+        "bitget": {
+          "use_custom_dns": false,
+          "dns_type": "system",
+          "custom_dns_fallback": [
+            {
+              "address": "185.212.113.7",
+              "port": 53
+            }
+          ]
+        }
+      }
+    },
+
+    "doh_all_exchanges": {
+      "_comment": "Use DOH for all exchanges.",
+      "global": {
+        "use_custom_dns": true,
+        "dns_type": "doh",
+        "dns_over_https_enabled": true
+      },
+      "exchanges": {
+        "mexc": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "asterdex": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "binance": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "bybit": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "okx": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "gateio": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "htx": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        },
+        "bitget": {
+          "use_custom_dns": true,
+          "dns_type": "doh",
+          "dns_over_https_enabled": true,
+          "doh_endpoint": {
+            "url": "https://1.1.1.1/dns-query",
+            "timeout_sec": 5.0
+          }
+        }
+      }
+    }
+  },
+
+  "advanced": {
+    "_comment": "Advanced DNS features.",
+    "dns_cache_enabled": true,
+    "dns_cache_ttl_sec": 60,
+    "dns_log_enabled": true,
+    "dns_log_file": "logs/dns_queries.log",
+    "alert_on_failure": true,
+    "email_notification": "",
+    "webhook_notification": "",
+    "webhook_url": "",
+    "health_check_interval_sec": 60,
+    "failure_threshold": 3,
+    "auto_failover_to_alternative_dns": true
+  }
+}
