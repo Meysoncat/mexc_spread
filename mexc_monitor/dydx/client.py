@@ -13,8 +13,11 @@ dYdX v4 indexer API возвращает JSON без обёртки retCode — 
 
 from __future__ import annotations
 
+import concurrent.futures as cf
 import json
 import logging
+import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://indexer.dydx.trade"
 DEFAULT_TIMEOUT_SEC = 15.0
+DEFAULT_MAX_WORKERS = 8
+ORDERBOOK_RETRIES = 3
+ORDERBOOK_RETRY_BASE_DELAY_SEC = 1.0
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "external_apis.json"
 
@@ -96,6 +102,7 @@ class DydxPublicClient:
         self._base_url = (base_url or cfg.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
         self._timeout = timeout_sec or cfg.get("timeout_sec", DEFAULT_TIMEOUT_SEC)
         self._endpoints = cfg.get("endpoints", {})
+        self._max_workers = max(1, int(cfg.get("max_workers", DEFAULT_MAX_WORKERS)))
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """HTTP GET с обработкой ошибок dYdX API."""
@@ -167,9 +174,49 @@ class DydxPublicClient:
         if not markets:
             return []
 
+        # FINAL_SETTLEMENT (делистнутые) рынки имеют пустые стаканы — пропускаем.
+        valid_markets = [
+            (name, info)
+            for name, info in markets.items()
+            if isinstance(info, dict) and info.get("status") == "ACTIVE"
+        ]
+        if not valid_markets:
+            return []
+
+        # Стакан приходится запрашивать по одному рынку — распараллеливаем, иначе
+        # ~200+ последовательных запросов растягиваются на десятки секунд.
+        # При 429 повторяем с экспоненциальной задержкой.
+        def _fetch(market_name: str) -> dict[str, Any] | None:
+            for attempt in range(ORDERBOOK_RETRIES + 1):
+                try:
+                    return self.orderbook(market_name)
+                except DydxApiError as e:
+                    if "429" in str(e) and attempt < ORDERBOOK_RETRIES:
+                        delay = ORDERBOOK_RETRY_BASE_DELAY_SEC * (2 ** attempt)
+                        time.sleep(delay + random.uniform(0, 0.5))
+                        continue
+                    logger.warning(
+                        "Failed to fetch orderbook for %s: %s", market_name, e
+                    )
+                    return None
+            return None
+
+        workers = max(1, min(self._max_workers, len(valid_markets)))
+        orderbooks: dict[str, dict[str, Any]] = {}
+        with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_market = {
+                pool.submit(_fetch, name): name for name, _ in valid_markets
+            }
+            for future in cf.as_completed(future_to_market):
+                name = future_to_market[future]
+                ob = future.result()
+                if ob is not None:
+                    orderbooks[name] = ob
+
         tickers: list[DydxBookTicker] = []
-        for market_name, market_info in markets.items():
-            if not isinstance(market_info, dict):
+        for market_name, market_info in valid_markets:
+            ob = orderbooks.get(market_name)
+            if ob is None:
                 continue
 
             # Получаем volume из perpetualMarkets
@@ -178,13 +225,6 @@ class DydxPublicClient:
             volume_24h_base = (
                 volume_24h_quote / oracle_price if oracle_price > 0 else 0.0
             )
-
-            # Получаем стакан для bid/ask
-            try:
-                ob = self.orderbook(market_name)
-            except DydxApiError as e:
-                logger.warning("Failed to fetch orderbook for %s: %s", market_name, e)
-                continue
 
             bids = ob.get("bids", [])
             asks = ob.get("asks", [])

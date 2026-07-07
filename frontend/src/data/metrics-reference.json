@@ -1,0 +1,115 @@
+{
+  "version": "1",
+  "title": "Параметры мониторинга",
+  "intro": "Краткие определения полей таблицы и фильтров. Источник данных — публичные API MEXC (спот api.mexc.com, фьючерсы contract.mexc.com). Файл можно заменить: frontend/public/metrics-reference.json; при запуске API также доступен GET /api/metrics-reference.",
+  "links": [
+    {
+      "label": "MEXC Spot API",
+      "href": "https://www.mexc.com/api-docs/spot-v3/market-data-endpoints"
+    },
+    {
+      "label": "MEXC Futures API",
+      "href": "https://www.mexc.com/api-docs/futures/market-endpoints"
+    },
+    {
+      "label": "Lightweight Charts",
+      "href": "https://tradingview.github.io/lightweight-charts/"
+    }
+  ],
+  "rows": [
+    {
+      "key": "symbol",
+      "label": "Символ",
+      "description": "Торговая пара. Спот: BTCUSDT. Фьючерсы USDT-M: BTC_USDT."
+    },
+    {
+      "key": "bid",
+      "label": "Bid",
+      "description": "Лучшая цена покупки (верх стакана на покупку)."
+    },
+    {
+      "key": "ask",
+      "label": "Ask",
+      "description": "Лучшая цена продажи (низ стакана на продажу)."
+    },
+    {
+      "key": "mid",
+      "label": "Mid",
+      "description": "Середина спреда: (bid + ask) / 2. Опорная цена для bps.",
+      "formula": "mid = (bid + ask) / 2"
+    },
+    {
+      "key": "spread_abs",
+      "label": "Спред (абс.)",
+      "description": "Разница ask − bid в цене инструмента.",
+      "formula": "spread_abs = ask − bid"
+    },
+    {
+      "key": "spread_bps",
+      "label": "Спред (bps)",
+      "description": "Относительный спред к mid в базисных пунктах (1 bps = 0.01%).",
+      "formula": "spread_bps = 10 000 × spread_abs / mid"
+    },
+    {
+      "key": "net_spread_bps",
+      "label": "Чистый спред (bps)",
+      "description": "Gross спред минус модель кругового тура taker (2× комиссия one-way из настроек execution)."
+    },
+    {
+      "key": "fee_round_trip_bps",
+      "label": "Комиссия RT (bps)",
+      "description": "Оценка комиссии туда-обратно в bps по настройкам spot/futures taker."
+    },
+    {
+      "key": "l1_max_executable_base",
+      "label": "L1 max база",
+      "description": "Минимум из объёмов bid/ask на первом уровне: сколько базы теоретически доступно по лучшим ценам."
+    },
+    {
+      "key": "l1_max_notional_quote",
+      "label": "L1 max USDT≈",
+      "description": "Оценка нотации в котируемой валюте: L1 max база × mid."
+    },
+    {
+      "key": "volume_24h_base",
+      "label": "Объём 24h (база)",
+      "description": "Объём торгов за 24h в базовом активе (спот: volume; фьючерсы: volume24 контракта)."
+    },
+    {
+      "key": "volume_24h_quote",
+      "label": "Объём / оборот 24h (котировка)",
+      "description": "Спот: quoteVolume. Фьючерсы: amount24 (оборот в USDT-экв.)."
+    },
+    {
+      "key": "funding_rate",
+      "label": "Funding",
+      "description": "Ставка финансирования перпетуала (фьючерсы). На споте не применяется."
+    },
+    {
+      "key": "basis_mid_bps",
+      "label": "Базис (bps), режим «Базис»",
+      "description": "Отклонение mid фьючерса от mid спота, в bps к спот-mid.",
+      "formula": "basis_mid_bps = 10 000 × (fut_mid − spot_mid) / spot_mid"
+    },
+    {
+      "key": "flt_quote",
+      "label": "Фильтр: котировка",
+      "description": "Суффикс символа: USDT → пары *USDT на споте/базисе; для фьючерсов USDT превращается в _USDT (BTC_USDT)."
+    },
+    {
+      "key": "flt_min_bps",
+      "label": "Фильтр: мин. bps",
+      "description": "Спот/фьюч: минимальный gross spread_bps. Базис: минимум модуля |basis_mid_bps|."
+    },
+    {
+      "key": "flt_min_vol",
+      "label": "Фильтр: мин. объём",
+      "description": "Минимальный объём/оборот 24h в котировке. В режиме базиса условие должно выполняться на обеих ногах."
+    },
+    {
+      "key": "observed_at",
+      "label": "observed_at",
+      "description": "Метка времени UTC снимка (одна на весь ответ), когда строки собраны на сервере."
+    }
+  ]
+}

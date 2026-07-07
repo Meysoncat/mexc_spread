@@ -170,6 +170,7 @@
   "dydx": {
     "base_url": "https://indexer.dydx.trade",
     "timeout_sec": 15,
+    "max_workers": 8,
     "endpoints": {
       "perpetual_markets": "/v4/perpetualMarkets",
       "orderbook": "/v4/orderbooks/perpetualMarket/{market}",
