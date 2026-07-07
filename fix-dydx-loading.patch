@@ -1,0 +1,260 @@
+From 86368901244f5187edd91f05d7a3d441b9910f74 Mon Sep 17 00:00:00 2001
+From: John Doe <g3ab6rielgeogzr6gie4v@gmail.com>
+Date: Tue, 7 Jul 2026 20:49:43 +0000
+Subject: [PATCH] Fix dYdX infinite loading and un-ignore frontend/src/data
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .gitignore                               |   1 +
+ config/external_apis.json                |   1 +
+ frontend/src/data/metrics-reference.json | 115 +++++++++++++++++++++++
+ mexc_monitor/dydx/client.py              |  58 ++++++++++--
+ 4 files changed, 166 insertions(+), 9 deletions(-)
+ create mode 100644 frontend/src/data/metrics-reference.json
+
+diff --git a/.gitignore b/.gitignore
+index 2eb5ddf..5628eb1 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,4 +7,5 @@ node_modules/
+ frontend/node_modules/
+ frontend/dist/
+ data/
++!frontend/src/data/
+ *.sqlite
+diff --git a/config/external_apis.json b/config/external_apis.json
+index 4558a74..058ba9e 100644
+--- a/config/external_apis.json
++++ b/config/external_apis.json
+@@ -170,6 +170,7 @@
+   "dydx": {
+     "base_url": "https://indexer.dydx.trade",
+     "timeout_sec": 15,
++    "max_workers": 8,
+     "endpoints": {
+       "perpetual_markets": "/v4/perpetualMarkets",
+       "orderbook": "/v4/orderbooks/perpetualMarket/{market}",
+diff --git a/frontend/src/data/metrics-reference.json b/frontend/src/data/metrics-reference.json
+new file mode 100644
+index 0000000..6983d7c
+--- /dev/null
++++ b/frontend/src/data/metrics-reference.json
+@@ -0,0 +1,115 @@
++{
++  "version": "1",
++  "title": "Параметры мониторинга",
++  "intro": "Краткие определения полей таблицы и фильтров. Источник данных — публичные API MEXC (спот api.mexc.com, фьючерсы contract.mexc.com). Файл можно заменить: frontend/public/metrics-reference.json; при запуске API также доступен GET /api/metrics-reference.",
++  "links": [
++    {
++      "label": "MEXC Spot API",
++      "href": "https://www.mexc.com/api-docs/spot-v3/market-data-endpoints"
++    },
++    {
++      "label": "MEXC Futures API",
++      "href": "https://www.mexc.com/api-docs/futures/market-endpoints"
++    },
++    {
++      "label": "Lightweight Charts",
++      "href": "https://tradingview.github.io/lightweight-charts/"
++    }
++  ],
++  "rows": [
++    {
++      "key": "symbol",
++      "label": "Символ",
++      "description": "Торговая пара. Спот: BTCUSDT. Фьючерсы USDT-M: BTC_USDT."
++    },
++    {
++      "key": "bid",
++      "label": "Bid",
++      "description": "Лучшая цена покупки (верх стакана на покупку)."
++    },
++    {
++      "key": "ask",
++      "label": "Ask",
++      "description": "Лучшая цена продажи (низ стакана на продажу)."
++    },
++    {
++      "key": "mid",
++      "label": "Mid",
++      "description": "Середина спреда: (bid + ask) / 2. Опорная цена для bps.",
++      "formula": "mid = (bid + ask) / 2"
++    },
++    {
++      "key": "spread_abs",
++      "label": "Спред (абс.)",
++      "description": "Разница ask − bid в цене инструмента.",
++      "formula": "spread_abs = ask − bid"
++    },
++    {
++      "key": "spread_bps",
++      "label": "Спред (bps)",
++      "description": "Относительный спред к mid в базисных пунктах (1 bps = 0.01%).",
++      "formula": "spread_bps = 10 000 × spread_abs / mid"
++    },
++    {
++      "key": "net_spread_bps",
++      "label": "Чистый спред (bps)",
++      "description": "Gross спред минус модель кругового турa taker (2× комиссия one-way из настроек execution)."
++    },
++    {
++      "key": "fee_round_trip_bps",
++      "label": "Комиссия RT (bps)",
++      "description": "Оценка комиссии туда-обратно в bps по настройкам spot/futures taker."
++    },
++    {
++      "key": "l1_max_executable_base",
++      "label": "L1 max база",
++      "description": "Минимум из объёмов bid/ask на первом уровне: сколько базы теоретически доступно по лучшим ценам."
++    },
++    {
++      "key": "l1_max_notional_quote",
++      "label": "L1 max USDT≈",
++      "description": "Оценка нотации в котируемой валюте: L1 max база × mid."
++    },
++    {
++      "key": "volume_24h_base",
++      "label": "Объём 24h (база)",
++      "description": "Объём торгов за 24h в базовом активе (спот: volume; фьючерсы: volume24 контракта)."
++    },
++    {
++      "key": "volume_24h_quote",
++      "label": "Объём / оборот 24h (котировка)",
++      "description": "Спот: quoteVolume. Фьючерсы: amount24 (оборот в USDT-экв.)."
++    },
++    {
++      "key": "funding_rate",
++      "label": "Funding",
++      "description": "Ставка финансирования перпетуала (фьючерсы). На споте не применяется."
++    },
++    {
++      "key": "basis_mid_bps",
++      "label": "Базис (bps), режим «Базис»",
++      "description": "Отклонение mid фьючерса от mid спота, в bps к спот-mid.",
++      "formula": "basis_mid_bps = 10 000 × (fut_mid − spot_mid) / spot_mid"
++    },
++    {
++      "key": "flt_quote",
++      "label": "Фильтр: котировка",
++      "description": "Суффикс символа: USDT → пары *USDT на споте/базисе; для фьючерсов USDT превращается в _USDT (BTC_USDT)."
++    },
++    {
++      "key": "flt_min_bps",
++      "label": "Фильтр: мин. bps",
++      "description": "Спот/фьюч: минимальный gross spread_bps. Базис: минимум модуля |basis_mid_bps|."
++    },
++    {
++      "key": "flt_min_vol",
++      "label": "Фильтр: мин. объём",
++      "description": "Минимальный объём/оборот 24h в котировке. В режиме базиса условие должно выполняться на обеих ногах."
++    },
++    {
++      "key": "observed_at",
++      "label": "observed_at",
++      "description": "Метка времени UTC снимка (одна на весь ответ), когда строки собраны на сервере."
++    }
++  ]
++}
+diff --git a/mexc_monitor/dydx/client.py b/mexc_monitor/dydx/client.py
+index 4b0c141..141c7f5 100644
+--- a/mexc_monitor/dydx/client.py
++++ b/mexc_monitor/dydx/client.py
+@@ -13,8 +13,11 @@ dYdX v4 indexer API возвращает JSON без обёртки retCode —
+ 
+ from __future__ import annotations
+ 
++import concurrent.futures as cf
+ import json
+ import logging
++import random
++import time
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
+ from pathlib import Path
+@@ -28,6 +31,9 @@ logger = logging.getLogger(__name__)
+ 
+ DEFAULT_BASE_URL = "https://indexer.dydx.trade"
+ DEFAULT_TIMEOUT_SEC = 15.0
++DEFAULT_MAX_WORKERS = 8
++ORDERBOOK_RETRIES = 3
++ORDERBOOK_RETRY_BASE_DELAY_SEC = 1.0
+ 
+ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "external_apis.json"
+ 
+@@ -96,6 +102,7 @@ class DydxPublicClient:
+         self._base_url = (base_url or cfg.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
+         self._timeout = timeout_sec or cfg.get("timeout_sec", DEFAULT_TIMEOUT_SEC)
+         self._endpoints = cfg.get("endpoints", {})
++        self._max_workers = max(1, int(cfg.get("max_workers", DEFAULT_MAX_WORKERS)))
+ 
+     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+         """HTTP GET с обработкой ошибок dYdX API."""
+@@ -167,9 +174,49 @@ class DydxPublicClient:
+         if not markets:
+             return []
+ 
++        # FINAL_SETTLEMENT (делистнутые) рынки имеют пустые стаканы — пропускаем.
++        valid_markets = [
++            (name, info)
++            for name, info in markets.items()
++            if isinstance(info, dict) and info.get("status") == "ACTIVE"
++        ]
++        if not valid_markets:
++            return []
++
++        # Стакан приходится запрашивать по одному рынку — распараллеливаем, иначе
++        # ~200+ последовательных запросов растягиваются на десятки секунд.
++        # При 429 повторяем с экспоненциальной задержкой.
++        def _fetch(market_name: str) -> dict[str, Any] | None:
++            for attempt in range(ORDERBOOK_RETRIES + 1):
++                try:
++                    return self.orderbook(market_name)
++                except DydxApiError as e:
++                    if "429" in str(e) and attempt < ORDERBOOK_RETRIES:
++                        delay = ORDERBOOK_RETRY_BASE_DELAY_SEC * (2 ** attempt)
++                        time.sleep(delay + random.uniform(0, 0.5))
++                        continue
++                    logger.warning(
++                        "Failed to fetch orderbook for %s: %s", market_name, e
++                    )
++                    return None
++            return None
++
++        workers = max(1, min(self._max_workers, len(valid_markets)))
++        orderbooks: dict[str, dict[str, Any]] = {}
++        with cf.ThreadPoolExecutor(max_workers=workers) as pool:
++            future_to_market = {
++                pool.submit(_fetch, name): name for name, _ in valid_markets
++            }
++            for future in cf.as_completed(future_to_market):
++                name = future_to_market[future]
++                ob = future.result()
++                if ob is not None:
++                    orderbooks[name] = ob
++
+         tickers: list[DydxBookTicker] = []
+-        for market_name, market_info in markets.items():
+-            if not isinstance(market_info, dict):
++        for market_name, market_info in valid_markets:
++            ob = orderbooks.get(market_name)
++            if ob is None:
+                 continue
+ 
+             # Получаем volume из perpetualMarkets
+@@ -179,13 +226,6 @@ class DydxPublicClient:
+                 volume_24h_quote / oracle_price if oracle_price > 0 else 0.0
+             )
+ 
+-            # Получаем стакан для bid/ask
+-            try:
+-                ob = self.orderbook(market_name)
+-            except DydxApiError as e:
+-                logger.warning("Failed to fetch orderbook for %s: %s", market_name, e)
+-                continue
+-
+             bids = ob.get("bids", [])
+             asks = ob.get("asks", [])
+ 
+-- 
+2.34.1
+
