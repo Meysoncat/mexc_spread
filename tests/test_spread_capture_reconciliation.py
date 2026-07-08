@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock, MagicMock
 
 from mexc_monitor.spread_capture import SpreadCaptureEngine
-from mexc_monitor.order_executor import OrderTicket, OrderStatus
+from mexc_monitor.order_executor import OrderTicket
 
 
 def test_spread_capture_reconcile_paper_mode():
@@ -74,7 +74,7 @@ def test_spread_capture_reconcile_with_open_orders():
         order_type="LIMIT",
         qty=0.5,
         price=50000.0,
-        status=OrderStatus.NEW,
+        status="NEW",
         created_ms=1700000000000,
     )
     mock_executor = Mock()
@@ -131,7 +131,7 @@ def test_spread_capture_reconcile_with_discrepancies():
         order_type="LIMIT",
         qty=0.3,  # Different qty!
         price=50000.0,
-        status=OrderStatus.NEW,
+        status="NEW",
         created_ms=1700000000000,
     )
     mock_executor = Mock()

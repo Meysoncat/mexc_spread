@@ -125,7 +125,13 @@ class ExecutionSimulator:
                 self._rng = random.Random(state["seed"])
 
             if "rng_state" in state:
-                self._rng.setstate(state["rng_state"])
+                rng_state = state["rng_state"]
+                # JSON round-trip turns tuples into lists; setstate needs tuples
+                if isinstance(rng_state, list):
+                    rng_state = tuple(
+                        tuple(x) if isinstance(x, list) else x for x in rng_state
+                    )
+                self._rng.setstate(rng_state)
 
             if "fill_rate_per_sec" in state:
                 self._settings.fill_rate_per_sec = max(0.0, float(state["fill_rate_per_sec"]))

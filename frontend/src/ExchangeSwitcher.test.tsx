@@ -9,7 +9,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ExchangeSwitcher, EXCHANGE_GROUPS } from "./ExchangeSwitcher";
-import type { Exchange } from "./types";
 
 describe("ExchangeSwitcher", () => {
   it("renders all 11 exchange options", () => {

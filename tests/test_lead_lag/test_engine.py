@@ -86,6 +86,7 @@ class TestEngineStartStop:
 
         assert result is None
         assert engine.status != EngineStatus.STOPPED
+        time.sleep(0.01)  # clock resolution: ensure measurable uptime
         assert engine.uptime_sec > 0
 
         # Clean up

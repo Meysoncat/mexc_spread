@@ -31,7 +31,7 @@ from typing import Any, Literal
 from mexc_monitor.execution_model import ExecutionSimulator, ExecutionSettings
 from mexc_monitor.freshness import get_fresh_tick
 from mexc_monitor.order_executor import OrderExecutor, OrderTicket
-from mexc_monitor.reconciliation import reconcile_positions, ReconciliationResult, ExpectedPosition, ActualPosition
+from mexc_monitor.reconciliation import reconcile_positions, ReconciliationResult, Discrepancy, ExpectedPosition, ActualPosition
 from mexc_monitor.spread_buffer import get_latest, get_stats, SpreadTick
 from mexc_monitor.state_store import StateStore
 
@@ -80,6 +80,7 @@ class CaptureSettings:
 class Position:
     """Текущая позиция."""
     state: PositionState = "idle"
+    symbol: str = ""
     entry_price: float = 0.0
     entry_qty: float = 0.0
     entry_time_ms: int = 0
@@ -292,10 +293,6 @@ class SpreadCaptureEngine:
     def serialize_state(self) -> bool:
         """Save current position and stats to disk atomically."""
         with self._lock:
-            positions_data = [
-                asdict(p) for p in self._positions.values()
-                if p.state in ("pending_buy", "holding", "pending_sell")
-            ]
             data = {
                 "version": 1,
                 "timestamp_ms": self._now_ms(),
@@ -328,6 +325,7 @@ class SpreadCaptureEngine:
                 if state == "holding":
                     self._position = Position(
                         state="holding",
+                        symbol=str(pos_data.get("symbol", "")),
                         entry_price=float(pos_data.get("entry_price", 0)),
                         entry_qty=float(pos_data.get("entry_qty", 0)),
                         entry_time_ms=int(pos_data.get("entry_time_ms", 0)),
@@ -382,129 +380,71 @@ class SpreadCaptureEngine:
         dict[str, Any]
             Результат reconciliation с details.
         """
-        from mexc_monitor.reconciliation import ReconciliationResult, ExpectedPosition, ActualPosition
-
         result = ReconciliationResult()
 
         with self._lock:
             pos = self._position
 
-        if pos.state == "holding" and pos.entry_qty > 0:
-            # Engine thinks we have a holding position
-            expected_qty = pos.entry_qty
-            # Convert buy position to "buy" side for reconciliation
-            expected_positions = [
-                ExpectedPosition(
-                    symbol=pos.symbol,
-                    qty=expected_qty,
+        symbol = pos.symbol or self._settings.symbol
+
+        if self._order_executor is not None:
+            expected_positions: list[ExpectedPosition] = []
+            if pos.state in ("holding", "pending_buy", "pending_sell") and pos.entry_qty > 0:
+                expected_positions.append(
+                    ExpectedPosition(
+                        symbol=symbol,
+                        qty=pos.entry_qty,
+                        side="sell" if pos.state == "pending_sell" else "buy",
+                        exchange=self._settings.exchange,
+                        engine_name="spread_capture",
+                    )
+                )
+
+            try:
+                # Get actual open orders from exchange
+                open_orders = self._order_executor.get_open_orders(symbol)
+                actual_positions: list[ActualPosition] = []
+                for order in open_orders:
+                    if not order.is_open:
+                        continue
+                    if order.side in ("BUY", "BID"):
+                        side = "buy"
+                    elif order.side in ("SELL", "ASK"):
+                        side = "sell"
+                    else:
+                        continue
+                    actual_positions.append(
+                        ActualPosition(
+                            symbol=symbol,
+                            qty=order.remaining_qty,
+                            side=side,
+                            exchange=self._settings.exchange,
+                            entry_price=order.price or pos.entry_price,
+                        )
+                    )
+
+                reconcile_result = reconcile_positions(
+                    expected=expected_positions,
+                    actual=actual_positions,
+                    qty_tolerance=1e-6,
+                )
+                result.matched = reconcile_result.matched
+                result.discrepancies = reconcile_result.discrepancies
+                result.all_clear = reconcile_result.all_clear
+            except Exception as e:
+                logger.error("Failed to reconcile spread_capture position: %s", e)
+                result.all_clear = False
+                result.discrepancies.append(Discrepancy(
+                    type="missing_on_exchange",
+                    symbol=symbol,
+                    expected_qty=pos.entry_qty,
+                    actual_qty=0.0,
                     side="buy",
                     exchange=self._settings.exchange,
                     engine_name="spread_capture",
-                )
-            ]
-
-            if self._settings.mode == "live" and self._order_executor:
-                try:
-                    # Get actual open orders from exchange
-                    open_orders = self._order_executor.get_open_orders(pos.symbol)
-                    actual_positions: list[ActualPosition] = []
-
-                    for order in open_orders:
-                        if order.is_open:
-                            # Convert order qty to position
-                            # BUY order means we hold
-                            if order.side == "BUY" or order.side == "BID":
-                                actual_positions.append(
-                                    ActualPosition(
-                                        symbol=pos.symbol,
-                                        qty=order.remaining_qty,
-                                        side="buy",
-                                        exchange=self._settings.exchange,
-                                        entry_price=order.price or pos.entry_price,
-                                    )
-                                )
-                            elif order.side == "SELL" or order.side == "ASK":
-                                actual_positions.append(
-                                    ActualPosition(
-                                        symbol=pos.symbol,
-                                        qty=order.remaining_qty,
-                                        side="sell",
-                                        exchange=self._settings.exchange,
-                                        entry_price=order.price or pos.entry_price,
-                                    )
-                                )
-                    reconcile_result = reconcile_positions(
-                        expected=expected_positions,
-                        actual=actual_positions,
-                        qty_tolerance=1e-6,
-                    )
-
-                    result.matched = reconcile_result.matched
-                    result.discrepancies = reconcile_result.discrepancies
-                    result.all_clear = reconcile_result.all_clear
-
-                except Exception as e:
-                    logger.error("Failed to reconcile spread_capture position: %s", e)
-                    result.all_clear = False
-                    result.discrepancies.append({
-                        "type": "unexpected_on_exchange",
-                        "symbol": pos.symbol,
-                        "expected_qty": pos.entry_qty,
-                        "actual_qty": 0.0,
-                        "side": "buy",
-                        "exchange": self._settings.exchange,
-                        "engine_name": "spread_capture",
-                        "message": f"Error during reconciliation: {e}",
-                    })
-            else:
-                # Paper/monitor mode — no reconciliation
-                result.all_clear = True
-        else:
-            # No position — check for unexpected orders
-            if self._settings.mode == "live" and self._order_executor:
-                try:
-                    open_orders = self._order_executor.get_open_orders(pos.symbol)
-                    actual_positions: list[ActualPosition] = []
-
-                    for order in open_orders:
-                        if order.is_open:
-                            if order.side == "BUY" or order.side == "BID":
-                                actual_positions.append(
-                                    ActualPosition(
-                                        symbol=pos.symbol,
-                                        qty=order.remaining_qty,
-                                        side="buy",
-                                        exchange=self._settings.exchange,
-                                        entry_price=order.price,
-                                    )
-                                )
-                            elif order.side == "SELL" or order.side == "ASK":
-                                actual_positions.append(
-                                    ActualPosition(
-                                        symbol=pos.symbol,
-                                        qty=order.remaining_qty,
-                                        side="sell",
-                                        exchange=self._settings.exchange,
-                                        entry_price=order.price,
-                                    )
-                                )
-
-                    if actual_positions:
-                        result.discrepancies.append(
-                            {
-                                "type": "unexpected_on_exchange",
-                                "symbol": pos.symbol,
-                                "expected_qty": 0.0,
-                                "actual_qty": sum(p.qty for p in actual_positions),
-                                "side": actual_positions[0].side,
-                                "exchange": self._settings.exchange,
-                                "engine_name": "spread_capture",
-                                "message": f"Unexpected open order(s) found on exchange",
-                            }
-                        )
-                        result.all_clear = False
-                except Exception as e:
-                    logger.error("Failed to check for unexpected orders: %s", e)
+                    message=f"Error during reconciliation: {e}",
+                ))
+        # Без OrderExecutor (paper/monitor) сверять не с чем — all_clear остаётся True
 
         return {
             "symbol": self._settings.symbol,
@@ -608,6 +548,7 @@ class SpreadCaptureEngine:
             with self._lock:
                 self._position = Position(
                     state="pending_buy",
+                    symbol=self._settings.symbol,
                     entry_price=tick.bid,
                     entry_qty=qty,
                     entry_time_ms=tick.timestamp_ms,
@@ -635,6 +576,7 @@ class SpreadCaptureEngine:
             with self._lock:
                 self._position = Position(
                     state="pending_buy",
+                    symbol=self._settings.symbol,
                     entry_price=tick.bid,
                     entry_qty=qty,
                     entry_time_ms=tick.timestamp_ms,
@@ -658,6 +600,7 @@ class SpreadCaptureEngine:
         with self._lock:
             self._position = Position(
                 state="holding",
+                symbol=self._settings.symbol,
                 entry_price=tick.bid,
                 entry_qty=qty,
                 entry_time_ms=tick.timestamp_ms,

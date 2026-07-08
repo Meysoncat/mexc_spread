@@ -267,7 +267,7 @@ async function fetchSnapshot(
     data = JSON.parse(text) as SnapshotResponse;
   } catch (e) {
     console.error("[MEXC UI] snapshot JSON parse", e, text.slice(0, 500));
-    throw new Error("Некорректный JSON от /api/snapshot");
+    throw new Error("Некорректный JSON от /api/snapshot", { cause: e });
   }
   if (SNAPSHOT_LOG) {
     console.debug(
@@ -2286,7 +2286,7 @@ export function SpreadMonitorPage() {
                             : "font-medium text-amber-600 dark:text-amber-400"
                         }
                       >
-                        Обновлено {updatedSecondsAgo} с назад
+                        Обновлено {updatedSecondsAgo}{"\u00a0"}с назад
                       </span>
                     )}
                     <span title={loadedAt}>

@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
-  DollarSign,
   History,
   Pause,
   Play,
   RotateCcw,
   Settings,
-  TrendingDown,
-  TrendingUp,
   Zap,
 } from "lucide-react";
 import { apiUrl } from "./config";

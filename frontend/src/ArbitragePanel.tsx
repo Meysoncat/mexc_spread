@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, ArrowLeftRight, Pause, Play, RotateCcw, Shield } from "lucide-react";
+import { ArrowLeftRight, Pause, Play, Shield } from "lucide-react";
 import { apiUrl } from "./config";
 import { Skeleton, SkeletonCard, SkeletonTableRows } from "./components/ui/Skeleton";
 

@@ -1,0 +1,3524 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..c55101e
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,45 @@
++name: CI
++
++on:
++  push:
++    branches: [main, master]
++  pull_request:
++
++jobs:
++  backend:
++    name: Backend (pytest)
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.12"
++          cache: pip
++      - name: Install dependencies
++        run: pip install -r requirements-dev.txt
++      - name: Run tests
++        run: python -m pytest tests -q
++
++  frontend:
++    name: Frontend (tsc + eslint + vitest + build)
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        working-directory: frontend
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-node@v4
++        with:
++          node-version: "22"
++          cache: npm
++          cache-dependency-path: frontend/package-lock.json
++      - name: Install dependencies
++        run: npm ci
++      - name: Typecheck
++        run: npm run typecheck
++      - name: Lint
++        run: npm run lint
++      - name: Tests
++        run: npm run test
++      - name: Build
++        run: npm run build
+diff --git a/backend/main.py b/backend/main.py
+index a4f5531..84ecd13 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -5,6 +5,7 @@ import json
+ from typing import Any
+ import logging
+ import os
++import secrets
+ import threading
+ import time
+ from datetime import datetime, timezone
+@@ -263,9 +264,13 @@ _ADMIN_TOKEN = str(os.environ.get("ADMIN_TOKEN", "")).strip()
+ 
+ def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
+     if not _ADMIN_TOKEN:
+-        return
++        # Без явно заданного ADMIN_TOKEN торговые эндпоинты недоступны
++        raise HTTPException(
++            status_code=403,
++            detail="trading API disabled: set ADMIN_TOKEN environment variable",
++        )
+     provided = (x_admin_token or "").strip()
+-    if not provided or provided != _ADMIN_TOKEN:
++    if not provided or not secrets.compare_digest(provided, _ADMIN_TOKEN):
+         raise HTTPException(status_code=401, detail="invalid admin token")
+ 
+ 
+diff --git a/frontend/eslint.config.js b/frontend/eslint.config.js
+new file mode 100644
+index 0000000..5307986
+--- /dev/null
++++ b/frontend/eslint.config.js
+@@ -0,0 +1,39 @@
++import js from "@eslint/js";
++import globals from "globals";
++import reactHooks from "eslint-plugin-react-hooks";
++import reactRefresh from "eslint-plugin-react-refresh";
++import tseslint from "typescript-eslint";
++
++export default tseslint.config(
++  { ignores: ["dist", "node_modules"] },
++  {
++    extends: [js.configs.recommended, ...tseslint.configs.recommended],
++    files: ["**/*.{ts,tsx}"],
++    languageOptions: {
++      ecmaVersion: 2022,
++      globals: globals.browser,
++    },
++    plugins: {
++      "react-hooks": reactHooks,
++      "react-refresh": reactRefresh,
++    },
++    rules: {
++      ...reactHooks.configs.recommended.rules,
++      "react-refresh/only-export-components": [
++        "warn",
++        { allowConstantExport: true },
++      ],
++      "@typescript-eslint/no-unused-vars": [
++        "error",
++        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
++      ],
++      // Пока в кодовой базе есть легаси-нарушения — предупреждения, не ошибки
++      "@typescript-eslint/no-explicit-any": "warn",
++      "no-empty": ["warn", { allowEmptyCatch: true }],
++      "react-hooks/set-state-in-effect": "warn",
++      "react-hooks/purity": "warn",
++      "react-hooks/refs": "warn",
++      "react-hooks/exhaustive-deps": "warn",
++    },
++  },
++);
+diff --git a/frontend/package-lock.json b/frontend/package-lock.json
+index f024e38..9fc39bb 100644
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -15,6 +15,7 @@
+         "react-router-dom": "^6.30.3"
+       },
+       "devDependencies": {
++        "@eslint/js": "^10.0.1",
+         "@testing-library/jest-dom": "^6.9.1",
+         "@testing-library/react": "^16.3.2",
+         "@types/react": "^18.3.12",
+@@ -22,10 +23,15 @@
+         "@types/testing-library__jest-dom": "^5.14.9",
+         "@vitejs/plugin-react": "^4.3.4",
+         "autoprefixer": "^10.4.20",
++        "eslint": "^10.6.0",
++        "eslint-plugin-react-hooks": "^7.1.1",
++        "eslint-plugin-react-refresh": "^0.5.3",
++        "globals": "^17.7.0",
+         "jsdom": "^29.1.1",
+         "postcss": "^8.4.49",
+         "tailwindcss": "^3.4.15",
+         "typescript": "~5.6.3",
++        "typescript-eslint": "^8.63.0",
+         "vite": "^5.4.11",
+         "vitest": "^4.1.7"
+       }
+@@ -869,6 +875,24 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/netbsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/netbsd-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.21.5.tgz",
+@@ -886,6 +910,24 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/openbsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/openbsd-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.21.5.tgz",
+@@ -903,6 +945,24 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/openharmony-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.1.tgz",
++      "integrity": "sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/sunos-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.21.5.tgz",
+@@ -971,6 +1031,134 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@eslint-community/eslint-utils": {
++      "version": "4.9.1",
++      "resolved": "https://registry.npmjs.org/@eslint-community/eslint-utils/-/eslint-utils-4.9.1.tgz",
++      "integrity": "sha512-phrYmNiYppR7znFEdqgfWHXR6NCkZEK7hwWDHZUjit/2/U0r6XvkDl0SYnoM51Hq7FhCGdLDT6zxCCOY1hexsQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "eslint-visitor-keys": "^3.4.3"
++      },
++      "engines": {
++        "node": "^12.22.0 || ^14.17.0 || >=16.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/eslint"
++      },
++      "peerDependencies": {
++        "eslint": "^6.0.0 || ^7.0.0 || >=8.0.0"
++      }
++    },
++    "node_modules/@eslint-community/eslint-utils/node_modules/eslint-visitor-keys": {
++      "version": "3.4.3",
++      "resolved": "https://registry.npmjs.org/eslint-visitor-keys/-/eslint-visitor-keys-3.4.3.tgz",
++      "integrity": "sha512-wpc+LXeiyiisxPlEkUzU6svyS1frIO3Mgxj1fdy7Pm8Ygzguax2N3Fa/D/ag1WqbOprdI+uY6wMUl8/a2G+iag==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": "^12.22.0 || ^14.17.0 || >=16.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/eslint"
++      }
++    },
++    "node_modules/@eslint-community/regexpp": {
++      "version": "4.12.2",
++      "resolved": "https://registry.npmjs.org/@eslint-community/regexpp/-/regexpp-4.12.2.tgz",
++      "integrity": "sha512-EriSTlt5OC9/7SXkRSCAhfSxxoSUgBm33OH+IkwbdpgoqsSsUg7y3uh+IICI/Qg4BBWr3U2i39RpmycbxMq4ew==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^12.0.0 || ^14.0.0 || >=16.0.0"
++      }
++    },
++    "node_modules/@eslint/config-array": {
++      "version": "0.23.5",
++      "resolved": "https://registry.npmjs.org/@eslint/config-array/-/config-array-0.23.5.tgz",
++      "integrity": "sha512-Y3kKLvC1dvTOT+oGlqNQ1XLqK6D1HU2YXPc52NmAlJZbMMWDzGYXMiPRJ8TYD39muD/OTjlZmNJ4ib7dvSrMBA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@eslint/object-schema": "^3.0.5",
++        "debug": "^4.3.1",
++        "minimatch": "^10.2.4"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      }
++    },
++    "node_modules/@eslint/config-helpers": {
++      "version": "0.6.0",
++      "resolved": "https://registry.npmjs.org/@eslint/config-helpers/-/config-helpers-0.6.0.tgz",
++      "integrity": "sha512-ii6Bw9jJ2zi2cWA2Z+9/QZ/+3DX6kwaV5Q986D/CdP3Lap3w/pgQZ373FV7byY/i7L4IRH/G43I5dz1ClsCbpA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@eslint/core": "^1.2.1"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      }
++    },
++    "node_modules/@eslint/core": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/@eslint/core/-/core-1.2.1.tgz",
++      "integrity": "sha512-MwcE1P+AZ4C6DWlpin/OmOA54mmIZ/+xZuJiQd4SyB29oAJjN30UW9wkKNptW2ctp4cEsvhlLY/CsQ1uoHDloQ==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@types/json-schema": "^7.0.15"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      }
++    },
++    "node_modules/@eslint/js": {
++      "version": "10.0.1",
++      "resolved": "https://registry.npmjs.org/@eslint/js/-/js-10.0.1.tgz",
++      "integrity": "sha512-zeR9k5pd4gxjZ0abRoIaxdc7I3nDktoXZk2qOv9gCNWx3mVwEn32VRhyLaRsDiJjTs0xq/T8mfPtyuXu7GWBcA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      },
++      "funding": {
++        "url": "https://eslint.org/donate"
++      },
++      "peerDependencies": {
++        "eslint": "^10.0.0"
++      },
++      "peerDependenciesMeta": {
++        "eslint": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@eslint/object-schema": {
++      "version": "3.0.5",
++      "resolved": "https://registry.npmjs.org/@eslint/object-schema/-/object-schema-3.0.5.tgz",
++      "integrity": "sha512-vqTaUEgxzm+YDSdElad6PiRoX4t8VGDjCtt05zn4nU810UIx/uNEV7/lZJ6KwFThKZOzOxzXy48da+No7HZaMw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      }
++    },
++    "node_modules/@eslint/plugin-kit": {
++      "version": "0.7.2",
++      "resolved": "https://registry.npmjs.org/@eslint/plugin-kit/-/plugin-kit-0.7.2.tgz",
++      "integrity": "sha512-+CNAzxglkrpNf/kKywqQfk74QjtceuOE7Qm+AF8miRvPF/wmmK5+OJOgVh3AVTT3RP2mH3+FOaxlE5v72owk0A==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@eslint/core": "^1.2.1",
++        "levn": "^0.4.1"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      }
++    },
+     "node_modules/@exodus/bytes": {
+       "version": "1.15.1",
+       "resolved": "https://registry.npmjs.org/@exodus/bytes/-/bytes-1.15.1.tgz",
+@@ -989,6 +1177,72 @@
+         }
+       }
+     },
++    "node_modules/@humanfs/core": {
++      "version": "0.19.2",
++      "resolved": "https://registry.npmjs.org/@humanfs/core/-/core-0.19.2.tgz",
++      "integrity": "sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@humanfs/types": "^0.15.0"
++      },
++      "engines": {
++        "node": ">=18.18.0"
++      }
++    },
++    "node_modules/@humanfs/node": {
++      "version": "0.16.8",
++      "resolved": "https://registry.npmjs.org/@humanfs/node/-/node-0.16.8.tgz",
++      "integrity": "sha512-gE1eQNZ3R++kTzFUpdGlpmy8kDZD/MLyHqDwqjkVQI0JMdI1D51sy1H958PNXYkM2rAac7e5/CnIKZrHtPh3BQ==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@humanfs/core": "^0.19.2",
++        "@humanfs/types": "^0.15.0",
++        "@humanwhocodes/retry": "^0.4.0"
++      },
++      "engines": {
++        "node": ">=18.18.0"
++      }
++    },
++    "node_modules/@humanfs/types": {
++      "version": "0.15.0",
++      "resolved": "https://registry.npmjs.org/@humanfs/types/-/types-0.15.0.tgz",
++      "integrity": "sha512-ZZ1w0aoQkwuUuC7Yf+7sdeaNfqQiiLcSRbfI08oAxqLtpXQr9AIVX7Ay7HLDuiLYAaFPu8oBYNq/QIi9URHJ3Q==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=18.18.0"
++      }
++    },
++    "node_modules/@humanwhocodes/module-importer": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@humanwhocodes/module-importer/-/module-importer-1.0.1.tgz",
++      "integrity": "sha512-bxveV4V8v5Yb4ncFTT3rPSgZBOpCkjfK0y4oVVVJwIuDVBRMDXrPyXRL988i5ap9m9bnyEEjWfm5WkBmtffLfA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=12.22"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/nzakas"
++      }
++    },
++    "node_modules/@humanwhocodes/retry": {
++      "version": "0.4.3",
++      "resolved": "https://registry.npmjs.org/@humanwhocodes/retry/-/retry-0.4.3.tgz",
++      "integrity": "sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=18.18"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/nzakas"
++      }
++    },
+     "node_modules/@jest/diff-sequences": {
+       "version": "30.4.0",
+       "resolved": "https://registry.npmjs.org/@jest/diff-sequences/-/diff-sequences-30.4.0.tgz",
+@@ -1287,9 +1541,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1307,9 +1558,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1327,9 +1575,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1347,9 +1592,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1367,9 +1609,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1387,9 +1626,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1568,9 +1804,6 @@
+         "arm"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1585,9 +1818,6 @@
+         "arm"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1602,9 +1832,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1619,9 +1846,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1636,9 +1860,6 @@
+         "loong64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1653,9 +1874,6 @@
+         "loong64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1670,9 +1888,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1687,9 +1902,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1704,9 +1916,6 @@
+         "riscv64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1721,9 +1930,6 @@
+         "riscv64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1738,9 +1944,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1755,9 +1958,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1772,9 +1972,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -2037,6 +2234,13 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/@types/esrecurse": {
++      "version": "4.3.1",
++      "resolved": "https://registry.npmjs.org/@types/esrecurse/-/esrecurse-4.3.1.tgz",
++      "integrity": "sha512-xJBAbDifo5hpffDBuHl0Y8ywswbiAp/Wi7Y/GtAgSlZyIABppyurxVueOPE8LUQOxdlgi6Zqce7uoEpqNTeiUw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/estree": {
+       "version": "1.0.8",
+       "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.8.tgz",
+@@ -2111,6 +2315,13 @@
+         "node": "^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0"
+       }
+     },
++    "node_modules/@types/json-schema": {
++      "version": "7.0.15",
++      "resolved": "https://registry.npmjs.org/@types/json-schema/-/json-schema-7.0.15.tgz",
++      "integrity": "sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/node": {
+       "version": "25.9.1",
+       "resolved": "https://registry.npmjs.org/@types/node/-/node-25.9.1.tgz",
+@@ -2183,113 +2394,396 @@
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/@vitejs/plugin-react": {
+-      "version": "4.7.0",
+-      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-4.7.0.tgz",
+-      "integrity": "sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==",
++    "node_modules/@typescript-eslint/eslint-plugin": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/eslint-plugin/-/eslint-plugin-8.63.0.tgz",
++      "integrity": "sha512-rvwSgqT+DHpWdzfSzPatRLm02a0GlESt++9iy3hLCDY4BgkaLcl8LBi9Yh7XGFBpwcBE/K3024QuXWTpbz4FfQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@babel/core": "^7.28.0",
+-        "@babel/plugin-transform-react-jsx-self": "^7.27.1",
+-        "@babel/plugin-transform-react-jsx-source": "^7.27.1",
+-        "@rolldown/pluginutils": "1.0.0-beta.27",
+-        "@types/babel__core": "^7.20.5",
+-        "react-refresh": "^0.17.0"
++        "@eslint-community/regexpp": "^4.12.2",
++        "@typescript-eslint/scope-manager": "8.63.0",
++        "@typescript-eslint/type-utils": "8.63.0",
++        "@typescript-eslint/utils": "8.63.0",
++        "@typescript-eslint/visitor-keys": "8.63.0",
++        "ignore": "^7.0.5",
++        "natural-compare": "^1.4.0",
++        "ts-api-utils": "^2.5.0"
+       },
+       "engines": {
+-        "node": "^14.18.0 || >=16.0.0"
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
+       },
+       "peerDependencies": {
+-        "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
++        "@typescript-eslint/parser": "^8.63.0",
++        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
++        "typescript": ">=4.8.4 <6.1.0"
+       }
+     },
+-    "node_modules/@vitest/expect": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-4.1.7.tgz",
+-      "integrity": "sha512-1R+tw0ortHEbZDGMymm+pN7/AFQ/RkFFdtd7EN+VBpynKmLbP8A3rpEXdshBJ7+8hQ9zBJh/i1s0yKNtxAnU7w==",
++    "node_modules/@typescript-eslint/eslint-plugin/node_modules/ignore": {
++      "version": "7.0.5",
++      "resolved": "https://registry.npmjs.org/ignore/-/ignore-7.0.5.tgz",
++      "integrity": "sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==",
+       "dev": true,
+       "license": "MIT",
+-      "dependencies": {
+-        "@standard-schema/spec": "^1.1.0",
+-        "@types/chai": "^5.2.2",
+-        "@vitest/spy": "4.1.7",
+-        "@vitest/utils": "4.1.7",
+-        "chai": "^6.2.2",
+-        "tinyrainbow": "^3.1.0"
+-      },
+-      "funding": {
+-        "url": "https://opencollective.com/vitest"
++      "engines": {
++        "node": ">= 4"
+       }
+     },
+-    "node_modules/@vitest/pretty-format": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-4.1.7.tgz",
+-      "integrity": "sha512-umgCarTOYQWIaDMvGDRZij+6b9oVeLIyJzfN+AS88e0ZOU3QTgNNSTtjQOpcvWr3np1N0j4WgZj+sb3oYBDscw==",
++    "node_modules/@typescript-eslint/parser": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/parser/-/parser-8.63.0.tgz",
++      "integrity": "sha512-gwh4gvvlaVDKKxyfxMG+Gnu1u9X0OQBwyGLkbwB65dIzBKnxeRiJlNFqlI3zwVhNXJIs6qV7mlFCn/BIajlVig==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "tinyrainbow": "^3.1.0"
++        "@typescript-eslint/scope-manager": "8.63.0",
++        "@typescript-eslint/types": "8.63.0",
++        "@typescript-eslint/typescript-estree": "8.63.0",
++        "@typescript-eslint/visitor-keys": "8.63.0",
++        "debug": "^4.4.3"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+       },
+       "funding": {
+-        "url": "https://opencollective.com/vitest"
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
++        "typescript": ">=4.8.4 <6.1.0"
+       }
+     },
+-    "node_modules/@vitest/runner": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-4.1.7.tgz",
+-      "integrity": "sha512-BapjmAQ2aI78WdMEfeUWivnfVzB+VPGwWRQcJE0OUq7qEeEcBsCSf+0T5iREBNE5nBb4wA5Ya0W6IA+sghdEFw==",
++    "node_modules/@typescript-eslint/project-service": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/project-service/-/project-service-8.63.0.tgz",
++      "integrity": "sha512-e5dh0/UI0ok53AlZ5wRkXCB32z/f2jUZqPR/ygAw5WYaSw8j9EoJWlS7wQjr/dmOaqWjnPIn2m+HhVPCMWGZVQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/utils": "4.1.7",
+-        "pathe": "^2.0.3"
++        "@typescript-eslint/tsconfig-utils": "^8.63.0",
++        "@typescript-eslint/types": "^8.63.0",
++        "debug": "^4.4.3"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+       },
+       "funding": {
+-        "url": "https://opencollective.com/vitest"
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "typescript": ">=4.8.4 <6.1.0"
+       }
+     },
+-    "node_modules/@vitest/snapshot": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-4.1.7.tgz",
+-      "integrity": "sha512-ZacLzja+TmJeZ1h14xW2FB/WpeimUD3haBXQPyJqxvo8jQTmfeA8zv58mtjN2C7EHXZDYVcVYdYmAxjkWVvKCw==",
++    "node_modules/@typescript-eslint/scope-manager": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/scope-manager/-/scope-manager-8.63.0.tgz",
++      "integrity": "sha512-uUyfMWCnDSN8bCpcrY8nGP2BLkQ9Xn0GsipcONcpIDWhwhO4ZSyHvyS14U3X75mzxWxL3I2UZIrenTzdzcJO8A==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/pretty-format": "4.1.7",
+-        "@vitest/utils": "4.1.7",
+-        "magic-string": "^0.30.21",
+-        "pathe": "^2.0.3"
++        "@typescript-eslint/types": "8.63.0",
++        "@typescript-eslint/visitor-keys": "8.63.0"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+       },
+       "funding": {
+-        "url": "https://opencollective.com/vitest"
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
+       }
+     },
+-    "node_modules/@vitest/spy": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-4.1.7.tgz",
+-      "integrity": "sha512-kbkI5LMWakyuTIvs6fUJ5qdIVb1XVKsYJAT4OJ938cHMROYMSfmoQdZy0aaAnjbbc8F61vkoTqz/Az+/HiIu5Q==",
++    "node_modules/@typescript-eslint/tsconfig-utils": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/tsconfig-utils/-/tsconfig-utils-8.63.0.tgz",
++      "integrity": "sha512-sUAbkulqBAsncKnbRP3+7CtQFRKicexnj7ZwNC6ddCR7EmrXvjvdCYMJbUIqMd6lwoEriZjwLo08aS5tSjVMHg==",
+       "dev": true,
+       "license": "MIT",
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
+       "funding": {
+-        "url": "https://opencollective.com/vitest"
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "typescript": ">=4.8.4 <6.1.0"
+       }
+     },
+-    "node_modules/@vitest/utils": {
+-      "version": "4.1.7",
+-      "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-4.1.7.tgz",
+-      "integrity": "sha512-T532WBu791cBxJlCl6SO+J14l81DQx6uQHm1bQbmCDY7nqlEIgkza/UFnSBNaUtSf41unldDFjdOBYEQC4b5Hw==",
++    "node_modules/@typescript-eslint/type-utils": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/type-utils/-/type-utils-8.63.0.tgz",
++      "integrity": "sha512-Nzzh/OGxVCOjObjaj1CQF2RUasyYy2Jfuh+zZ3PjLzG2fYRriAiZLib9UKtO+CpQAS3YHiAS+ckZDclwqI1TPA==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/pretty-format": "4.1.7",
+-        "convert-source-map": "^2.0.0",
+-        "tinyrainbow": "^3.1.0"
++        "@typescript-eslint/types": "8.63.0",
++        "@typescript-eslint/typescript-estree": "8.63.0",
++        "@typescript-eslint/utils": "8.63.0",
++        "debug": "^4.4.3",
++        "ts-api-utils": "^2.5.0"
+       },
+-      "funding": {
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
++        "typescript": ">=4.8.4 <6.1.0"
++      }
++    },
++    "node_modules/@typescript-eslint/types": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/types/-/types-8.63.0.tgz",
++      "integrity": "sha512-xyLtl9DUBBFrcJS4x2pIqGLH68/tC2uOa4Z7pUteW09D3bXnnXUom4dyPikzWgB7llmIc1zoeI3aoUdC4rPK/Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      }
++    },
++    "node_modules/@typescript-eslint/typescript-estree": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/typescript-estree/-/typescript-estree-8.63.0.tgz",
++      "integrity": "sha512-ygBkU+B7ex5UI/gKhaqexWev79uISfIv7XQCRNYO/jmD8rGLPyWLAb3KMRT6nd8Gt9bmUBi9+iX6tBdYfOY81Q==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@typescript-eslint/project-service": "8.63.0",
++        "@typescript-eslint/tsconfig-utils": "8.63.0",
++        "@typescript-eslint/types": "8.63.0",
++        "@typescript-eslint/visitor-keys": "8.63.0",
++        "debug": "^4.4.3",
++        "minimatch": "^10.2.2",
++        "semver": "^7.7.3",
++        "tinyglobby": "^0.2.15",
++        "ts-api-utils": "^2.5.0"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "typescript": ">=4.8.4 <6.1.0"
++      }
++    },
++    "node_modules/@typescript-eslint/typescript-estree/node_modules/semver": {
++      "version": "7.8.5",
++      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
++      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
++      "dev": true,
++      "license": "ISC",
++      "bin": {
++        "semver": "bin/semver.js"
++      },
++      "engines": {
++        "node": ">=10"
++      }
++    },
++    "node_modules/@typescript-eslint/utils": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/utils/-/utils-8.63.0.tgz",
++      "integrity": "sha512-fUKaeAvrTuQg/Tgt3nliAUSZHJM6DlCcfyEmxCvlX8kieWSStBX+5O5Fnidtc3i2JrH+9c/GL4RY2iasd/GPTA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@eslint-community/eslint-utils": "^4.9.1",
++        "@typescript-eslint/scope-manager": "8.63.0",
++        "@typescript-eslint/types": "8.63.0",
++        "@typescript-eslint/typescript-estree": "8.63.0"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
++        "typescript": ">=4.8.4 <6.1.0"
++      }
++    },
++    "node_modules/@typescript-eslint/visitor-keys": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/@typescript-eslint/visitor-keys/-/visitor-keys-8.63.0.tgz",
++      "integrity": "sha512-UexrHGnGTpbuQHct2ExOc2ZcFbGUS9FOesCxxqdBGcpI1BxYu/LZ6U8Aq6/72XtF/qRBk9nhuGHFJIXXMhPMdw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@typescript-eslint/types": "8.63.0",
++        "eslint-visitor-keys": "^5.0.0"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      }
++    },
++    "node_modules/@vitejs/plugin-react": {
++      "version": "4.7.0",
++      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-4.7.0.tgz",
++      "integrity": "sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@babel/core": "^7.28.0",
++        "@babel/plugin-transform-react-jsx-self": "^7.27.1",
++        "@babel/plugin-transform-react-jsx-source": "^7.27.1",
++        "@rolldown/pluginutils": "1.0.0-beta.27",
++        "@types/babel__core": "^7.20.5",
++        "react-refresh": "^0.17.0"
++      },
++      "engines": {
++        "node": "^14.18.0 || >=16.0.0"
++      },
++      "peerDependencies": {
++        "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
++      }
++    },
++    "node_modules/@vitest/expect": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-4.1.7.tgz",
++      "integrity": "sha512-1R+tw0ortHEbZDGMymm+pN7/AFQ/RkFFdtd7EN+VBpynKmLbP8A3rpEXdshBJ7+8hQ9zBJh/i1s0yKNtxAnU7w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@standard-schema/spec": "^1.1.0",
++        "@types/chai": "^5.2.2",
++        "@vitest/spy": "4.1.7",
++        "@vitest/utils": "4.1.7",
++        "chai": "^6.2.2",
++        "tinyrainbow": "^3.1.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/pretty-format": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-4.1.7.tgz",
++      "integrity": "sha512-umgCarTOYQWIaDMvGDRZij+6b9oVeLIyJzfN+AS88e0ZOU3QTgNNSTtjQOpcvWr3np1N0j4WgZj+sb3oYBDscw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tinyrainbow": "^3.1.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/runner": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-4.1.7.tgz",
++      "integrity": "sha512-BapjmAQ2aI78WdMEfeUWivnfVzB+VPGwWRQcJE0OUq7qEeEcBsCSf+0T5iREBNE5nBb4wA5Ya0W6IA+sghdEFw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/utils": "4.1.7",
++        "pathe": "^2.0.3"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/snapshot": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-4.1.7.tgz",
++      "integrity": "sha512-ZacLzja+TmJeZ1h14xW2FB/WpeimUD3haBXQPyJqxvo8jQTmfeA8zv58mtjN2C7EHXZDYVcVYdYmAxjkWVvKCw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/pretty-format": "4.1.7",
++        "@vitest/utils": "4.1.7",
++        "magic-string": "^0.30.21",
++        "pathe": "^2.0.3"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/spy": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-4.1.7.tgz",
++      "integrity": "sha512-kbkI5LMWakyuTIvs6fUJ5qdIVb1XVKsYJAT4OJ938cHMROYMSfmoQdZy0aaAnjbbc8F61vkoTqz/Az+/HiIu5Q==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
++    "node_modules/@vitest/utils": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-4.1.7.tgz",
++      "integrity": "sha512-T532WBu791cBxJlCl6SO+J14l81DQx6uQHm1bQbmCDY7nqlEIgkza/UFnSBNaUtSf41unldDFjdOBYEQC4b5Hw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@vitest/pretty-format": "4.1.7",
++        "convert-source-map": "^2.0.0",
++        "tinyrainbow": "^3.1.0"
++      },
++      "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
++    "node_modules/acorn": {
++      "version": "8.17.0",
++      "resolved": "https://registry.npmjs.org/acorn/-/acorn-8.17.0.tgz",
++      "integrity": "sha512-xRQbDb9BnwDafYNn6Vwl839DYVjqXYb1XVGtWAZ1kcDc6iwAL4hg3B1dZlRiuENFeO2H53gFG3in621AdERVAg==",
++      "dev": true,
++      "license": "MIT",
++      "bin": {
++        "acorn": "bin/acorn"
++      },
++      "engines": {
++        "node": ">=0.4.0"
++      }
++    },
++    "node_modules/acorn-jsx": {
++      "version": "5.3.2",
++      "resolved": "https://registry.npmjs.org/acorn-jsx/-/acorn-jsx-5.3.2.tgz",
++      "integrity": "sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==",
++      "dev": true,
++      "license": "MIT",
++      "peerDependencies": {
++        "acorn": "^6.0.0 || ^7.0.0 || ^8.0.0"
++      }
++    },
++    "node_modules/ajv": {
++      "version": "6.15.0",
++      "resolved": "https://registry.npmjs.org/ajv/-/ajv-6.15.0.tgz",
++      "integrity": "sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "fast-deep-equal": "^3.1.1",
++        "fast-json-stable-stringify": "^2.0.0",
++        "json-schema-traverse": "^0.4.1",
++        "uri-js": "^4.2.2"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/epoberezkin"
++      }
++    },
+     "node_modules/ansi-regex": {
+       "version": "5.0.1",
+       "resolved": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz",
+@@ -2402,6 +2896,16 @@
+         "postcss": "^8.1.0"
+       }
+     },
++    "node_modules/balanced-match": {
++      "version": "4.0.4",
++      "resolved": "https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz",
++      "integrity": "sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "18 || 20 || >=22"
++      }
++    },
+     "node_modules/baseline-browser-mapping": {
+       "version": "2.10.25",
+       "resolved": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.10.25.tgz",
+@@ -2438,6 +2942,19 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
++    "node_modules/brace-expansion": {
++      "version": "5.0.7",
++      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.7.tgz",
++      "integrity": "sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "balanced-match": "^4.0.2"
++      },
++      "engines": {
++        "node": "18 || 20 || >=22"
++      }
++    },
+     "node_modules/braces": {
+       "version": "3.0.3",
+       "resolved": "https://registry.npmjs.org/braces/-/braces-3.0.3.tgz",
+@@ -2634,6 +3151,21 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/cross-spawn": {
++      "version": "7.0.6",
++      "resolved": "https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz",
++      "integrity": "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "path-key": "^3.1.0",
++        "shebang-command": "^2.0.0",
++        "which": "^2.0.1"
++      },
++      "engines": {
++        "node": ">= 8"
++      }
++    },
+     "node_modules/css-tree": {
+       "version": "3.2.1",
+       "resolved": "https://registry.npmjs.org/css-tree/-/css-tree-3.2.1.tgz",
+@@ -2714,6 +3246,13 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/deep-is": {
++      "version": "0.1.4",
++      "resolved": "https://registry.npmjs.org/deep-is/-/deep-is-0.1.4.tgz",
++      "integrity": "sha512-oIPzksmTg4/MriiaYGO+okXDT7ztn/w3Eptv/+gSIdMdKsJo0u4CfYNFJPy+4SKMuCqGw2wxnA+URMg3t8a/bQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/dequal": {
+       "version": "2.0.3",
+       "resolved": "https://registry.npmjs.org/dequal/-/dequal-2.0.3.tgz",
+@@ -2852,50 +3391,255 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/estree-walker": {
+-      "version": "3.0.3",
+-      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
+-      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@types/estree": "^1.0.0"
++    "node_modules/eslint": {
++      "version": "10.6.0",
++      "resolved": "https://registry.npmjs.org/eslint/-/eslint-10.6.0.tgz",
++      "integrity": "sha512-6lVbcqSodALYo+4ELD0heG6lFiFxnLMuLkiMi2qV8LMp54N8tE8FT1GMH+ev4Ti00nFjNze2+Su6DsV5OQW3Dg==",
++      "dev": true,
++      "license": "MIT",
++      "workspaces": [
++        "packages/*"
++      ],
++      "dependencies": {
++        "@eslint-community/eslint-utils": "^4.8.0",
++        "@eslint-community/regexpp": "^4.12.2",
++        "@eslint/config-array": "^0.23.5",
++        "@eslint/config-helpers": "^0.6.0",
++        "@eslint/core": "^1.2.1",
++        "@eslint/plugin-kit": "^0.7.2",
++        "@humanfs/node": "^0.16.6",
++        "@humanwhocodes/module-importer": "^1.0.1",
++        "@humanwhocodes/retry": "^0.4.2",
++        "@types/estree": "^1.0.6",
++        "ajv": "^6.14.0",
++        "cross-spawn": "^7.0.6",
++        "debug": "^4.3.2",
++        "escape-string-regexp": "^4.0.0",
++        "eslint-scope": "^9.1.2",
++        "eslint-visitor-keys": "^5.0.1",
++        "espree": "^11.2.0",
++        "esquery": "^1.7.0",
++        "esutils": "^2.0.2",
++        "fast-deep-equal": "^3.1.3",
++        "file-entry-cache": "^8.0.0",
++        "find-up": "^5.0.0",
++        "glob-parent": "^6.0.2",
++        "ignore": "^5.2.0",
++        "imurmurhash": "^0.1.4",
++        "is-glob": "^4.0.0",
++        "json-stable-stringify-without-jsonify": "^1.0.1",
++        "minimatch": "^10.2.4",
++        "natural-compare": "^1.4.0",
++        "optionator": "^0.9.3"
++      },
++      "bin": {
++        "eslint": "bin/eslint.js"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      },
++      "funding": {
++        "url": "https://eslint.org/donate"
++      },
++      "peerDependencies": {
++        "jiti": "*"
++      },
++      "peerDependenciesMeta": {
++        "jiti": {
++          "optional": true
++        }
+       }
+     },
+-    "node_modules/expect": {
+-      "version": "30.4.1",
+-      "resolved": "https://registry.npmjs.org/expect/-/expect-30.4.1.tgz",
+-      "integrity": "sha512-PMARsyh/JtqC20HoGqlFcIlQAyqUtW4PlI1rup1uhYJtKuwAjbvWi3GQMAn+STdHum/dk8xrKfUM1+5SAwpolA==",
++    "node_modules/eslint-plugin-react-hooks": {
++      "version": "7.1.1",
++      "resolved": "https://registry.npmjs.org/eslint-plugin-react-hooks/-/eslint-plugin-react-hooks-7.1.1.tgz",
++      "integrity": "sha512-f2I7Gw6JbvCexzIInuSbZpfdQ44D7iqdWX01FKLvrPgqxoE7oMj8clOfto8U6vYiz4yd5oKu39rRSVOe1zRu0g==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@jest/expect-utils": "30.4.1",
+-        "@jest/get-type": "30.1.0",
+-        "jest-matcher-utils": "30.4.1",
+-        "jest-message-util": "30.4.1",
+-        "jest-mock": "30.4.1",
+-        "jest-util": "30.4.1"
++        "@babel/core": "^7.24.4",
++        "@babel/parser": "^7.24.4",
++        "hermes-parser": "^0.25.1",
++        "zod": "^3.25.0 || ^4.0.0",
++        "zod-validation-error": "^3.5.0 || ^4.0.0"
+       },
+       "engines": {
+-        "node": "^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0"
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "eslint": "^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0 || ^10.0.0"
+       }
+     },
+-    "node_modules/expect-type": {
+-      "version": "1.3.0",
+-      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.3.0.tgz",
+-      "integrity": "sha512-knvyeauYhqjOYvQ66MznSMs83wmHrCycNEN6Ao+2AeYEfxUIkuiVxdEa1qlGEPK+We3n0THiDciYSsCcgW/DoA==",
++    "node_modules/eslint-plugin-react-refresh": {
++      "version": "0.5.3",
++      "resolved": "https://registry.npmjs.org/eslint-plugin-react-refresh/-/eslint-plugin-react-refresh-0.5.3.tgz",
++      "integrity": "sha512-5EMmLCV98Pi4o/f/3DP/v/tNqLHMIc9I8LKClNDWhZ9JTho89/kQcitCXQBMG7sAfVRK0Ie3T2EDOzp1YXYiVA==",
+       "dev": true,
+-      "license": "Apache-2.0",
+-      "engines": {
+-        "node": ">=12.0.0"
++      "license": "MIT",
++      "peerDependencies": {
++        "eslint": "^9 || ^10"
+       }
+     },
+-    "node_modules/fancy-canvas": {
++    "node_modules/eslint-scope": {
++      "version": "9.1.2",
++      "resolved": "https://registry.npmjs.org/eslint-scope/-/eslint-scope-9.1.2.tgz",
++      "integrity": "sha512-xS90H51cKw0jltxmvmHy2Iai1LIqrfbw57b79w/J7MfvDfkIkFZ+kj6zC3BjtUwh150HsSSdxXZcsuv72miDFQ==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "dependencies": {
++        "@types/esrecurse": "^4.3.1",
++        "@types/estree": "^1.0.8",
++        "esrecurse": "^4.3.0",
++        "estraverse": "^5.2.0"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      },
++      "funding": {
++        "url": "https://opencollective.com/eslint"
++      }
++    },
++    "node_modules/eslint-visitor-keys": {
++      "version": "5.0.1",
++      "resolved": "https://registry.npmjs.org/eslint-visitor-keys/-/eslint-visitor-keys-5.0.1.tgz",
++      "integrity": "sha512-tD40eHxA35h0PEIZNeIjkHoDR4YjjJp34biM0mDvplBe//mB+IHCqHDGV7pxF+7MklTvighcCPPZC7ynWyjdTA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      },
++      "funding": {
++        "url": "https://opencollective.com/eslint"
++      }
++    },
++    "node_modules/eslint/node_modules/escape-string-regexp": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/escape-string-regexp/-/escape-string-regexp-4.0.0.tgz",
++      "integrity": "sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
++    "node_modules/espree": {
++      "version": "11.2.0",
++      "resolved": "https://registry.npmjs.org/espree/-/espree-11.2.0.tgz",
++      "integrity": "sha512-7p3DrVEIopW1B1avAGLuCSh1jubc01H2JHc8B4qqGblmg5gI9yumBgACjWo4JlIc04ufug4xJ3SQI8HkS/Rgzw==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "dependencies": {
++        "acorn": "^8.16.0",
++        "acorn-jsx": "^5.3.2",
++        "eslint-visitor-keys": "^5.0.1"
++      },
++      "engines": {
++        "node": "^20.19.0 || ^22.13.0 || >=24"
++      },
++      "funding": {
++        "url": "https://opencollective.com/eslint"
++      }
++    },
++    "node_modules/esquery": {
++      "version": "1.7.0",
++      "resolved": "https://registry.npmjs.org/esquery/-/esquery-1.7.0.tgz",
++      "integrity": "sha512-Ap6G0WQwcU/LHsvLwON1fAQX9Zp0A2Y6Y/cJBl9r/JbW90Zyg4/zbG6zzKa2OTALELarYHmKu0GhpM5EO+7T0g==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "estraverse": "^5.1.0"
++      },
++      "engines": {
++        "node": ">=0.10"
++      }
++    },
++    "node_modules/esrecurse": {
++      "version": "4.3.0",
++      "resolved": "https://registry.npmjs.org/esrecurse/-/esrecurse-4.3.0.tgz",
++      "integrity": "sha512-KmfKL3b6G+RXvP8N1vr3Tq1kL/oCFgn2NYXEtqP8/L3pKapUA4G8cFVaoF3SU323CD4XypR/ffioHmkti6/Tag==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "dependencies": {
++        "estraverse": "^5.2.0"
++      },
++      "engines": {
++        "node": ">=4.0"
++      }
++    },
++    "node_modules/estraverse": {
++      "version": "5.3.0",
++      "resolved": "https://registry.npmjs.org/estraverse/-/estraverse-5.3.0.tgz",
++      "integrity": "sha512-MMdARuVEQziNTeJD8DgMqmhwR11BRQ/cBP+pLtYdSTnf3MIO8fFeiINEbX36ZdNlfU/7A9f3gUw49B3oQsvwBA==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=4.0"
++      }
++    },
++    "node_modules/estree-walker": {
++      "version": "3.0.3",
++      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
++      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/estree": "^1.0.0"
++      }
++    },
++    "node_modules/esutils": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/esutils/-/esutils-2.0.3.tgz",
++      "integrity": "sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/expect": {
++      "version": "30.4.1",
++      "resolved": "https://registry.npmjs.org/expect/-/expect-30.4.1.tgz",
++      "integrity": "sha512-PMARsyh/JtqC20HoGqlFcIlQAyqUtW4PlI1rup1uhYJtKuwAjbvWi3GQMAn+STdHum/dk8xrKfUM1+5SAwpolA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jest/expect-utils": "30.4.1",
++        "@jest/get-type": "30.1.0",
++        "jest-matcher-utils": "30.4.1",
++        "jest-message-util": "30.4.1",
++        "jest-mock": "30.4.1",
++        "jest-util": "30.4.1"
++      },
++      "engines": {
++        "node": "^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0"
++      }
++    },
++    "node_modules/expect-type": {
++      "version": "1.3.0",
++      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.3.0.tgz",
++      "integrity": "sha512-knvyeauYhqjOYvQ66MznSMs83wmHrCycNEN6Ao+2AeYEfxUIkuiVxdEa1qlGEPK+We3n0THiDciYSsCcgW/DoA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=12.0.0"
++      }
++    },
++    "node_modules/fancy-canvas": {
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/fancy-canvas/-/fancy-canvas-2.1.0.tgz",
+       "integrity": "sha512-nifxXJ95JNLFR2NgRV4/MxVP45G9909wJTEKz5fg/TZS20JJZA6hfgRVh/bC9bwl2zBtBNcYPjiBE4njQHVBwQ==",
+       "license": "MIT"
+     },
++    "node_modules/fast-deep-equal": {
++      "version": "3.1.3",
++      "resolved": "https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz",
++      "integrity": "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/fast-glob": {
+       "version": "3.3.3",
+       "resolved": "https://registry.npmjs.org/fast-glob/-/fast-glob-3.3.3.tgz",
+@@ -2926,6 +3670,20 @@
+         "node": ">= 6"
+       }
+     },
++    "node_modules/fast-json-stable-stringify": {
++      "version": "2.1.0",
++      "resolved": "https://registry.npmjs.org/fast-json-stable-stringify/-/fast-json-stable-stringify-2.1.0.tgz",
++      "integrity": "sha512-lhd/wF+Lk98HZoTCtlVraHtfh5XYijIjalXck7saUtuanSDyLMxnHhSXEDJqHxD7msR8D0uCmqlkwjCV8xvwHw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/fast-levenshtein": {
++      "version": "2.0.6",
++      "resolved": "https://registry.npmjs.org/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz",
++      "integrity": "sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/fastq": {
+       "version": "1.20.1",
+       "resolved": "https://registry.npmjs.org/fastq/-/fastq-1.20.1.tgz",
+@@ -2936,6 +3694,19 @@
+         "reusify": "^1.0.4"
+       }
+     },
++    "node_modules/file-entry-cache": {
++      "version": "8.0.0",
++      "resolved": "https://registry.npmjs.org/file-entry-cache/-/file-entry-cache-8.0.0.tgz",
++      "integrity": "sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "flat-cache": "^4.0.0"
++      },
++      "engines": {
++        "node": ">=16.0.0"
++      }
++    },
+     "node_modules/fill-range": {
+       "version": "7.1.1",
+       "resolved": "https://registry.npmjs.org/fill-range/-/fill-range-7.1.1.tgz",
+@@ -2949,6 +3720,44 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/find-up": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/find-up/-/find-up-5.0.0.tgz",
++      "integrity": "sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "locate-path": "^6.0.0",
++        "path-exists": "^4.0.0"
++      },
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
++    "node_modules/flat-cache": {
++      "version": "4.0.1",
++      "resolved": "https://registry.npmjs.org/flat-cache/-/flat-cache-4.0.1.tgz",
++      "integrity": "sha512-f7ccFPK3SXFHpx15UIGyRJ/FJQctuKZ0zVuN3frBo4HnK3cay9VEW0R6yPYFHC0AgqhukPzKjq22t5DmAyqGyw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "flatted": "^3.2.9",
++        "keyv": "^4.5.4"
++      },
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/flatted": {
++      "version": "3.4.2",
++      "resolved": "https://registry.npmjs.org/flatted/-/flatted-3.4.2.tgz",
++      "integrity": "sha512-PjDse7RzhcPkIJwy5t7KPWQSZ9cAbzQXcafsetQoD7sOJRQlGikNbx7yZp2OotDnJyrDcbyRq3Ttb18iYOqkxA==",
++      "dev": true,
++      "license": "ISC"
++    },
+     "node_modules/fraction.js": {
+       "version": "5.3.4",
+       "resolved": "https://registry.npmjs.org/fraction.js/-/fraction.js-5.3.4.tgz",
+@@ -3011,6 +3820,19 @@
+         "node": ">=10.13.0"
+       }
+     },
++    "node_modules/globals": {
++      "version": "17.7.0",
++      "resolved": "https://registry.npmjs.org/globals/-/globals-17.7.0.tgz",
++      "integrity": "sha512-Czmyns5dUsq4seFBR/Kdydhmo8y9kC79hiSkPn0YcGtNnYWnrgt0vjrSjx9tspoDGWm2CMarffRuLjM4xUz8xg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
+     "node_modules/graceful-fs": {
+       "version": "4.2.11",
+       "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
+@@ -3041,6 +3863,23 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/hermes-estree": {
++      "version": "0.25.1",
++      "resolved": "https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.25.1.tgz",
++      "integrity": "sha512-0wUoCcLp+5Ev5pDW2OriHC2MJCbwLwuRx+gAqMTOkGKJJiBCLjtrvy4PWUGn6MIVefecRpzoOZ/UV6iGdOr+Cw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/hermes-parser": {
++      "version": "0.25.1",
++      "resolved": "https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.25.1.tgz",
++      "integrity": "sha512-6pEjquH3rqaI6cYAXYPcz9MS4rY6R4ngRgrgfDshRptUZIc3lw0MCIJIGDj9++mfySOuPTHB4nrSW99BCvOPIA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "hermes-estree": "0.25.1"
++      }
++    },
+     "node_modules/html-encoding-sniffer": {
+       "version": "6.0.0",
+       "resolved": "https://registry.npmjs.org/html-encoding-sniffer/-/html-encoding-sniffer-6.0.0.tgz",
+@@ -3054,6 +3893,26 @@
+         "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+       }
+     },
++    "node_modules/ignore": {
++      "version": "5.3.2",
++      "resolved": "https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz",
++      "integrity": "sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 4"
++      }
++    },
++    "node_modules/imurmurhash": {
++      "version": "0.1.4",
++      "resolved": "https://registry.npmjs.org/imurmurhash/-/imurmurhash-0.1.4.tgz",
++      "integrity": "sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.8.19"
++      }
++    },
+     "node_modules/indent-string": {
+       "version": "4.0.0",
+       "resolved": "https://registry.npmjs.org/indent-string/-/indent-string-4.0.0.tgz",
+@@ -3133,6 +3992,13 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/isexe": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
++      "integrity": "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==",
++      "dev": true,
++      "license": "ISC"
++    },
+     "node_modules/jest-diff": {
+       "version": "30.4.1",
+       "resolved": "https://registry.npmjs.org/jest-diff/-/jest-diff-30.4.1.tgz",
+@@ -3423,6 +4289,27 @@
+         "node": ">=6"
+       }
+     },
++    "node_modules/json-buffer": {
++      "version": "3.0.1",
++      "resolved": "https://registry.npmjs.org/json-buffer/-/json-buffer-3.0.1.tgz",
++      "integrity": "sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/json-schema-traverse": {
++      "version": "0.4.1",
++      "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-0.4.1.tgz",
++      "integrity": "sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/json-stable-stringify-without-jsonify": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/json-stable-stringify-without-jsonify/-/json-stable-stringify-without-jsonify-1.0.1.tgz",
++      "integrity": "sha512-Bdboy+l7tA3OGW6FjyFHWkP5LuByj1Tk33Ljyq0axyzdk9//JSi2u3fP1QSmd1KNwq6VOKYGlAu87CisVir6Pw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/json5": {
+       "version": "2.2.3",
+       "resolved": "https://registry.npmjs.org/json5/-/json5-2.2.3.tgz",
+@@ -3436,6 +4323,30 @@
+         "node": ">=6"
+       }
+     },
++    "node_modules/keyv": {
++      "version": "4.5.4",
++      "resolved": "https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz",
++      "integrity": "sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "json-buffer": "3.0.1"
++      }
++    },
++    "node_modules/levn": {
++      "version": "0.4.1",
++      "resolved": "https://registry.npmjs.org/levn/-/levn-0.4.1.tgz",
++      "integrity": "sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "prelude-ls": "^1.2.1",
++        "type-check": "~0.4.0"
++      },
++      "engines": {
++        "node": ">= 0.8.0"
++      }
++    },
+     "node_modules/lightningcss": {
+       "version": "1.32.0",
+       "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.32.0.tgz",
+@@ -3579,9 +4490,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -3603,9 +4511,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -3627,9 +4532,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -3651,9 +4553,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -3738,6 +4637,22 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/locate-path": {
++      "version": "6.0.0",
++      "resolved": "https://registry.npmjs.org/locate-path/-/locate-path-6.0.0.tgz",
++      "integrity": "sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "p-locate": "^5.0.0"
++      },
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
+     "node_modules/loose-envify": {
+       "version": "1.4.0",
+       "resolved": "https://registry.npmjs.org/loose-envify/-/loose-envify-1.4.0.tgz",
+@@ -3831,6 +4746,22 @@
+         "node": ">=4"
+       }
+     },
++    "node_modules/minimatch": {
++      "version": "10.2.5",
++      "resolved": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.5.tgz",
++      "integrity": "sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg==",
++      "dev": true,
++      "license": "BlueOak-1.0.0",
++      "dependencies": {
++        "brace-expansion": "^5.0.5"
++      },
++      "engines": {
++        "node": "18 || 20 || >=22"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/isaacs"
++      }
++    },
+     "node_modules/ms": {
+       "version": "2.1.3",
+       "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+@@ -3869,6 +4800,13 @@
+         "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+       }
+     },
++    "node_modules/natural-compare": {
++      "version": "1.4.0",
++      "resolved": "https://registry.npmjs.org/natural-compare/-/natural-compare-1.4.0.tgz",
++      "integrity": "sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/node-releases": {
+       "version": "2.0.38",
+       "resolved": "https://registry.npmjs.org/node-releases/-/node-releases-2.0.38.tgz",
+@@ -3917,30 +4855,100 @@
+       ],
+       "license": "MIT"
+     },
+-    "node_modules/parse5": {
+-      "version": "8.0.1",
+-      "resolved": "https://registry.npmjs.org/parse5/-/parse5-8.0.1.tgz",
+-      "integrity": "sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==",
++    "node_modules/optionator": {
++      "version": "0.9.4",
++      "resolved": "https://registry.npmjs.org/optionator/-/optionator-0.9.4.tgz",
++      "integrity": "sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "entities": "^8.0.0"
++        "deep-is": "^0.1.3",
++        "fast-levenshtein": "^2.0.6",
++        "levn": "^0.4.1",
++        "prelude-ls": "^1.2.1",
++        "type-check": "^0.4.0",
++        "word-wrap": "^1.2.5"
+       },
+-      "funding": {
+-        "url": "https://github.com/inikulin/parse5?sponsor=1"
++      "engines": {
++        "node": ">= 0.8.0"
+       }
+     },
+-    "node_modules/path-parse": {
+-      "version": "1.0.7",
+-      "resolved": "https://registry.npmjs.org/path-parse/-/path-parse-1.0.7.tgz",
+-      "integrity": "sha512-LDJzPVEEEPR+y48z93A0Ed0yXb8pAByGWo/k5YYdYgpY2/2EsOsksJrq7lOHxryrVOn1ejG6oAp8ahvOIQD8sw==",
++    "node_modules/p-limit": {
++      "version": "3.1.0",
++      "resolved": "https://registry.npmjs.org/p-limit/-/p-limit-3.1.0.tgz",
++      "integrity": "sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==",
+       "dev": true,
+-      "license": "MIT"
++      "license": "MIT",
++      "dependencies": {
++        "yocto-queue": "^0.1.0"
++      },
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
+     },
+-    "node_modules/pathe": {
+-      "version": "2.0.3",
+-      "resolved": "https://registry.npmjs.org/pathe/-/pathe-2.0.3.tgz",
+-      "integrity": "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==",
++    "node_modules/p-locate": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/p-locate/-/p-locate-5.0.0.tgz",
++      "integrity": "sha512-LaNjtRWUBY++zB5nE/NwcaoMylSPk+S+ZHNB1TzdbMJMny6dynpAGt7X/tl/QYq3TIeE6nxHppbo2LGymrG5Pw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "p-limit": "^3.0.2"
++      },
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
++    "node_modules/parse5": {
++      "version": "8.0.1",
++      "resolved": "https://registry.npmjs.org/parse5/-/parse5-8.0.1.tgz",
++      "integrity": "sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "entities": "^8.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/inikulin/parse5?sponsor=1"
++      }
++    },
++    "node_modules/path-exists": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/path-exists/-/path-exists-4.0.0.tgz",
++      "integrity": "sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/path-key": {
++      "version": "3.1.1",
++      "resolved": "https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz",
++      "integrity": "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/path-parse": {
++      "version": "1.0.7",
++      "resolved": "https://registry.npmjs.org/path-parse/-/path-parse-1.0.7.tgz",
++      "integrity": "sha512-LDJzPVEEEPR+y48z93A0Ed0yXb8pAByGWo/k5YYdYgpY2/2EsOsksJrq7lOHxryrVOn1ejG6oAp8ahvOIQD8sw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/pathe": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/pathe/-/pathe-2.0.3.tgz",
++      "integrity": "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==",
+       "dev": true,
+       "license": "MIT"
+     },
+@@ -4147,6 +5155,16 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/prelude-ls": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/prelude-ls/-/prelude-ls-1.2.1.tgz",
++      "integrity": "sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.8.0"
++      }
++    },
+     "node_modules/pretty-format": {
+       "version": "27.5.1",
+       "resolved": "https://registry.npmjs.org/pretty-format/-/pretty-format-27.5.1.tgz",
+@@ -4521,6 +5539,29 @@
+         "semver": "bin/semver.js"
+       }
+     },
++    "node_modules/shebang-command": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz",
++      "integrity": "sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "shebang-regex": "^3.0.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/shebang-regex": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz",
++      "integrity": "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/siginfo": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/siginfo/-/siginfo-2.0.0.tgz",
+@@ -4839,6 +5880,19 @@
+         "node": ">=20"
+       }
+     },
++    "node_modules/ts-api-utils": {
++      "version": "2.5.0",
++      "resolved": "https://registry.npmjs.org/ts-api-utils/-/ts-api-utils-2.5.0.tgz",
++      "integrity": "sha512-OJ/ibxhPlqrMM0UiNHJ/0CKQkoKF243/AEmplt3qpRgkW8VG7IfOS41h7V8TjITqdByHzrjcS/2si+y4lIh8NA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18.12"
++      },
++      "peerDependencies": {
++        "typescript": ">=4.8.4"
++      }
++    },
+     "node_modules/ts-interface-checker": {
+       "version": "0.1.13",
+       "resolved": "https://registry.npmjs.org/ts-interface-checker/-/ts-interface-checker-0.1.13.tgz",
+@@ -4854,6 +5908,19 @@
+       "license": "0BSD",
+       "optional": true
+     },
++    "node_modules/type-check": {
++      "version": "0.4.0",
++      "resolved": "https://registry.npmjs.org/type-check/-/type-check-0.4.0.tgz",
++      "integrity": "sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "prelude-ls": "^1.2.1"
++      },
++      "engines": {
++        "node": ">= 0.8.0"
++      }
++    },
+     "node_modules/typescript": {
+       "version": "5.6.3",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.6.3.tgz",
+@@ -4868,6 +5935,30 @@
+         "node": ">=14.17"
+       }
+     },
++    "node_modules/typescript-eslint": {
++      "version": "8.63.0",
++      "resolved": "https://registry.npmjs.org/typescript-eslint/-/typescript-eslint-8.63.0.tgz",
++      "integrity": "sha512-xgwXyzG4sK9ALkBxbyGkTMMOS+imnW65iPhxCQMK83KhxyoDNW7l+IDqEf9vMdoUidHpOoS967RCq4eMiTexwQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@typescript-eslint/eslint-plugin": "8.63.0",
++        "@typescript-eslint/parser": "8.63.0",
++        "@typescript-eslint/typescript-estree": "8.63.0",
++        "@typescript-eslint/utils": "8.63.0"
++      },
++      "engines": {
++        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/typescript-eslint"
++      },
++      "peerDependencies": {
++        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
++        "typescript": ">=4.8.4 <6.1.0"
++      }
++    },
+     "node_modules/undici": {
+       "version": "7.25.0",
+       "resolved": "https://registry.npmjs.org/undici/-/undici-7.25.0.tgz",
+@@ -4916,6 +6007,16 @@
+         "browserslist": ">= 4.21.0"
+       }
+     },
++    "node_modules/uri-js": {
++      "version": "4.4.1",
++      "resolved": "https://registry.npmjs.org/uri-js/-/uri-js-4.4.1.tgz",
++      "integrity": "sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "dependencies": {
++        "punycode": "^2.1.0"
++      }
++    },
+     "node_modules/util-deprecate": {
+       "version": "1.0.2",
+       "resolved": "https://registry.npmjs.org/util-deprecate/-/util-deprecate-1.0.2.tgz",
+@@ -5073,6 +6174,420 @@
+         }
+       }
+     },
++    "node_modules/vitest/node_modules/@esbuild/aix-ppc64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.1.tgz",
++      "integrity": "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "aix"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/android-arm": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.1.tgz",
++      "integrity": "sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/android-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.1.tgz",
++      "integrity": "sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/android-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.28.1.tgz",
++      "integrity": "sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/darwin-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.1.tgz",
++      "integrity": "sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/darwin-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.1.tgz",
++      "integrity": "sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/freebsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/freebsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.28.1.tgz",
++      "integrity": "sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-arm": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.28.1.tgz",
++      "integrity": "sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.1.tgz",
++      "integrity": "sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-ia32": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.28.1.tgz",
++      "integrity": "sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-loong64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.28.1.tgz",
++      "integrity": "sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-mips64el": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.28.1.tgz",
++      "integrity": "sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==",
++      "cpu": [
++        "mips64el"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-ppc64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.28.1.tgz",
++      "integrity": "sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-riscv64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.28.1.tgz",
++      "integrity": "sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-s390x": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.28.1.tgz",
++      "integrity": "sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/linux-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz",
++      "integrity": "sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/netbsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.28.1.tgz",
++      "integrity": "sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/openbsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.28.1.tgz",
++      "integrity": "sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/sunos-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.28.1.tgz",
++      "integrity": "sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "sunos"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/win32-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.28.1.tgz",
++      "integrity": "sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/win32-ia32": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.28.1.tgz",
++      "integrity": "sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/vitest/node_modules/@esbuild/win32-x64": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz",
++      "integrity": "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "peer": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/vitest/node_modules/@vitest/mocker": {
+       "version": "4.1.7",
+       "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.7.tgz",
+@@ -5100,6 +6615,50 @@
+         }
+       }
+     },
++    "node_modules/vitest/node_modules/esbuild": {
++      "version": "0.28.1",
++      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz",
++      "integrity": "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==",
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "peer": true,
++      "bin": {
++        "esbuild": "bin/esbuild"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "optionalDependencies": {
++        "@esbuild/aix-ppc64": "0.28.1",
++        "@esbuild/android-arm": "0.28.1",
++        "@esbuild/android-arm64": "0.28.1",
++        "@esbuild/android-x64": "0.28.1",
++        "@esbuild/darwin-arm64": "0.28.1",
++        "@esbuild/darwin-x64": "0.28.1",
++        "@esbuild/freebsd-arm64": "0.28.1",
++        "@esbuild/freebsd-x64": "0.28.1",
++        "@esbuild/linux-arm": "0.28.1",
++        "@esbuild/linux-arm64": "0.28.1",
++        "@esbuild/linux-ia32": "0.28.1",
++        "@esbuild/linux-loong64": "0.28.1",
++        "@esbuild/linux-mips64el": "0.28.1",
++        "@esbuild/linux-ppc64": "0.28.1",
++        "@esbuild/linux-riscv64": "0.28.1",
++        "@esbuild/linux-s390x": "0.28.1",
++        "@esbuild/linux-x64": "0.28.1",
++        "@esbuild/netbsd-arm64": "0.28.1",
++        "@esbuild/netbsd-x64": "0.28.1",
++        "@esbuild/openbsd-arm64": "0.28.1",
++        "@esbuild/openbsd-x64": "0.28.1",
++        "@esbuild/openharmony-arm64": "0.28.1",
++        "@esbuild/sunos-x64": "0.28.1",
++        "@esbuild/win32-arm64": "0.28.1",
++        "@esbuild/win32-ia32": "0.28.1",
++        "@esbuild/win32-x64": "0.28.1"
++      }
++    },
+     "node_modules/vitest/node_modules/picomatch": {
+       "version": "4.0.4",
+       "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.4.tgz",
+@@ -5239,6 +6798,22 @@
+         "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+       }
+     },
++    "node_modules/which": {
++      "version": "2.0.2",
++      "resolved": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
++      "integrity": "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==",
++      "dev": true,
++      "license": "ISC",
++      "dependencies": {
++        "isexe": "^2.0.0"
++      },
++      "bin": {
++        "node-which": "bin/node-which"
++      },
++      "engines": {
++        "node": ">= 8"
++      }
++    },
+     "node_modules/why-is-node-running": {
+       "version": "2.3.0",
+       "resolved": "https://registry.npmjs.org/why-is-node-running/-/why-is-node-running-2.3.0.tgz",
+@@ -5256,6 +6831,16 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/word-wrap": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/word-wrap/-/word-wrap-1.2.5.tgz",
++      "integrity": "sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
+     "node_modules/xml-name-validator": {
+       "version": "5.0.0",
+       "resolved": "https://registry.npmjs.org/xml-name-validator/-/xml-name-validator-5.0.0.tgz",
+@@ -5279,6 +6864,42 @@
+       "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==",
+       "dev": true,
+       "license": "ISC"
++    },
++    "node_modules/yocto-queue": {
++      "version": "0.1.0",
++      "resolved": "https://registry.npmjs.org/yocto-queue/-/yocto-queue-0.1.0.tgz",
++      "integrity": "sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
++    "node_modules/zod": {
++      "version": "4.4.3",
++      "resolved": "https://registry.npmjs.org/zod/-/zod-4.4.3.tgz",
++      "integrity": "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "url": "https://github.com/sponsors/colinhacks"
++      }
++    },
++    "node_modules/zod-validation-error": {
++      "version": "4.0.2",
++      "resolved": "https://registry.npmjs.org/zod-validation-error/-/zod-validation-error-4.0.2.tgz",
++      "integrity": "sha512-Q6/nZLe6jxuU80qb/4uJ4t5v2VEZ44lzQjPDhYJNztRQ4wyWc6VF3D3Kb/fAuPetZQnhS3hnajCf9CsWesghLQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18.0.0"
++      },
++      "peerDependencies": {
++        "zod": "^3.25.0 || ^4.0.0"
++      }
+     }
+   }
+ }
+diff --git a/frontend/package.json b/frontend/package.json
+index 117c164..48fd4dd 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -7,6 +7,8 @@
+     "dev": "vite",
+     "build": "vite build",
+     "preview": "vite preview",
++    "typecheck": "tsc --noEmit",
++    "lint": "eslint src",
+     "test": "vitest run",
+     "test:watch": "vitest"
+   },
+@@ -18,6 +20,7 @@
+     "react-router-dom": "^6.30.3"
+   },
+   "devDependencies": {
++    "@eslint/js": "^10.0.1",
+     "@testing-library/jest-dom": "^6.9.1",
+     "@testing-library/react": "^16.3.2",
+     "@types/react": "^18.3.12",
+@@ -25,10 +28,15 @@
+     "@types/testing-library__jest-dom": "^5.14.9",
+     "@vitejs/plugin-react": "^4.3.4",
+     "autoprefixer": "^10.4.20",
++    "eslint": "^10.6.0",
++    "eslint-plugin-react-hooks": "^7.1.1",
++    "eslint-plugin-react-refresh": "^0.5.3",
++    "globals": "^17.7.0",
+     "jsdom": "^29.1.1",
+     "postcss": "^8.4.49",
+     "tailwindcss": "^3.4.15",
+     "typescript": "~5.6.3",
++    "typescript-eslint": "^8.63.0",
+     "vite": "^5.4.11",
+     "vitest": "^4.1.7"
+   }
+diff --git a/frontend/src/AlertsSettingsPanel.tsx b/frontend/src/AlertsSettingsPanel.tsx
+index 0be0bff..5ce7faf 100644
+--- a/frontend/src/AlertsSettingsPanel.tsx
++++ b/frontend/src/AlertsSettingsPanel.tsx
+@@ -1,5 +1,5 @@
+ import { useCallback, useEffect, useState } from "react";
+-import { Bell, Send, Shield } from "lucide-react";
++import { Bell, Send } from "lucide-react";
+ import { apiUrl } from "./config";
+ 
+ interface AlertConfig {
+@@ -16,7 +16,7 @@ interface AlertConfig {
+ 
+ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+   const [config, setConfig] = useState<AlertConfig | null>(null);
+-  const [saving, setSaving] = useState(false);
++  const [, setSaving] = useState(false);
+   const [testing, setTesting] = useState(false);
+   const [message, setMessage] = useState<string | null>(null);
+ 
+@@ -57,7 +57,7 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
+       } else {
+         setMessage(`❌ ${data.detail || "Ошибка"}`);
+       }
+-    } catch (e) {
++    } catch {
+       setMessage("❌ Ошибка сети");
+     }
+     setSaving(false);
+diff --git a/frontend/src/ArbitragePanel.tsx b/frontend/src/ArbitragePanel.tsx
+index 30897b8..f6d4fac 100644
+--- a/frontend/src/ArbitragePanel.tsx
++++ b/frontend/src/ArbitragePanel.tsx
+@@ -1,5 +1,5 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+-import { Activity, ArrowLeftRight, Pause, Play, RotateCcw, Shield } from "lucide-react";
++import { ArrowLeftRight, Pause, Play, Shield } from "lucide-react";
+ import { apiUrl } from "./config";
+ import { Skeleton, SkeletonCard, SkeletonTableRows } from "./components/ui/Skeleton";
+ 
+diff --git a/frontend/src/AssetWorkspaceModal.tsx b/frontend/src/AssetWorkspaceModal.tsx
+index 721f201..7549184 100644
+--- a/frontend/src/AssetWorkspaceModal.tsx
++++ b/frontend/src/AssetWorkspaceModal.tsx
+@@ -107,10 +107,14 @@ interface AssetWorkspaceModalProps {
+   isDark: boolean;
+ }
+ 
+-function clearPriceLines(lines: IPriceLine[]) {
++function clearPriceLines(
++  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null,
++  lines: IPriceLine[],
++) {
++  if (!series) return;
+   for (const pl of lines) {
+     try {
+-      pl.remove();
++      series.removePriceLine(pl);
+     } catch {
+       /* ignore */
+     }
+@@ -202,7 +206,7 @@ export function AssetWorkspaceModal({
+       series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
+       hits: { side: "bid" | "ask"; level: OrderbookLevel }[],
+     ) => {
+-      clearPriceLines(densityLinesRef.current);
++      clearPriceLines(series, densityLinesRef.current);
+       densityLinesRef.current = [];
+       if (!showDensityLines || hits.length === 0) return;
+       const bidC = "#10b981";
+@@ -342,7 +346,7 @@ export function AssetWorkspaceModal({
+     return () => {
+       cancelled = true;
+       ro.disconnect();
+-      clearPriceLines(densityLinesRef.current);
++      clearPriceLines(seriesRef.current, densityLinesRef.current);
+       densityLinesRef.current = [];
+       seriesRef.current = null;
+       chartRef.current = null;
+diff --git a/frontend/src/AsterDexPanel.tsx b/frontend/src/AsterDexPanel.tsx
+index c5bcae4..283ea2e 100644
+--- a/frontend/src/AsterDexPanel.tsx
++++ b/frontend/src/AsterDexPanel.tsx
+@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
+ import {
+   Activity,
+   ArrowLeftRight,
+-  ChartCandlestick,
+   ExternalLink,
+   RefreshCw,
+   TrendingDown,
+diff --git a/frontend/src/ExchangeFetch.test.ts b/frontend/src/ExchangeFetch.test.ts
+index 09b201d..7b86577 100644
+--- a/frontend/src/ExchangeFetch.test.ts
++++ b/frontend/src/ExchangeFetch.test.ts
+@@ -10,7 +10,7 @@
+  * URL construction pattern and the applyMarketFilters behavior.
+  */
+ 
+-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
++import { describe, it, expect } from "vitest";
+ import { applyMarketFilters } from "./filters";
+ import type { Exchange, Market, MarketRow } from "./types";
+ 
+@@ -145,7 +145,7 @@ describe("filter state preservation across exchange switches", () => {
+       minAskL1NotionalQuote: 0,
+     };
+ 
+-    const filtered = applyMarketFilters(sampleRows, filterConfig);
++    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
+ 
+     // Only ETHUSDT should match
+     expect(filtered.length).toBe(1);
+@@ -165,7 +165,7 @@ describe("filter state preservation across exchange switches", () => {
+       minAskL1NotionalQuote: 0,
+     };
+ 
+-    const filtered = applyMarketFilters(sampleRows, filterConfig);
++    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
+ 
+     // Should be sorted by spread_bps ascending: BTC(2.0) < ETH(3.33) < SOL(5.0)
+     expect(filtered.length).toBe(3);
+@@ -187,7 +187,7 @@ describe("filter state preservation across exchange switches", () => {
+       minAskL1NotionalQuote: 0,
+     };
+ 
+-    const filtered = applyMarketFilters(sampleRows, filterConfig);
++    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
+ 
+     // Should be sorted by spread_bps descending: SOL(5.0) > ETH(3.33) > BTC(2.0)
+     expect(filtered.length).toBe(3);
+@@ -210,7 +210,7 @@ describe("filter state preservation across exchange switches", () => {
+       minAskL1NotionalQuote: 0,
+     };
+ 
+-    const filtered = applyMarketFilters(sampleRows, filterConfig);
++    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
+ 
+     // All match "USDT", sorted by volume desc: BTC(50M) > ETH(15M) > SOL(5M)
+     expect(filtered.length).toBe(3);
+@@ -232,7 +232,7 @@ describe("filter state preservation across exchange switches", () => {
+       minAskL1NotionalQuote: 0,
+     };
+ 
+-    const filtered = applyMarketFilters(sampleRows, filterConfig);
++    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
+ 
+     expect(filtered.length).toBe(2);
+     // Descending: SOL first, then ETH
+@@ -264,7 +264,8 @@ describe("filter state preservation across exchange switches", () => {
+ describe("exchange switch state behavior", () => {
+   it("rows should be cleared on exchange switch (simulated)", () => {
+     // This tests the pattern: when exchange changes, rows = []
+-    let rows = sampleRows;
++    let rows: MarketRow[] = sampleRows;
++    expect(rows.length).toBeGreaterThan(0);
+ 
+     // Simulate exchange switch
+     rows = []; // This is what App.tsx does: setRows([])
+@@ -273,7 +274,7 @@ describe("exchange switch state behavior", () => {
+   });
+ 
+   it("exchange display names are correct", () => {
+-    const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = {
++    const EXCHANGE_DISPLAY_NAMES: Partial<Record<Exchange, string>> = {
+       mexc: "MEXC",
+       asterdex: "AsterDEX",
+       lighter: "Lighter",
+@@ -286,7 +287,7 @@ describe("exchange switch state behavior", () => {
+ 
+   it("error message includes exchange name pattern", () => {
+     const exchange: Exchange = "lighter";
+-    const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = {
++    const EXCHANGE_DISPLAY_NAMES: Partial<Record<Exchange, string>> = {
+       mexc: "MEXC",
+       asterdex: "AsterDEX",
+       lighter: "Lighter",
+diff --git a/frontend/src/ExchangeSwitcher.test.tsx b/frontend/src/ExchangeSwitcher.test.tsx
+index b6ba818..2199f98 100644
+--- a/frontend/src/ExchangeSwitcher.test.tsx
++++ b/frontend/src/ExchangeSwitcher.test.tsx
+@@ -9,7 +9,6 @@
+ import { describe, it, expect, vi } from "vitest";
+ import { render, screen, fireEvent } from "@testing-library/react";
+ import { ExchangeSwitcher, EXCHANGE_GROUPS } from "./ExchangeSwitcher";
+-import type { Exchange } from "./types";
+ 
+ describe("ExchangeSwitcher", () => {
+   it("renders all 11 exchange options", () => {
+diff --git a/frontend/src/SpreadCapturePanel.tsx b/frontend/src/SpreadCapturePanel.tsx
+index bdf2369..168d4a5 100644
+--- a/frontend/src/SpreadCapturePanel.tsx
++++ b/frontend/src/SpreadCapturePanel.tsx
+@@ -1,14 +1,11 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import {
+   Activity,
+-  DollarSign,
+   History,
+   Pause,
+   Play,
+   RotateCcw,
+   Settings,
+-  TrendingDown,
+-  TrendingUp,
+   Zap,
+ } from "lucide-react";
+ import { apiUrl } from "./config";
+diff --git a/frontend/src/TradingAdminModal.tsx b/frontend/src/TradingAdminModal.tsx
+index 16b7d30..d2fb87f 100644
+--- a/frontend/src/TradingAdminModal.tsx
++++ b/frontend/src/TradingAdminModal.tsx
+@@ -147,8 +147,8 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
+       kill_switch: Boolean(data.state.kill_switch),
+       recv_window_ms: Number(data.settings.recv_window_ms ?? 5000),
+       events_log_path: data.settings.events_log_path || "data/trading_events.jsonl",
+-      order_type: ((data.settings as Record<string, unknown>).order_type as OrderType) || "LIMIT",
+-      order_side: ((data.settings as Record<string, unknown>).order_side as OrderSide) || "BUY",
++      order_type: (data.settings.order_type as OrderType) || "LIMIT",
++      order_side: (data.settings.order_side as OrderSide) || "BUY",
+     });
+   }, [engineParams, headers, readJson]);
+ 
+diff --git a/frontend/src/pages/SpreadMonitorPage.tsx b/frontend/src/pages/SpreadMonitorPage.tsx
+index f819ec6..1311b03 100644
+--- a/frontend/src/pages/SpreadMonitorPage.tsx
++++ b/frontend/src/pages/SpreadMonitorPage.tsx
+@@ -267,7 +267,7 @@ async function fetchSnapshot(
+     data = JSON.parse(text) as SnapshotResponse;
+   } catch (e) {
+     console.error("[MEXC UI] snapshot JSON parse", e, text.slice(0, 500));
+-    throw new Error("Некорректный JSON от /api/snapshot");
++    throw new Error("Некорректный JSON от /api/snapshot", { cause: e });
+   }
+   if (SNAPSHOT_LOG) {
+     console.debug(
+@@ -2286,7 +2286,7 @@ export function SpreadMonitorPage() {
+                             : "font-medium text-amber-600 dark:text-amber-400"
+                         }
+                       >
+-                        Обновлено {updatedSecondsAgo} с назад
++                        Обновлено {updatedSecondsAgo}{"\u00a0"}с назад
+                       </span>
+                     )}
+                     <span title={loadedAt}>
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index bed461c..0c1c336 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -216,6 +216,8 @@ export interface TradingSettingsView {
+   api_secret: string;
+   recv_window_ms: number;
+   events_log_path: string;
++  order_type?: "LIMIT" | "MARKET";
++  order_side?: "BUY" | "SELL";
+ }
+ 
+ export interface TradingStatusResponse {
+diff --git a/mexc_monitor/execution_model.py b/mexc_monitor/execution_model.py
+index 792f69c..3abd00f 100644
+--- a/mexc_monitor/execution_model.py
++++ b/mexc_monitor/execution_model.py
+@@ -125,7 +125,13 @@ class ExecutionSimulator:
+                 self._rng = random.Random(state["seed"])
+ 
+             if "rng_state" in state:
+-                self._rng.setstate(state["rng_state"])
++                rng_state = state["rng_state"]
++                # JSON round-trip turns tuples into lists; setstate needs tuples
++                if isinstance(rng_state, list):
++                    rng_state = tuple(
++                        tuple(x) if isinstance(x, list) else x for x in rng_state
++                    )
++                self._rng.setstate(rng_state)
+ 
+             if "fill_rate_per_sec" in state:
+                 self._settings.fill_rate_per_sec = max(0.0, float(state["fill_rate_per_sec"]))
+diff --git a/mexc_monitor/freshness.py b/mexc_monitor/freshness.py
+index 4bd203d..5eb5f55 100644
+--- a/mexc_monitor/freshness.py
++++ b/mexc_monitor/freshness.py
+@@ -35,7 +35,7 @@ def now_ms() -> int:
+     return int(time.time() * 1000)
+ 
+ 
+-def tick_age_ms(tick: SpreadTick, adjust_for_skew: bool = True) -> int:
++def tick_age_ms(tick: SpreadTick, exchange: str = "generic", adjust_for_skew: bool = True) -> int:
+     """Age of *tick* relative to now, in milliseconds.
+ 
+     Optionally corrects timestamp for clock skew using exchange detector.
+@@ -44,11 +44,11 @@ def tick_age_ms(tick: SpreadTick, adjust_for_skew: bool = True) -> int:
+     if adjust_for_skew:
+         detector = _get_detector()
+         if detector:
+-            timestamp = detector.adjust_timestamp(tick.exchange or "generic", timestamp)
++            timestamp = detector.adjust_timestamp(exchange or "generic", timestamp)
+     return now_ms() - timestamp
+ 
+ 
+-def is_fresh(tick: SpreadTick | None, max_age_ms: float, adjust_for_skew: bool = True) -> bool:
++def is_fresh(tick: SpreadTick | None, max_age_ms: float, exchange: str = "generic", adjust_for_skew: bool = True) -> bool:
+     """Return ``True`` when *tick* is present and within *max_age_ms* of now.
+ 
+     ``max_age_ms <= 0`` disables the check (always fresh) for backward
+@@ -58,7 +58,7 @@ def is_fresh(tick: SpreadTick | None, max_age_ms: float, adjust_for_skew: bool =
+         return False
+     if max_age_ms <= 0:
+         return True
+-    return tick_age_ms(tick, adjust_for_skew=adjust_for_skew) <= max_age_ms
++    return tick_age_ms(tick, exchange=exchange, adjust_for_skew=adjust_for_skew) <= max_age_ms
+ 
+ 
+ def get_fresh_tick(
+@@ -89,7 +89,7 @@ def get_fresh_tick(
+     if tick is None:
+         return None
+ 
+-    if not is_fresh(tick, max_age_ms, adjust_for_skew=adjust_for_skew):
++    if not is_fresh(tick, max_age_ms, exchange=exchange, adjust_for_skew=adjust_for_skew):
+         return None
+ 
+     return tick
+diff --git a/mexc_monitor/futures_arb/position_manager.py b/mexc_monitor/futures_arb/position_manager.py
+index 1943008..2ce87b6 100644
+--- a/mexc_monitor/futures_arb/position_manager.py
++++ b/mexc_monitor/futures_arb/position_manager.py
+@@ -501,58 +501,56 @@ class PositionManager:
+                 )
+             )
+ 
+-        # Check expected positions
+-        for exp in expected_positions:
+-            expected_key = (exp.symbol.upper(), exp.side.lower())
++        # actual_positions is None → report-only mode: no exchange data to
++        # verify against, so no discrepancies can be detected.
++        if actual_positions is not None:
+             actual_map: dict[tuple[str, str], ActualPosition] = {}
++            for (symbol, side, qty) in actual_positions:
++                actual_map[(symbol.upper(), side.lower())] = ActualPosition(
++                    symbol=symbol,
++                    qty=qty,
++                    side=side,
++                )
++
++            # Check expected positions
++            for exp in expected_positions:
++                expected_key = (exp.symbol.upper(), exp.side.lower())
++                act = actual_map.get(expected_key)
++
++                if act is None:
++                    result.discrepancies.append({
++                        "type": "missing_on_exchange",
++                        "symbol": exp.symbol,
++                        "expected_qty": exp.qty,
++                        "actual_qty": 0.0,
++                        "side": exp.side,
++                        "exchange": exp.exchange,
++                        "engine_name": "futures_arb",
++                        "message": f"FuturesArb expects {exp.qty} {exp.symbol} ({exp.side}) on {exp.exchange}, but exchange has no such position",
++                    })
++                    result.all_clear = False
++                elif abs(act.qty - exp.qty) > 1e-6:
++                    result.discrepancies.append({
++                        "type": "qty_mismatch",
++                        "symbol": exp.symbol,
++                        "expected_qty": exp.qty,
++                        "actual_qty": act.qty,
++                        "side": exp.side,
++                        "exchange": exp.exchange,
++                        "engine_name": "futures_arb",
++                        "message": f"Qty mismatch for {exp.symbol} ({exp.side}): expected {exp.qty}, actual {act.qty}",
++                    })
++                    result.all_clear = False
++                else:
++                    result.matched.append({
++                        "symbol": exp.symbol,
++                        "side": exp.side,
++                        "expected_qty": exp.qty,
++                        "actual_qty": act.qty,
++                        "exchange": exp.exchange,
++                    })
+ 
+-            if actual_positions:
+-                for (symbol, side, qty) in actual_positions:
+-                    actual_map[(symbol.upper(), side.lower())] = ActualPosition(
+-                        symbol=symbol,
+-                        qty=qty,
+-                        side=side,
+-                        exchange=pos.exchange_combo,
+-                        entry_price=pos.spot_entry_price,
+-                    )
+-
+-            act = actual_map.get(expected_key)
+-
+-            if act is None:
+-                result.discrepancies.append({
+-                    "type": "missing_on_exchange",
+-                    "symbol": exp.symbol,
+-                    "expected_qty": exp.qty,
+-                    "actual_qty": 0.0,
+-                    "side": exp.side,
+-                    "exchange": exp.exchange,
+-                    "engine_name": "futures_arb",
+-                    "message": f"FuturesArb expects {exp.qty} {exp.symbol} ({exp.side}) on {exp.exchange}, but exchange has no such position",
+-                })
+-                result.all_clear = False
+-            elif abs(act.qty - exp.qty) > 1e-6:
+-                result.discrepancies.append({
+-                    "type": "qty_mismatch",
+-                    "symbol": exp.symbol,
+-                    "expected_qty": exp.qty,
+-                    "actual_qty": act.qty,
+-                    "side": exp.side,
+-                    "exchange": exp.exchange,
+-                    "engine_name": "futures_arb",
+-                    "message": f"FQty mismatch for {exp.symbol} ({exp.side}): expected {exp.qty}, actual {act.qty}",
+-                })
+-                result.all_clear = False
+-            else:
+-                result.matched.append({
+-                    "symbol": exp.symbol,
+-                    "side": exp.side,
+-                    "expected_qty": exp.qty,
+-                    "actual_qty": act.qty,
+-                    "exchange": exp.exchange,
+-                })
+-
+-        # Check for unexpected positions on exchange
+-        if actual_positions:
++            # Check for unexpected positions on exchange
+             expected_keys = {(e.symbol.upper(), e.side.lower()) for e in expected_positions}
+             for symbol, side, qty in actual_positions:
+                 key = (symbol.upper(), side.lower())
+diff --git a/mexc_monitor/spread_capture.py b/mexc_monitor/spread_capture.py
+index 544ed35..23abedf 100644
+--- a/mexc_monitor/spread_capture.py
++++ b/mexc_monitor/spread_capture.py
+@@ -31,7 +31,7 @@ from typing import Any, Literal
+ from mexc_monitor.execution_model import ExecutionSimulator, ExecutionSettings
+ from mexc_monitor.freshness import get_fresh_tick
+ from mexc_monitor.order_executor import OrderExecutor, OrderTicket
+-from mexc_monitor.reconciliation import reconcile_positions, ReconciliationResult, ExpectedPosition, ActualPosition
++from mexc_monitor.reconciliation import reconcile_positions, ReconciliationResult, Discrepancy, ExpectedPosition, ActualPosition
+ from mexc_monitor.spread_buffer import get_latest, get_stats, SpreadTick
+ from mexc_monitor.state_store import StateStore
+ 
+@@ -80,6 +80,7 @@ class CaptureSettings:
+ class Position:
+     """Текущая позиция."""
+     state: PositionState = "idle"
++    symbol: str = ""
+     entry_price: float = 0.0
+     entry_qty: float = 0.0
+     entry_time_ms: int = 0
+@@ -292,10 +293,6 @@ class SpreadCaptureEngine:
+     def serialize_state(self) -> bool:
+         """Save current position and stats to disk atomically."""
+         with self._lock:
+-            positions_data = [
+-                asdict(p) for p in self._positions.values()
+-                if p.state in ("pending_buy", "holding", "pending_sell")
+-            ]
+             data = {
+                 "version": 1,
+                 "timestamp_ms": self._now_ms(),
+@@ -328,6 +325,7 @@ class SpreadCaptureEngine:
+                 if state == "holding":
+                     self._position = Position(
+                         state="holding",
++                        symbol=str(pos_data.get("symbol", "")),
+                         entry_price=float(pos_data.get("entry_price", 0)),
+                         entry_qty=float(pos_data.get("entry_qty", 0)),
+                         entry_time_ms=int(pos_data.get("entry_time_ms", 0)),
+@@ -382,129 +380,71 @@ class SpreadCaptureEngine:
+         dict[str, Any]
+             Результат reconciliation с details.
+         """
+-        from mexc_monitor.reconciliation import ReconciliationResult, ExpectedPosition, ActualPosition
+-
+         result = ReconciliationResult()
+ 
+         with self._lock:
+             pos = self._position
+ 
+-        if pos.state == "holding" and pos.entry_qty > 0:
+-            # Engine thinks we have a holding position
+-            expected_qty = pos.entry_qty
+-            # Convert buy position to "buy" side for reconciliation
+-            expected_positions = [
+-                ExpectedPosition(
+-                    symbol=pos.symbol,
+-                    qty=expected_qty,
+-                    side="buy",
+-                    exchange=self._settings.exchange,
+-                    engine_name="spread_capture",
+-                )
+-            ]
+-
+-            if self._settings.mode == "live" and self._order_executor:
+-                try:
+-                    # Get actual open orders from exchange
+-                    open_orders = self._order_executor.get_open_orders(pos.symbol)
+-                    actual_positions: list[ActualPosition] = []
+-
+-                    for order in open_orders:
+-                        if order.is_open:
+-                            # Convert order qty to position
+-                            # BUY order means we hold
+-                            if order.side == "BUY" or order.side == "BID":
+-                                actual_positions.append(
+-                                    ActualPosition(
+-                                        symbol=pos.symbol,
+-                                        qty=order.remaining_qty,
+-                                        side="buy",
+-                                        exchange=self._settings.exchange,
+-                                        entry_price=order.price or pos.entry_price,
+-                                    )
+-                                )
+-                            elif order.side == "SELL" or order.side == "ASK":
+-                                actual_positions.append(
+-                                    ActualPosition(
+-                                        symbol=pos.symbol,
+-                                        qty=order.remaining_qty,
+-                                        side="sell",
+-                                        exchange=self._settings.exchange,
+-                                        entry_price=order.price or pos.entry_price,
+-                                    )
+-                                )
+-                    reconcile_result = reconcile_positions(
+-                        expected=expected_positions,
+-                        actual=actual_positions,
+-                        qty_tolerance=1e-6,
++        symbol = pos.symbol or self._settings.symbol
++
++        if self._order_executor is not None:
++            expected_positions: list[ExpectedPosition] = []
++            if pos.state in ("holding", "pending_buy", "pending_sell") and pos.entry_qty > 0:
++                expected_positions.append(
++                    ExpectedPosition(
++                        symbol=symbol,
++                        qty=pos.entry_qty,
++                        side="sell" if pos.state == "pending_sell" else "buy",
++                        exchange=self._settings.exchange,
++                        engine_name="spread_capture",
+                     )
++                )
+ 
+-                    result.matched = reconcile_result.matched
+-                    result.discrepancies = reconcile_result.discrepancies
+-                    result.all_clear = reconcile_result.all_clear
+-
+-                except Exception as e:
+-                    logger.error("Failed to reconcile spread_capture position: %s", e)
+-                    result.all_clear = False
+-                    result.discrepancies.append({
+-                        "type": "unexpected_on_exchange",
+-                        "symbol": pos.symbol,
+-                        "expected_qty": pos.entry_qty,
+-                        "actual_qty": 0.0,
+-                        "side": "buy",
+-                        "exchange": self._settings.exchange,
+-                        "engine_name": "spread_capture",
+-                        "message": f"Error during reconciliation: {e}",
+-                    })
+-            else:
+-                # Paper/monitor mode — no reconciliation
+-                result.all_clear = True
+-        else:
+-            # No position — check for unexpected orders
+-            if self._settings.mode == "live" and self._order_executor:
+-                try:
+-                    open_orders = self._order_executor.get_open_orders(pos.symbol)
+-                    actual_positions: list[ActualPosition] = []
+-
+-                    for order in open_orders:
+-                        if order.is_open:
+-                            if order.side == "BUY" or order.side == "BID":
+-                                actual_positions.append(
+-                                    ActualPosition(
+-                                        symbol=pos.symbol,
+-                                        qty=order.remaining_qty,
+-                                        side="buy",
+-                                        exchange=self._settings.exchange,
+-                                        entry_price=order.price,
+-                                    )
+-                                )
+-                            elif order.side == "SELL" or order.side == "ASK":
+-                                actual_positions.append(
+-                                    ActualPosition(
+-                                        symbol=pos.symbol,
+-                                        qty=order.remaining_qty,
+-                                        side="sell",
+-                                        exchange=self._settings.exchange,
+-                                        entry_price=order.price,
+-                                    )
+-                                )
+-
+-                    if actual_positions:
+-                        result.discrepancies.append(
+-                            {
+-                                "type": "unexpected_on_exchange",
+-                                "symbol": pos.symbol,
+-                                "expected_qty": 0.0,
+-                                "actual_qty": sum(p.qty for p in actual_positions),
+-                                "side": actual_positions[0].side,
+-                                "exchange": self._settings.exchange,
+-                                "engine_name": "spread_capture",
+-                                "message": f"Unexpected open order(s) found on exchange",
+-                            }
++            try:
++                # Get actual open orders from exchange
++                open_orders = self._order_executor.get_open_orders(symbol)
++                actual_positions: list[ActualPosition] = []
++                for order in open_orders:
++                    if not order.is_open:
++                        continue
++                    if order.side in ("BUY", "BID"):
++                        side = "buy"
++                    elif order.side in ("SELL", "ASK"):
++                        side = "sell"
++                    else:
++                        continue
++                    actual_positions.append(
++                        ActualPosition(
++                            symbol=symbol,
++                            qty=order.remaining_qty,
++                            side=side,
++                            exchange=self._settings.exchange,
++                            entry_price=order.price or pos.entry_price,
+                         )
+-                        result.all_clear = False
+-                except Exception as e:
+-                    logger.error("Failed to check for unexpected orders: %s", e)
++                    )
++
++                reconcile_result = reconcile_positions(
++                    expected=expected_positions,
++                    actual=actual_positions,
++                    qty_tolerance=1e-6,
++                )
++                result.matched = reconcile_result.matched
++                result.discrepancies = reconcile_result.discrepancies
++                result.all_clear = reconcile_result.all_clear
++            except Exception as e:
++                logger.error("Failed to reconcile spread_capture position: %s", e)
++                result.all_clear = False
++                result.discrepancies.append(Discrepancy(
++                    type="missing_on_exchange",
++                    symbol=symbol,
++                    expected_qty=pos.entry_qty,
++                    actual_qty=0.0,
++                    side="buy",
++                    exchange=self._settings.exchange,
++                    engine_name="spread_capture",
++                    message=f"Error during reconciliation: {e}",
++                ))
++        # Без OrderExecutor (paper/monitor) сверять не с чем — all_clear остаётся True
+ 
+         return {
+             "symbol": self._settings.symbol,
+@@ -608,6 +548,7 @@ class SpreadCaptureEngine:
+             with self._lock:
+                 self._position = Position(
+                     state="pending_buy",
++                    symbol=self._settings.symbol,
+                     entry_price=tick.bid,
+                     entry_qty=qty,
+                     entry_time_ms=tick.timestamp_ms,
+@@ -635,6 +576,7 @@ class SpreadCaptureEngine:
+             with self._lock:
+                 self._position = Position(
+                     state="pending_buy",
++                    symbol=self._settings.symbol,
+                     entry_price=tick.bid,
+                     entry_qty=qty,
+                     entry_time_ms=tick.timestamp_ms,
+@@ -658,6 +600,7 @@ class SpreadCaptureEngine:
+         with self._lock:
+             self._position = Position(
+                 state="holding",
++                symbol=self._settings.symbol,
+                 entry_price=tick.bid,
+                 entry_qty=qty,
+                 entry_time_ms=tick.timestamp_ms,
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+new file mode 100644
+index 0000000..27a9797
+--- /dev/null
++++ b/requirements-dev.txt
+@@ -0,0 +1,3 @@
++-r requirements.txt
++pytest>=8.0.0
++hypothesis>=6.100.0
+diff --git a/tests/test_lead_lag/test_api.py b/tests/test_lead_lag/test_api.py
+index 7840f6e..eaa7147 100644
+--- a/tests/test_lead_lag/test_api.py
++++ b/tests/test_lead_lag/test_api.py
+@@ -25,8 +25,9 @@ def patched_app():
+          patch("mexc_monitor.history_worker.start_history_worker"), \
+          patch("mexc_monitor.history_worker.stop_history_worker"), \
+          patch("mexc_monitor.ws_spot_orderbook.stop_spot_orderbook_ws"):
+-        from backend.main import app
+-        yield app
++        import backend.main as backend_main
++        with patch.object(backend_main, "_ADMIN_TOKEN", "test-admin-token"):
++            yield backend_main.app
+ 
+ 
+ @pytest.fixture(scope="module")
+@@ -34,6 +35,7 @@ def client(patched_app):
+     """Create a TestClient with startup events mocked."""
+     from fastapi.testclient import TestClient
+     with TestClient(patched_app, raise_server_exceptions=False) as c:
++        c.headers.update({"X-Admin-Token": "test-admin-token"})
+         yield c
+ 
+ 
+diff --git a/tests/test_lead_lag/test_engine.py b/tests/test_lead_lag/test_engine.py
+index 4564477..04868df 100644
+--- a/tests/test_lead_lag/test_engine.py
++++ b/tests/test_lead_lag/test_engine.py
+@@ -86,6 +86,7 @@ class TestEngineStartStop:
+ 
+         assert result is None
+         assert engine.status != EngineStatus.STOPPED
++        time.sleep(0.01)  # clock resolution: ensure measurable uptime
+         assert engine.uptime_sec > 0
+ 
+         # Clean up
+diff --git a/tests/test_position_manager_reconciliation.py b/tests/test_position_manager_reconciliation.py
+index d7caed8..dbb9fbb 100644
+--- a/tests/test_position_manager_reconciliation.py
++++ b/tests/test_position_manager_reconciliation.py
+@@ -97,7 +97,7 @@ def test_position_manager_reconcile_with_mismatch():
+     assert "reconciliation_result" in result
+     reconcile_result = result["reconciliation_result"]
+     assert len(reconcile_result["discrepancies"]) > 0
+-    assert reconcile_result["discrepancies"][0].type == "qty_mismatch"
++    assert reconcile_result["discrepancies"][0]["type"] == "qty_mismatch"
+     assert reconcile_result["all_clear"] is False
+ 
+ 
+@@ -147,7 +147,7 @@ def test_position_manager_reconcile_unexpected_position():
+     assert "reconciliation_result" in result
+     reconcile_result = result["reconciliation_result"]
+     assert len(reconcile_result["discrepancies"]) > 0
+-    assert reconcile_result["discrepancies"][0].type == "unexpected_on_exchange"
++    assert any(d["type"] == "unexpected_on_exchange" for d in reconcile_result["discrepancies"])
+     assert reconcile_result["all_clear"] is False
+ 
+ 
+@@ -195,7 +195,7 @@ def test_position_manager_reconcile_missing_position():
+     assert "reconciliation_result" in result
+     reconcile_result = result["reconciliation_result"]
+     assert len(reconcile_result["discrepancies"]) > 0
+-    assert reconcile_result["discrepancies"][0].type == "missing_on_exchange"
++    assert reconcile_result["discrepancies"][0]["type"] == "missing_on_exchange"
+     assert reconcile_result["all_clear"] is False
+ 
+ 
+@@ -276,4 +276,4 @@ def test_position_manager_reconcile_multiple_positions():
+ 
+ 
+ if __name__ == "__main__":
+-    pytest.main([__file__, "-v"])
+\ No newline at end of file
++    pytest.main([__file__, "-v"])
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 281f174..5f92fd5 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -7,6 +7,7 @@ from mexc_monitor.reconciliation import (
+     ReconciliationResult,
+     ExpectedPosition,
+     ActualPosition,
++    reconcile_positions,
+ )
+ 
+ 
+@@ -32,10 +33,7 @@ def test_reconciliation_with_no_discrepancies():
+     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
+     actual = [ActualPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
+ 
+-    result = ReconciliationResult.matched(
+-        expected_positions=expected,
+-        actual_positions=actual,
+-    )
++    result = reconcile_positions(expected=expected, actual=actual)
+ 
+     assert len(result.matched) == 1
+     assert len(result.discrepancies) == 0
+@@ -47,10 +45,7 @@ def test_reconciliation_missing_on_exchange():
+     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
+     actual = []  # No positions on exchange
+ 
+-    result = ReconciliationResult.matched(
+-        expected_positions=expected,
+-        actual_positions=actual,
+-    )
++    result = reconcile_positions(expected=expected, actual=actual)
+ 
+     assert len(result.matched) == 0
+     assert len(result.discrepancies) == 1
+@@ -65,10 +60,7 @@ def test_reconciliation_qty_mismatch():
+     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
+     actual = [ActualPosition(symbol="BTCUSDT", qty=0.45, side="buy", exchange="mexc")]
+ 
+-    result = ReconciliationResult.matched(
+-        expected_positions=expected,
+-        actual_positions=actual,
+-    )
++    result = reconcile_positions(expected=expected, actual=actual)
+ 
+     assert len(result.matched) == 0
+     assert len(result.discrepancies) == 1
+@@ -81,12 +73,12 @@ def test_reconciliation_qty_mismatch():
+ def test_reconciliation_unexpected_on_exchange():
+     """Test reconciliation when unexpected position exists on exchange."""
+     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
+-    actual = [ActualPosition(symbol="ETHUSDT", qty=0.3, side="buy", exchange="binance")]
++    actual = [
++        ActualPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc"),
++        ActualPosition(symbol="ETHUSDT", qty=0.3, side="buy", exchange="binance"),
++    ]
+ 
+-    result = ReconciliationResult.matched(
+-        expected_positions=expected,
+-        actual_positions=actual,
+-    )
++    result = reconcile_positions(expected=expected, actual=actual)
+ 
+     assert len(result.matched) == 1
+     assert len(result.discrepancies) == 1
+@@ -107,10 +99,7 @@ def test_reconciliation_multiple_types():
+         ActualPosition(symbol="SOLUSDT", qty=0.2, side="buy", exchange="binance"),
+     ]
+ 
+-    result = ReconciliationResult.matched(
+-        expected_positions=expected,
+-        actual_positions=actual,
+-    )
++    result = reconcile_positions(expected=expected, actual=actual)
+ 
+     assert len(result.matched) == 1
+     assert len(result.discrepancies) == 2
+diff --git a/tests/test_spread_capture_reconciliation.py b/tests/test_spread_capture_reconciliation.py
+index 03f7733..0eceac8 100644
+--- a/tests/test_spread_capture_reconciliation.py
++++ b/tests/test_spread_capture_reconciliation.py
+@@ -4,7 +4,7 @@ import pytest
+ from unittest.mock import Mock, MagicMock
+ 
+ from mexc_monitor.spread_capture import SpreadCaptureEngine
+-from mexc_monitor.order_executor import OrderTicket, OrderStatus
++from mexc_monitor.order_executor import OrderTicket
+ 
+ 
+ def test_spread_capture_reconcile_paper_mode():
+@@ -74,7 +74,7 @@ def test_spread_capture_reconcile_with_open_orders():
+         order_type="LIMIT",
+         qty=0.5,
+         price=50000.0,
+-        status=OrderStatus.NEW,
++        status="NEW",
+         created_ms=1700000000000,
+     )
+     mock_executor = Mock()
+@@ -131,7 +131,7 @@ def test_spread_capture_reconcile_with_discrepancies():
+         order_type="LIMIT",
+         qty=0.3,  # Different qty!
+         price=50000.0,
+-        status=OrderStatus.NEW,
++        status="NEW",
+         created_ms=1700000000000,
+     )
+     mock_executor = Mock()
+@@ -158,4 +158,4 @@ def test_spread_capture_reconcile_with_discrepancies():
+ 
+ 
+ if __name__ == "__main__":
+-    pytest.main([__file__, "-v"])
+\ No newline at end of file
++    pytest.main([__file__, "-v"])

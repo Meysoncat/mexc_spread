@@ -216,6 +216,8 @@ export interface TradingSettingsView {
   api_secret: string;
   recv_window_ms: number;
   events_log_path: string;
+  order_type?: "LIMIT" | "MARKET";
+  order_side?: "BUY" | "SELL";
 }
 
 export interface TradingStatusResponse {

@@ -25,8 +25,9 @@ def patched_app():
          patch("mexc_monitor.history_worker.start_history_worker"), \
          patch("mexc_monitor.history_worker.stop_history_worker"), \
          patch("mexc_monitor.ws_spot_orderbook.stop_spot_orderbook_ws"):
-        from backend.main import app
-        yield app
+        import backend.main as backend_main
+        with patch.object(backend_main, "_ADMIN_TOKEN", "test-admin-token"):
+            yield backend_main.app
 
 
 @pytest.fixture(scope="module")
@@ -34,6 +35,7 @@ def client(patched_app):
     """Create a TestClient with startup events mocked."""
     from fastapi.testclient import TestClient
     with TestClient(patched_app, raise_server_exceptions=False) as c:
+        c.headers.update({"X-Admin-Token": "test-admin-token"})
         yield c
 
 

@@ -107,10 +107,14 @@ interface AssetWorkspaceModalProps {
   isDark: boolean;
 }
 
-function clearPriceLines(lines: IPriceLine[]) {
+function clearPriceLines(
+  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null,
+  lines: IPriceLine[],
+) {
+  if (!series) return;
   for (const pl of lines) {
     try {
-      pl.remove();
+      series.removePriceLine(pl);
     } catch {
       /* ignore */
     }
@@ -202,7 +206,7 @@ export function AssetWorkspaceModal({
       series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
       hits: { side: "bid" | "ask"; level: OrderbookLevel }[],
     ) => {
-      clearPriceLines(densityLinesRef.current);
+      clearPriceLines(series, densityLinesRef.current);
       densityLinesRef.current = [];
       if (!showDensityLines || hits.length === 0) return;
       const bidC = "#10b981";
@@ -342,7 +346,7 @@ export function AssetWorkspaceModal({
     return () => {
       cancelled = true;
       ro.disconnect();
-      clearPriceLines(densityLinesRef.current);
+      clearPriceLines(seriesRef.current, densityLinesRef.current);
       densityLinesRef.current = [];
       seriesRef.current = null;
       chartRef.current = null;

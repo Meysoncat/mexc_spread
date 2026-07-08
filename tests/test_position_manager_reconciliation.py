@@ -97,7 +97,7 @@ def test_position_manager_reconcile_with_mismatch():
     assert "reconciliation_result" in result
     reconcile_result = result["reconciliation_result"]
     assert len(reconcile_result["discrepancies"]) > 0
-    assert reconcile_result["discrepancies"][0].type == "qty_mismatch"
+    assert reconcile_result["discrepancies"][0]["type"] == "qty_mismatch"
     assert reconcile_result["all_clear"] is False
 
 
@@ -147,7 +147,7 @@ def test_position_manager_reconcile_unexpected_position():
     assert "reconciliation_result" in result
     reconcile_result = result["reconciliation_result"]
     assert len(reconcile_result["discrepancies"]) > 0
-    assert reconcile_result["discrepancies"][0].type == "unexpected_on_exchange"
+    assert any(d["type"] == "unexpected_on_exchange" for d in reconcile_result["discrepancies"])
     assert reconcile_result["all_clear"] is False
 
 
@@ -195,7 +195,7 @@ def test_position_manager_reconcile_missing_position():
     assert "reconciliation_result" in result
     reconcile_result = result["reconciliation_result"]
     assert len(reconcile_result["discrepancies"]) > 0
-    assert reconcile_result["discrepancies"][0].type == "missing_on_exchange"
+    assert reconcile_result["discrepancies"][0]["type"] == "missing_on_exchange"
     assert reconcile_result["all_clear"] is False
 
 

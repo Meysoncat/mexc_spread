@@ -501,58 +501,56 @@ class PositionManager:
                 )
             )
 
-        # Check expected positions
-        for exp in expected_positions:
-            expected_key = (exp.symbol.upper(), exp.side.lower())
+        # actual_positions is None → report-only mode: no exchange data to
+        # verify against, so no discrepancies can be detected.
+        if actual_positions is not None:
             actual_map: dict[tuple[str, str], ActualPosition] = {}
+            for (symbol, side, qty) in actual_positions:
+                actual_map[(symbol.upper(), side.lower())] = ActualPosition(
+                    symbol=symbol,
+                    qty=qty,
+                    side=side,
+                )
 
-            if actual_positions:
-                for (symbol, side, qty) in actual_positions:
-                    actual_map[(symbol.upper(), side.lower())] = ActualPosition(
-                        symbol=symbol,
-                        qty=qty,
-                        side=side,
-                        exchange=pos.exchange_combo,
-                        entry_price=pos.spot_entry_price,
-                    )
+            # Check expected positions
+            for exp in expected_positions:
+                expected_key = (exp.symbol.upper(), exp.side.lower())
+                act = actual_map.get(expected_key)
 
-            act = actual_map.get(expected_key)
+                if act is None:
+                    result.discrepancies.append({
+                        "type": "missing_on_exchange",
+                        "symbol": exp.symbol,
+                        "expected_qty": exp.qty,
+                        "actual_qty": 0.0,
+                        "side": exp.side,
+                        "exchange": exp.exchange,
+                        "engine_name": "futures_arb",
+                        "message": f"FuturesArb expects {exp.qty} {exp.symbol} ({exp.side}) on {exp.exchange}, but exchange has no such position",
+                    })
+                    result.all_clear = False
+                elif abs(act.qty - exp.qty) > 1e-6:
+                    result.discrepancies.append({
+                        "type": "qty_mismatch",
+                        "symbol": exp.symbol,
+                        "expected_qty": exp.qty,
+                        "actual_qty": act.qty,
+                        "side": exp.side,
+                        "exchange": exp.exchange,
+                        "engine_name": "futures_arb",
+                        "message": f"Qty mismatch for {exp.symbol} ({exp.side}): expected {exp.qty}, actual {act.qty}",
+                    })
+                    result.all_clear = False
+                else:
+                    result.matched.append({
+                        "symbol": exp.symbol,
+                        "side": exp.side,
+                        "expected_qty": exp.qty,
+                        "actual_qty": act.qty,
+                        "exchange": exp.exchange,
+                    })
 
-            if act is None:
-                result.discrepancies.append({
-                    "type": "missing_on_exchange",
-                    "symbol": exp.symbol,
-                    "expected_qty": exp.qty,
-                    "actual_qty": 0.0,
-                    "side": exp.side,
-                    "exchange": exp.exchange,
-                    "engine_name": "futures_arb",
-                    "message": f"FuturesArb expects {exp.qty} {exp.symbol} ({exp.side}) on {exp.exchange}, but exchange has no such position",
-                })
-                result.all_clear = False
-            elif abs(act.qty - exp.qty) > 1e-6:
-                result.discrepancies.append({
-                    "type": "qty_mismatch",
-                    "symbol": exp.symbol,
-                    "expected_qty": exp.qty,
-                    "actual_qty": act.qty,
-                    "side": exp.side,
-                    "exchange": exp.exchange,
-                    "engine_name": "futures_arb",
-                    "message": f"FQty mismatch for {exp.symbol} ({exp.side}): expected {exp.qty}, actual {act.qty}",
-                })
-                result.all_clear = False
-            else:
-                result.matched.append({
-                    "symbol": exp.symbol,
-                    "side": exp.side,
-                    "expected_qty": exp.qty,
-                    "actual_qty": act.qty,
-                    "exchange": exp.exchange,
-                })
-
-        # Check for unexpected positions on exchange
-        if actual_positions:
+            # Check for unexpected positions on exchange
             expected_keys = {(e.symbol.upper(), e.side.lower()) for e in expected_positions}
             for symbol, side, qty in actual_positions:
                 key = (symbol.upper(), side.lower())

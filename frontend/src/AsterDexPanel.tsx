@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowLeftRight,
-  ChartCandlestick,
   ExternalLink,
   RefreshCw,
   TrendingDown,

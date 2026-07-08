@@ -5,6 +5,7 @@ import json
 from typing import Any
 import logging
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -263,9 +264,13 @@ _ADMIN_TOKEN = str(os.environ.get("ADMIN_TOKEN", "")).strip()
 
 def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
     if not _ADMIN_TOKEN:
-        return
+        # Без явно заданного ADMIN_TOKEN торговые эндпоинты недоступны
+        raise HTTPException(
+            status_code=403,
+            detail="trading API disabled: set ADMIN_TOKEN environment variable",
+        )
     provided = (x_admin_token or "").strip()
-    if not provided or provided != _ADMIN_TOKEN:
+    if not provided or not secrets.compare_digest(provided, _ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="invalid admin token")
 
 

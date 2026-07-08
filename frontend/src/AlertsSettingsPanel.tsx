@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bell, Send, Shield } from "lucide-react";
+import { Bell, Send } from "lucide-react";
 import { apiUrl } from "./config";
 
 interface AlertConfig {
@@ -16,7 +16,7 @@ interface AlertConfig {
 
 export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [config, setConfig] = useState<AlertConfig | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -57,7 +57,7 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
       } else {
         setMessage(`❌ ${data.detail || "Ошибка"}`);
       }
-    } catch (e) {
+    } catch {
       setMessage("❌ Ошибка сети");
     }
     setSaving(false);

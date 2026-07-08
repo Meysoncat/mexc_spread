@@ -10,7 +10,7 @@
  * URL construction pattern and the applyMarketFilters behavior.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { applyMarketFilters } from "./filters";
 import type { Exchange, Market, MarketRow } from "./types";
 
@@ -145,7 +145,7 @@ describe("filter state preservation across exchange switches", () => {
       minAskL1NotionalQuote: 0,
     };
 
-    const filtered = applyMarketFilters(sampleRows, filterConfig);
+    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
 
     // Only ETHUSDT should match
     expect(filtered.length).toBe(1);
@@ -165,7 +165,7 @@ describe("filter state preservation across exchange switches", () => {
       minAskL1NotionalQuote: 0,
     };
 
-    const filtered = applyMarketFilters(sampleRows, filterConfig);
+    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
 
     // Should be sorted by spread_bps ascending: BTC(2.0) < ETH(3.33) < SOL(5.0)
     expect(filtered.length).toBe(3);
@@ -187,7 +187,7 @@ describe("filter state preservation across exchange switches", () => {
       minAskL1NotionalQuote: 0,
     };
 
-    const filtered = applyMarketFilters(sampleRows, filterConfig);
+    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
 
     // Should be sorted by spread_bps descending: SOL(5.0) > ETH(3.33) > BTC(2.0)
     expect(filtered.length).toBe(3);
@@ -210,7 +210,7 @@ describe("filter state preservation across exchange switches", () => {
       minAskL1NotionalQuote: 0,
     };
 
-    const filtered = applyMarketFilters(sampleRows, filterConfig);
+    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
 
     // All match "USDT", sorted by volume desc: BTC(50M) > ETH(15M) > SOL(5M)
     expect(filtered.length).toBe(3);
@@ -232,7 +232,7 @@ describe("filter state preservation across exchange switches", () => {
       minAskL1NotionalQuote: 0,
     };
 
-    const filtered = applyMarketFilters(sampleRows, filterConfig);
+    const filtered = (applyMarketFilters(sampleRows, filterConfig) as MarketRow[]);
 
     expect(filtered.length).toBe(2);
     // Descending: SOL first, then ETH
@@ -264,7 +264,8 @@ describe("filter state preservation across exchange switches", () => {
 describe("exchange switch state behavior", () => {
   it("rows should be cleared on exchange switch (simulated)", () => {
     // This tests the pattern: when exchange changes, rows = []
-    let rows = sampleRows;
+    let rows: MarketRow[] = sampleRows;
+    expect(rows.length).toBeGreaterThan(0);
 
     // Simulate exchange switch
     rows = []; // This is what App.tsx does: setRows([])
@@ -273,7 +274,7 @@ describe("exchange switch state behavior", () => {
   });
 
   it("exchange display names are correct", () => {
-    const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = {
+    const EXCHANGE_DISPLAY_NAMES: Partial<Record<Exchange, string>> = {
       mexc: "MEXC",
       asterdex: "AsterDEX",
       lighter: "Lighter",
@@ -286,7 +287,7 @@ describe("exchange switch state behavior", () => {
 
   it("error message includes exchange name pattern", () => {
     const exchange: Exchange = "lighter";
-    const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = {
+    const EXCHANGE_DISPLAY_NAMES: Partial<Record<Exchange, string>> = {
       mexc: "MEXC",
       asterdex: "AsterDEX",
       lighter: "Lighter",

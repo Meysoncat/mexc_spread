@@ -7,6 +7,7 @@ from mexc_monitor.reconciliation import (
     ReconciliationResult,
     ExpectedPosition,
     ActualPosition,
+    reconcile_positions,
 )
 
 
@@ -32,10 +33,7 @@ def test_reconciliation_with_no_discrepancies():
     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
     actual = [ActualPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
 
-    result = ReconciliationResult.matched(
-        expected_positions=expected,
-        actual_positions=actual,
-    )
+    result = reconcile_positions(expected=expected, actual=actual)
 
     assert len(result.matched) == 1
     assert len(result.discrepancies) == 0
@@ -47,10 +45,7 @@ def test_reconciliation_missing_on_exchange():
     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
     actual = []  # No positions on exchange
 
-    result = ReconciliationResult.matched(
-        expected_positions=expected,
-        actual_positions=actual,
-    )
+    result = reconcile_positions(expected=expected, actual=actual)
 
     assert len(result.matched) == 0
     assert len(result.discrepancies) == 1
@@ -65,10 +60,7 @@ def test_reconciliation_qty_mismatch():
     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
     actual = [ActualPosition(symbol="BTCUSDT", qty=0.45, side="buy", exchange="mexc")]
 
-    result = ReconciliationResult.matched(
-        expected_positions=expected,
-        actual_positions=actual,
-    )
+    result = reconcile_positions(expected=expected, actual=actual)
 
     assert len(result.matched) == 0
     assert len(result.discrepancies) == 1
@@ -81,12 +73,12 @@ def test_reconciliation_qty_mismatch():
 def test_reconciliation_unexpected_on_exchange():
     """Test reconciliation when unexpected position exists on exchange."""
     expected = [ExpectedPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc")]
-    actual = [ActualPosition(symbol="ETHUSDT", qty=0.3, side="buy", exchange="binance")]
+    actual = [
+        ActualPosition(symbol="BTCUSDT", qty=0.5, side="buy", exchange="mexc"),
+        ActualPosition(symbol="ETHUSDT", qty=0.3, side="buy", exchange="binance"),
+    ]
 
-    result = ReconciliationResult.matched(
-        expected_positions=expected,
-        actual_positions=actual,
-    )
+    result = reconcile_positions(expected=expected, actual=actual)
 
     assert len(result.matched) == 1
     assert len(result.discrepancies) == 1
@@ -107,10 +99,7 @@ def test_reconciliation_multiple_types():
         ActualPosition(symbol="SOLUSDT", qty=0.2, side="buy", exchange="binance"),
     ]
 
-    result = ReconciliationResult.matched(
-        expected_positions=expected,
-        actual_positions=actual,
-    )
+    result = reconcile_positions(expected=expected, actual=actual)
 
     assert len(result.matched) == 1
     assert len(result.discrepancies) == 2

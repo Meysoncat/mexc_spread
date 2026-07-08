@@ -35,7 +35,7 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def tick_age_ms(tick: SpreadTick, adjust_for_skew: bool = True) -> int:
+def tick_age_ms(tick: SpreadTick, exchange: str = "generic", adjust_for_skew: bool = True) -> int:
     """Age of *tick* relative to now, in milliseconds.
 
     Optionally corrects timestamp for clock skew using exchange detector.
@@ -44,11 +44,11 @@ def tick_age_ms(tick: SpreadTick, adjust_for_skew: bool = True) -> int:
     if adjust_for_skew:
         detector = _get_detector()
         if detector:
-            timestamp = detector.adjust_timestamp(tick.exchange or "generic", timestamp)
+            timestamp = detector.adjust_timestamp(exchange or "generic", timestamp)
     return now_ms() - timestamp
 
 
-def is_fresh(tick: SpreadTick | None, max_age_ms: float, adjust_for_skew: bool = True) -> bool:
+def is_fresh(tick: SpreadTick | None, max_age_ms: float, exchange: str = "generic", adjust_for_skew: bool = True) -> bool:
     """Return ``True`` when *tick* is present and within *max_age_ms* of now.
 
     ``max_age_ms <= 0`` disables the check (always fresh) for backward
@@ -58,7 +58,7 @@ def is_fresh(tick: SpreadTick | None, max_age_ms: float, adjust_for_skew: bool =
         return False
     if max_age_ms <= 0:
         return True
-    return tick_age_ms(tick, adjust_for_skew=adjust_for_skew) <= max_age_ms
+    return tick_age_ms(tick, exchange=exchange, adjust_for_skew=adjust_for_skew) <= max_age_ms
 
 
 def get_fresh_tick(
@@ -89,7 +89,7 @@ def get_fresh_tick(
     if tick is None:
         return None
 
-    if not is_fresh(tick, max_age_ms, adjust_for_skew=adjust_for_skew):
+    if not is_fresh(tick, max_age_ms, exchange=exchange, adjust_for_skew=adjust_for_skew):
         return None
 
     return tick

@@ -147,8 +147,8 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
       kill_switch: Boolean(data.state.kill_switch),
       recv_window_ms: Number(data.settings.recv_window_ms ?? 5000),
       events_log_path: data.settings.events_log_path || "data/trading_events.jsonl",
-      order_type: ((data.settings as Record<string, unknown>).order_type as OrderType) || "LIMIT",
-      order_side: ((data.settings as Record<string, unknown>).order_side as OrderSide) || "BUY",
+      order_type: (data.settings.order_type as OrderType) || "LIMIT",
+      order_side: (data.settings.order_side as OrderSide) || "BUY",
     });
   }, [engineParams, headers, readJson]);
 
