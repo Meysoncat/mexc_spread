@@ -153,8 +153,24 @@ def _shutdown_workers() -> None:
     stop_spot_orderbook_ws()
 
 _SNAPSHOT_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_SEC", "3")))
+# Медленные биржи (DEX-индексеры) собираются секундами и лимитированы по rate limit —
+# держим их снимок в кэше дольше, чтобы пользователь получал мгновенный ответ.
+_SNAPSHOT_CACHE_TTL_DYDX_SEC = max(
+    _SNAPSHOT_CACHE_TTL_SEC,
+    float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_DYDX_SEC", "30")),
+)
+_SNAPSHOT_CACHE_TTL_OVERRIDES: dict[str, float] = {
+    "dydx": _SNAPSHOT_CACHE_TTL_DYDX_SEC,
+}
 _snapshot_cache_lock = threading.Lock()
 _snapshot_cache: dict[str, tuple[float, dict]] = {}
+# Per-key build locks — «single-flight», чтобы одновременные запросы одного ключа
+# не собирали снимок параллельно (cache stampede).
+_snapshot_build_locks: dict[str, threading.Lock] = {}
+
+
+def _snapshot_ttl_for(exchange: str) -> float:
+    return _SNAPSHOT_CACHE_TTL_OVERRIDES.get(exchange, _SNAPSHOT_CACHE_TTL_SEC)
 
 _DEPTH_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_DEPTH_CACHE_TTL_SEC", "1")))
 _depth_cache_lock = threading.Lock()
@@ -249,25 +265,51 @@ def _build_dex_snapshot_payload(exchange: str) -> dict:
     return _build_exchange_snapshot_payload(exchange)
 
 
-def _get_snapshot_payload(cache_key: str, *, bypass_cache: bool, builder) -> dict:
-    if _SNAPSHOT_CACHE_TTL_SEC <= 0 or bypass_cache:
+def _get_snapshot_payload(
+    cache_key: str,
+    *,
+    bypass_cache: bool,
+    builder,
+    ttl: float | None = None,
+) -> dict:
+    ttl = _SNAPSHOT_CACHE_TTL_SEC if ttl is None else ttl
+    if ttl <= 0 or bypass_cache:
         payload = builder()
         out = dict(payload)
         out["cache_hit"] = False
         return out
-    now = time.monotonic()
-    with _snapshot_cache_lock:
-        cached = _snapshot_cache.get(cache_key)
-        if cached is not None:
-            expires_at, payload = cached
-            if expires_at > now:
-                out = dict(payload)
+
+    def _fresh_cached() -> dict | None:
+        now = time.monotonic()
+        with _snapshot_cache_lock:
+            cached = _snapshot_cache.get(cache_key)
+            if cached is not None and cached[0] > now:
+                out = dict(cached[1])
                 out["cache_hit"] = True
                 return out
-    payload = builder()
-    if payload.get("ok"):
-        with _snapshot_cache_lock:
-            _snapshot_cache[cache_key] = (now + _SNAPSHOT_CACHE_TTL_SEC, payload)
+        return None
+
+    hit = _fresh_cached()
+    if hit is not None:
+        return hit
+
+    # single-flight: только один поток собирает снимок для ключа, остальные ждут
+    # и получают свежий кэш вместо параллельной пересборки (cache stampede).
+    with _snapshot_cache_lock:
+        build_lock = _snapshot_build_locks.get(cache_key)
+        if build_lock is None:
+            build_lock = threading.Lock()
+            _snapshot_build_locks[cache_key] = build_lock
+
+    with build_lock:
+        hit = _fresh_cached()
+        if hit is not None:
+            return hit
+        payload = builder()
+        if payload.get("ok"):
+            with _snapshot_cache_lock:
+                _snapshot_cache[cache_key] = (time.monotonic() + ttl, payload)
+
     out = dict(payload)
     out["cache_hit"] = False
     return out
@@ -991,6 +1033,7 @@ def snapshot(
             cache_key,
             bypass_cache=nocache,
             builder=lambda: _build_exchange_snapshot_payload(ex, m),
+            ttl=_snapshot_ttl_for(ex),
         )
 
     if not out.get("ok"):

@@ -1,7 +1,14 @@
 /**
  * Дублирует логику mexc_monitor/filters.py для клиентской фильтрации без повторных запросов к API.
  */
-import type { CrossMarketRow, Market, MarketRow, SnapshotRow } from "./types";
+import type {
+  CrossMarketRow,
+  Exchange,
+  Market,
+  MarketRow,
+  SnapshotRow,
+} from "./types";
+import { EXCHANGE_DEFAULT_QUOTE } from "./types";
 
 const UI_LOG = import.meta.env.DEV;
 
@@ -14,17 +21,28 @@ export function isCrossMarketRow(r: unknown): r is CrossMarketRow {
   );
 }
 
-export function quoteSuffixForFilter(market: Market, raw: string): string {
+export function quoteSuffixForFilter(
+  market: Market,
+  raw: string,
+  exchange: Exchange = "mexc",
+): string {
   const s = String(raw ?? "")
     .trim()
     .toUpperCase();
-  if (!s) return market === "futures" ? "_USDT" : "USDT";
-  if (market === "futures" && !s.startsWith("_")) return `_${s}`;
+  // Подчёркнутый формат символа (BTC_USDT) — только у MEXC futures.
+  const mexcFutures = exchange === "mexc" && market === "futures";
+  if (!s) {
+    if (mexcFutures) return "_USDT";
+    return EXCHANGE_DEFAULT_QUOTE[exchange] ?? "USDT";
+  }
+  if (mexcFutures && !s.startsWith("_")) return `_${s}`;
   return s;
 }
 
 export interface FilterOptions {
   market: Market;
+  /** Биржа снимка; влияет на дефолтный суффикс котировки. По умолчанию MEXC. */
+  exchange?: Exchange;
   quoteRaw: string;
   minSpreadBps: number;
   minVolQuote: number;
@@ -129,7 +147,7 @@ export function applyMarketFilters(
     return applyCrossMarketFilters(valid, o);
   }
 
-  const suffix = quoteSuffixForFilter(o.market, o.quoteRaw);
+  const suffix = quoteSuffixForFilter(o.market, o.quoteRaw, o.exchange);
   const search = String(o.search ?? "")
     .trim()
     .toUpperCase();

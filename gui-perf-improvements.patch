@@ -1,0 +1,1281 @@
+From 61367b29c6d331a60668a5d91bbc8908e426ae5c Mon Sep 17 00:00:00 2001
+From: John Doe <g3ab6rielgeogzr6gie4v@gmail.com>
+Date: Wed, 8 Jul 2026 07:43:07 +0000
+Subject: [PATCH] GUI/UX and performance improvements: per-exchange cache TTL,
+ single-flight, parallel cross snapshot, grouped sidebar, tooltips, exchange
+ badges, updated-ago indicator, multi-exchange comparison
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ backend/main.py                          |  69 +++-
+ frontend/src/App.tsx                     |   2 +
+ frontend/src/ExchangeSwitcher.tsx        |  20 +-
+ frontend/src/components/Sidebar.tsx      |  63 +++-
+ frontend/src/filters.ts                  |  28 +-
+ frontend/src/pages/MultiExchangePage.tsx | 406 +++++++++++++++++++++++
+ frontend/src/pages/SpreadMonitorPage.tsx | 220 ++++++++----
+ frontend/src/types.ts                    |  32 ++
+ mexc_monitor/cross_market.py             |  26 +-
+ 9 files changed, 766 insertions(+), 100 deletions(-)
+ create mode 100644 frontend/src/pages/MultiExchangePage.tsx
+
+diff --git a/backend/main.py b/backend/main.py
+index 5d8df30..def4da4 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -153,8 +153,24 @@ def _shutdown_workers() -> None:
+     stop_spot_orderbook_ws()
+ 
+ _SNAPSHOT_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_SEC", "3")))
++# Медленные биржи (DEX-индексеры) собираются секундами и лимитированы по rate limit —
++# держим их снимок в кэше дольше, чтобы пользователь получал мгновенный ответ.
++_SNAPSHOT_CACHE_TTL_DYDX_SEC = max(
++    _SNAPSHOT_CACHE_TTL_SEC,
++    float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_DYDX_SEC", "30")),
++)
++_SNAPSHOT_CACHE_TTL_OVERRIDES: dict[str, float] = {
++    "dydx": _SNAPSHOT_CACHE_TTL_DYDX_SEC,
++}
+ _snapshot_cache_lock = threading.Lock()
+ _snapshot_cache: dict[str, tuple[float, dict]] = {}
++# Per-key build locks — «single-flight», чтобы одновременные запросы одного ключа
++# не собирали снимок параллельно (cache stampede).
++_snapshot_build_locks: dict[str, threading.Lock] = {}
++
++
++def _snapshot_ttl_for(exchange: str) -> float:
++    return _SNAPSHOT_CACHE_TTL_OVERRIDES.get(exchange, _SNAPSHOT_CACHE_TTL_SEC)
+ 
+ _DEPTH_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_DEPTH_CACHE_TTL_SEC", "1")))
+ _depth_cache_lock = threading.Lock()
+@@ -249,25 +265,51 @@ def _build_dex_snapshot_payload(exchange: str) -> dict:
+     return _build_exchange_snapshot_payload(exchange)
+ 
+ 
+-def _get_snapshot_payload(cache_key: str, *, bypass_cache: bool, builder) -> dict:
+-    if _SNAPSHOT_CACHE_TTL_SEC <= 0 or bypass_cache:
++def _get_snapshot_payload(
++    cache_key: str,
++    *,
++    bypass_cache: bool,
++    builder,
++    ttl: float | None = None,
++) -> dict:
++    ttl = _SNAPSHOT_CACHE_TTL_SEC if ttl is None else ttl
++    if ttl <= 0 or bypass_cache:
+         payload = builder()
+         out = dict(payload)
+         out["cache_hit"] = False
+         return out
+-    now = time.monotonic()
+-    with _snapshot_cache_lock:
+-        cached = _snapshot_cache.get(cache_key)
+-        if cached is not None:
+-            expires_at, payload = cached
+-            if expires_at > now:
+-                out = dict(payload)
++
++    def _fresh_cached() -> dict | None:
++        now = time.monotonic()
++        with _snapshot_cache_lock:
++            cached = _snapshot_cache.get(cache_key)
++            if cached is not None and cached[0] > now:
++                out = dict(cached[1])
+                 out["cache_hit"] = True
+                 return out
+-    payload = builder()
+-    if payload.get("ok"):
+-        with _snapshot_cache_lock:
+-            _snapshot_cache[cache_key] = (now + _SNAPSHOT_CACHE_TTL_SEC, payload)
++        return None
++
++    hit = _fresh_cached()
++    if hit is not None:
++        return hit
++
++    # single-flight: только один поток собирает снимок для ключа, остальные ждут
++    # и получают свежий кэш вместо параллельной пересборки (cache stampede).
++    with _snapshot_cache_lock:
++        build_lock = _snapshot_build_locks.get(cache_key)
++        if build_lock is None:
++            build_lock = threading.Lock()
++            _snapshot_build_locks[cache_key] = build_lock
++
++    with build_lock:
++        hit = _fresh_cached()
++        if hit is not None:
++            return hit
++        payload = builder()
++        if payload.get("ok"):
++            with _snapshot_cache_lock:
++                _snapshot_cache[cache_key] = (time.monotonic() + ttl, payload)
++
+     out = dict(payload)
+     out["cache_hit"] = False
+     return out
+@@ -991,6 +1033,7 @@ def snapshot(
+             cache_key,
+             bypass_cache=nocache,
+             builder=lambda: _build_exchange_snapshot_payload(ex, m),
++            ttl=_snapshot_ttl_for(ex),
+         )
+ 
+     if not out.get("ok"):
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 404bc86..781bcb2 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -6,6 +6,7 @@ import { TradingPage } from "./pages/TradingPage";
+ import { SpreadCapturePage } from "./pages/SpreadCapturePage";
+ import { AsterDexPage } from "./pages/AsterDexPage";
+ import { ArbitragePage } from "./pages/ArbitragePage";
++import { MultiExchangePage } from "./pages/MultiExchangePage";
+ import { FuturesArbPage } from "./pages/FuturesArbPage";
+ import { SpreadHistoryPage } from "./pages/SpreadHistoryPage";
+ import { AlertsPage } from "./pages/AlertsPage";
+@@ -21,6 +22,7 @@ function App() {
+           <Route path="spread-capture" element={<SpreadCapturePage />} />
+           <Route path="asterdex" element={<AsterDexPage />} />
+           <Route path="arbitrage" element={<ArbitragePage />} />
++          <Route path="multi-exchange" element={<MultiExchangePage />} />
+           <Route path="futures-arb" element={<FuturesArbPage />} />
+           <Route path="spread-history" element={<SpreadHistoryPage />} />
+           <Route path="alerts" element={<AlertsPage />} />
+diff --git a/frontend/src/ExchangeSwitcher.tsx b/frontend/src/ExchangeSwitcher.tsx
+index 7078995..7376103 100644
+--- a/frontend/src/ExchangeSwitcher.tsx
++++ b/frontend/src/ExchangeSwitcher.tsx
+@@ -36,12 +36,15 @@ interface ExchangeSwitcherProps {
+   active: Exchange;
+   onChange: (exchange: Exchange) => void;
+   disabled?: boolean;
++  /** Последнее известное число пар в снимке по бирже (бейдж на плитке). */
++  pairCounts?: Partial<Record<Exchange, number>>;
+ }
+ 
+ export function ExchangeSwitcher({
+   active,
+   onChange,
+   disabled = false,
++  pairCounts,
+ }: ExchangeSwitcherProps) {
+   return (
+     <div className="flex flex-col gap-1 rounded-xl bg-surface p-1 ring-1 ring-line">
+@@ -53,19 +56,34 @@ export function ExchangeSwitcher({
+           <div className="flex flex-wrap gap-0.5">
+             {group.exchanges.map(({ value, label }) => {
+               const isActive = active === value;
++              const count = pairCounts?.[value];
+               return (
+                 <button
+                   key={value}
+                   type="button"
+                   disabled={disabled}
+                   onClick={() => onChange(value)}
+-                  className={`rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition ${
++                  title={
++                    count != null ? `${label}: ${count} пар в снимке` : label
++                  }
++                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition ${
+                     isActive
+                       ? "bg-accent text-white shadow"
+                       : "text-ink-muted hover:text-ink"
+                   } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+                 >
+                   {label}
++                  {count != null && count > 0 && (
++                    <span
++                      className={`rounded-full px-1 text-[9px] font-semibold leading-4 ${
++                        isActive
++                          ? "bg-white/25 text-white"
++                          : "bg-ink-muted/15 text-ink-muted"
++                      }`}
++                    >
++                      {count}
++                    </span>
++                  )}
+                 </button>
+               );
+             })}
+diff --git a/frontend/src/components/Sidebar.tsx b/frontend/src/components/Sidebar.tsx
+index 81d3614..fcb3319 100644
+--- a/frontend/src/components/Sidebar.tsx
++++ b/frontend/src/components/Sidebar.tsx
+@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
+ import {
+   Activity,
+   ArrowUpDown,
++  Columns3,
+   Bell,
+   ChartCandlestick,
+   ChartLine,
+@@ -21,18 +22,42 @@ export interface NavItem {
+   icon: LucideIcon;
+ }
+ 
+-export const NAV_ITEMS: NavItem[] = [
+-  { path: "/", label: "Spread Monitor", icon: Activity },
+-  { path: "/trading", label: "Trading Admin", icon: Shield },
+-  { path: "/spread-capture", label: "Spread Capture", icon: Download },
+-  { path: "/asterdex", label: "AsterDEX", icon: Zap },
+-  { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
+-  { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
+-  { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },
+-  { path: "/alerts", label: "Алерты", icon: Bell },
+-  { path: "/lead-lag", label: "Lead-Lag", icon: TrendingUp },
++export interface NavGroup {
++  label: string;
++  items: NavItem[];
++}
++
++export const NAV_GROUPS: NavGroup[] = [
++  {
++    label: "Мониторинг",
++    items: [
++      { path: "/", label: "Spread Monitor", icon: Activity },
++      { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },
++      { path: "/lead-lag", label: "Lead-Lag", icon: TrendingUp },
++    ],
++  },
++  {
++    label: "Арбитраж",
++    items: [
++      { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
++      { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
++      { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
++      { path: "/asterdex", label: "AsterDEX", icon: Zap },
++    ],
++  },
++  {
++    label: "Торговля",
++    items: [
++      { path: "/spread-capture", label: "Spread Capture", icon: Download },
++      { path: "/trading", label: "Trading Admin", icon: Shield },
++      { path: "/alerts", label: "Алерты", icon: Bell },
++    ],
++  },
+ ];
+ 
++/** Плоский список всех пунктов (для роутинга/тестов). */
++export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
++
+ export interface SidebarProps {
+   collapsed: boolean;
+   onToggleCollapse: () => void;
+@@ -71,8 +96,19 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
+ 
+       {/* Navigation items */}
+       <nav className="flex-1 overflow-y-auto py-2">
+-        <ul className="flex flex-col gap-0.5 px-2">
+-          {NAV_ITEMS.map((item) => {
++        {NAV_GROUPS.map((group, gi) => (
++          <ul
++            key={group.label}
++            className={`flex flex-col gap-0.5 px-2 ${
++              gi > 0 ? "mt-3 border-t border-line pt-3" : ""
++            }`}
++          >
++            {!collapsed && (
++              <li className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted/70">
++                {group.label}
++              </li>
++            )}
++            {group.items.map((item) => {
+             const isActive =
+               item.path === "/"
+                 ? location.pathname === "/"
+@@ -117,7 +153,8 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
+               </li>
+             );
+           })}
+-        </ul>
++          </ul>
++        ))}
+       </nav>
+     </aside>
+   );
+diff --git a/frontend/src/filters.ts b/frontend/src/filters.ts
+index 4def480..48e98b9 100644
+--- a/frontend/src/filters.ts
++++ b/frontend/src/filters.ts
+@@ -1,7 +1,14 @@
+ /**
+  * Дублирует логику mexc_monitor/filters.py для клиентской фильтрации без повторных запросов к API.
+  */
+-import type { CrossMarketRow, Market, MarketRow, SnapshotRow } from "./types";
++import type {
++  CrossMarketRow,
++  Exchange,
++  Market,
++  MarketRow,
++  SnapshotRow,
++} from "./types";
++import { EXCHANGE_DEFAULT_QUOTE } from "./types";
+ 
+ const UI_LOG = import.meta.env.DEV;
+ 
+@@ -14,17 +21,28 @@ export function isCrossMarketRow(r: unknown): r is CrossMarketRow {
+   );
+ }
+ 
+-export function quoteSuffixForFilter(market: Market, raw: string): string {
++export function quoteSuffixForFilter(
++  market: Market,
++  raw: string,
++  exchange: Exchange = "mexc",
++): string {
+   const s = String(raw ?? "")
+     .trim()
+     .toUpperCase();
+-  if (!s) return market === "futures" ? "_USDT" : "USDT";
+-  if (market === "futures" && !s.startsWith("_")) return `_${s}`;
++  // Подчёркнутый формат символа (BTC_USDT) — только у MEXC futures.
++  const mexcFutures = exchange === "mexc" && market === "futures";
++  if (!s) {
++    if (mexcFutures) return "_USDT";
++    return EXCHANGE_DEFAULT_QUOTE[exchange] ?? "USDT";
++  }
++  if (mexcFutures && !s.startsWith("_")) return `_${s}`;
+   return s;
+ }
+ 
+ export interface FilterOptions {
+   market: Market;
++  /** Биржа снимка; влияет на дефолтный суффикс котировки. По умолчанию MEXC. */
++  exchange?: Exchange;
+   quoteRaw: string;
+   minSpreadBps: number;
+   minVolQuote: number;
+@@ -129,7 +147,7 @@ export function applyMarketFilters(
+     return applyCrossMarketFilters(valid, o);
+   }
+ 
+-  const suffix = quoteSuffixForFilter(o.market, o.quoteRaw);
++  const suffix = quoteSuffixForFilter(o.market, o.quoteRaw, o.exchange);
+   const search = String(o.search ?? "")
+     .trim()
+     .toUpperCase();
+diff --git a/frontend/src/pages/MultiExchangePage.tsx b/frontend/src/pages/MultiExchangePage.tsx
+new file mode 100644
+index 0000000..54fc53c
+--- /dev/null
++++ b/frontend/src/pages/MultiExchangePage.tsx
+@@ -0,0 +1,406 @@
++import { useCallback, useEffect, useMemo, useState } from "react";
++import { RefreshCw } from "lucide-react";
++import { apiUrl } from "../config";
++import { EXCHANGE_GROUPS } from "../ExchangeSwitcher";
++import type { Exchange, MarketRow, SnapshotResponse } from "../types";
++
++/** Все биржи из переключателя (CEX + DEX). */
++const ALL_EXCHANGES: { value: Exchange; label: string }[] =
++  EXCHANGE_GROUPS.flatMap((g) => g.exchanges);
++
++const EXCHANGE_LABELS: Record<string, string> = Object.fromEntries(
++  ALL_EXCHANGES.map((e) => [e.value, e.label]),
++);
++
++/** BTCUSDT / BTC_USDT / BTCUSD → BTC (общий ключ сопоставления между биржами). */
++function baseFromSymbol(symbol: string): string | null {
++  const s = symbol.trim().toUpperCase().replace(/[_\-/]/g, "");
++  for (const q of ["USDT", "USDC", "USD"]) {
++    if (s.endsWith(q) && s.length > q.length) return s.slice(0, -q.length);
++  }
++  return null;
++}
++
++interface ExchangeQuote {
++  exchange: Exchange;
++  symbol: string;
++  bid: number;
++  ask: number;
++  mid: number;
++  spread_bps: number | null;
++  volume_24h_quote: number;
++  funding_rate: number | null;
++}
++
++interface CompareRow {
++  base: string;
++  quotes: ExchangeQuote[];
++  bestBid: ExchangeQuote;
++  bestAsk: ExchangeQuote;
++  /** Купить по лучшему ask, продать по лучшему bid на другой бирже (bps). */
++  crossSpreadBps: number | null;
++}
++
++function fmt(n: number | null | undefined, digits = 4): string {
++  if (n == null || !Number.isFinite(n)) return "—";
++  return n.toLocaleString("ru-RU", {
++    minimumFractionDigits: 0,
++    maximumFractionDigits: digits,
++  });
++}
++
++async function fetchExchangeRows(
++  exchange: Exchange,
++  signal: AbortSignal,
++): Promise<ExchangeQuote[]> {
++  const q = new URLSearchParams({ market: "futures", exchange });
++  const r = await fetch(apiUrl(`/api/snapshot?${q}`), { signal });
++  if (!r.ok) throw new Error(`HTTP ${r.status}`);
++  const data = (await r.json()) as SnapshotResponse;
++  if (!data.ok || !Array.isArray(data.rows)) {
++    throw new Error(data.error ?? "нет данных");
++  }
++  return (data.rows as MarketRow[])
++    .filter((row) => row.bid > 0 && row.ask > 0)
++    .map((row) => ({
++      exchange,
++      symbol: row.symbol,
++      bid: row.bid,
++      ask: row.ask,
++      mid: row.mid,
++      spread_bps: row.spread_bps,
++      volume_24h_quote: row.volume_24h_quote,
++      funding_rate: row.funding_rate,
++    }));
++}
++
++export function MultiExchangePage() {
++  const [selected, setSelected] = useState<Exchange[]>([
++    "mexc",
++    "binance",
++    "bybit",
++    "okx",
++    "gateio",
++    "bitget",
++  ]);
++  const [byExchange, setByExchange] = useState<
++    Partial<Record<Exchange, ExchangeQuote[]>>
++  >({});
++  const [errors, setErrors] = useState<Partial<Record<Exchange, string>>>({});
++  const [loading, setLoading] = useState<Partial<Record<Exchange, boolean>>>(
++    {},
++  );
++  const [search, setSearch] = useState("");
++  const [minCrossBps, setMinCrossBps] = useState(0);
++  const [expanded, setExpanded] = useState<string | null>(null);
++
++  const load = useCallback(
++    (exchanges: Exchange[], signal: AbortSignal) => {
++      setLoading((prev) => {
++        const next = { ...prev };
++        for (const ex of exchanges) next[ex] = true;
++        return next;
++      });
++      for (const ex of exchanges) {
++        fetchExchangeRows(ex, signal)
++          .then((rows) => {
++            setByExchange((prev) => ({ ...prev, [ex]: rows }));
++            setErrors((prev) => ({ ...prev, [ex]: undefined }));
++          })
++          .catch((e: unknown) => {
++            if (e instanceof DOMException && e.name === "AbortError") return;
++            setErrors((prev) => ({
++              ...prev,
++              [ex]: e instanceof Error ? e.message : String(e),
++            }));
++          })
++          .finally(() => {
++            setLoading((prev) => ({ ...prev, [ex]: false }));
++          });
++      }
++    },
++    [],
++  );
++
++  useEffect(() => {
++    const ac = new AbortController();
++    load(selected, ac.signal);
++    return () => ac.abort();
++  }, [selected, load]);
++
++  const rows = useMemo<CompareRow[]>(() => {
++    const byBase = new Map<string, ExchangeQuote[]>();
++    for (const ex of selected) {
++      for (const q of byExchange[ex] ?? []) {
++        const base = baseFromSymbol(q.symbol);
++        if (!base) continue;
++        const list = byBase.get(base);
++        if (list) list.push(q);
++        else byBase.set(base, [q]);
++      }
++    }
++    const out: CompareRow[] = [];
++    for (const [base, quotes] of byBase) {
++      if (quotes.length < 2) continue;
++      let bestBid = quotes[0];
++      let bestAsk = quotes[0];
++      for (const q of quotes) {
++        if (q.bid > bestBid.bid) bestBid = q;
++        if (q.ask < bestAsk.ask) bestAsk = q;
++      }
++      // Одинаковый тикер ≠ одинаковый актив: если mid расходится в разы —
++      // это, скорее всего, разные токены, кросс-спред не считаем.
++      let minMid = Infinity;
++      let maxMid = 0;
++      for (const q of quotes) {
++        if (q.mid > 0) {
++          if (q.mid < minMid) minMid = q.mid;
++          if (q.mid > maxMid) maxMid = q.mid;
++        }
++      }
++      const sameAsset = minMid > 0 && maxMid / minMid < 2;
++      const crossSpreadBps =
++        sameAsset && bestAsk.ask > 0 && bestBid.exchange !== bestAsk.exchange
++          ? (10_000 * (bestBid.bid - bestAsk.ask)) / bestAsk.ask
++          : null;
++      out.push({ base, quotes, bestBid, bestAsk, crossSpreadBps });
++    }
++    out.sort(
++      (a, b) => (b.crossSpreadBps ?? -Infinity) - (a.crossSpreadBps ?? -Infinity),
++    );
++    return out;
++  }, [byExchange, selected]);
++
++  const filtered = useMemo(() => {
++    const s = search.trim().toUpperCase();
++    return rows.filter(
++      (r) =>
++        (!s || r.base.includes(s)) &&
++        (minCrossBps <= 0 || (r.crossSpreadBps ?? -Infinity) >= minCrossBps),
++    );
++  }, [rows, search, minCrossBps]);
++
++  const anyLoading = selected.some((ex) => loading[ex]);
++
++  return (
++    <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
++      <div>
++        <h1 className="text-lg font-semibold text-ink">
++          Мультибиржа: сравнение по символу
++        </h1>
++        <p className="mt-1 text-xs text-ink-muted">
++          Фьючерсные пары, присутствующие минимум на двух биржах. Кросс-спред =
++          купить по лучшему ask и продать по лучшему bid на другой бирже.
++        </p>
++      </div>
++
++      <div className="flex flex-wrap items-center gap-2">
++        {ALL_EXCHANGES.map(({ value, label }) => {
++          const isOn = selected.includes(value);
++          return (
++            <button
++              key={value}
++              type="button"
++              onClick={() =>
++                setSelected((prev) =>
++                  isOn ? prev.filter((e) => e !== value) : [...prev, value],
++                )
++              }
++              className={`rounded-md px-2 py-1 text-xs font-medium transition ${
++                isOn
++                  ? "bg-accent text-white shadow"
++                  : "bg-surface text-ink-muted ring-1 ring-line hover:text-ink"
++              }`}
++            >
++              {label}
++              {loading[value] ? "…" : ""}
++              {errors[value] ? " ⚠" : ""}
++            </button>
++          );
++        })}
++        <button
++          type="button"
++          onClick={() => load(selected, new AbortController().signal)}
++          disabled={anyLoading}
++          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-surface-elevated disabled:opacity-50"
++        >
++          <RefreshCw
++            className={`h-3.5 w-3.5 ${anyLoading ? "animate-spin" : ""}`}
++          />
++          Обновить
++        </button>
++      </div>
++
++      {Object.entries(errors).filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
++        .length > 0 && (
++        <p className="text-xs text-amber-600 dark:text-amber-400">
++          Ошибки:{" "}
++          {Object.entries(errors)
++            .filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
++            .map(([ex, msg]) => `${EXCHANGE_LABELS[ex] ?? ex}: ${msg}`)
++            .join(" · ")}
++        </p>
++      )}
++
++      <div className="flex flex-wrap items-center gap-3">
++        <input
++          value={search}
++          onChange={(e) => setSearch(e.target.value)}
++          placeholder="Поиск символа (BTC, ETH…)"
++          className="w-56 rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
++        />
++        <label className="flex items-center gap-2 text-xs text-ink-muted">
++          Мин. кросс-спред (bps)
++          <input
++            type="number"
++            min={0}
++            step={0.5}
++            value={minCrossBps || ""}
++            onChange={(e) => setMinCrossBps(Number(e.target.value) || 0)}
++            className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
++          />
++        </label>
++        <span className="text-xs text-ink-muted">
++          Совпадений: <span className="font-mono">{filtered.length}</span>
++        </span>
++      </div>
++
++      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-surface-elevated">
++        <table className="w-full text-left text-sm">
++          <thead className="sticky top-0 bg-surface-elevated text-xs uppercase tracking-wide text-ink-muted">
++            <tr>
++              <th className="px-3 py-2">Символ</th>
++              <th className="px-3 py-2">Бирж</th>
++              <th className="px-3 py-2">Лучший bid</th>
++              <th className="px-3 py-2">Лучший ask</th>
++              <th className="px-3 py-2">Кросс-спред (bps)</th>
++            </tr>
++          </thead>
++          <tbody>
++            {filtered.slice(0, 300).map((r) => (
++              <MultiExchangeRow
++                key={r.base}
++                row={r}
++                expanded={expanded === r.base}
++                onToggle={() =>
++                  setExpanded((prev) => (prev === r.base ? null : r.base))
++                }
++              />
++            ))}
++            {filtered.length === 0 && (
++              <tr>
++                <td colSpan={5} className="px-3 py-8 text-center text-ink-muted">
++                  {anyLoading ? "Загрузка…" : "Нет совпадений"}
++                </td>
++              </tr>
++            )}
++          </tbody>
++        </table>
++      </div>
++    </div>
++  );
++}
++
++function MultiExchangeRow({
++  row,
++  expanded,
++  onToggle,
++}: {
++  row: CompareRow;
++  expanded: boolean;
++  onToggle: () => void;
++}) {
++  const positive = (row.crossSpreadBps ?? 0) > 0;
++  return (
++    <>
++      <tr
++        onClick={onToggle}
++        className="cursor-pointer border-t border-line/60 transition hover:bg-accent/5"
++      >
++        <td className="px-3 py-2 font-mono font-medium text-ink">{row.base}</td>
++        <td className="px-3 py-2 font-mono text-ink-muted">
++          {row.quotes.length}
++        </td>
++        <td className="px-3 py-2 font-mono">
++          {fmt(row.bestBid.bid)}{" "}
++          <span className="text-xs text-ink-muted">
++            {EXCHANGE_LABELS[row.bestBid.exchange]}
++          </span>
++        </td>
++        <td className="px-3 py-2 font-mono">
++          {fmt(row.bestAsk.ask)}{" "}
++          <span className="text-xs text-ink-muted">
++            {EXCHANGE_LABELS[row.bestAsk.exchange]}
++          </span>
++        </td>
++        <td
++          className={`px-3 py-2 font-mono font-semibold ${
++            positive
++              ? "text-emerald-600 dark:text-emerald-400"
++              : "text-ink-muted"
++          }`}
++        >
++          {fmt(row.crossSpreadBps, 2)}
++        </td>
++      </tr>
++      {expanded && (
++        <tr className="border-t border-line/40 bg-surface">
++          <td colSpan={5} className="px-3 py-2">
++            <table className="w-full text-xs">
++              <thead className="text-ink-muted">
++                <tr>
++                  <th className="px-2 py-1 text-left">Биржа</th>
++                  <th className="px-2 py-1 text-left">Символ</th>
++                  <th className="px-2 py-1 text-right">Bid</th>
++                  <th className="px-2 py-1 text-right">Ask</th>
++                  <th className="px-2 py-1 text-right">Спред (bps)</th>
++                  <th className="px-2 py-1 text-right">Объём 24h</th>
++                  <th className="px-2 py-1 text-right">Funding</th>
++                </tr>
++              </thead>
++              <tbody>
++                {[...row.quotes]
++                  .sort((a, b) => b.bid - a.bid)
++                  .map((q) => (
++                    <tr key={q.exchange} className="border-t border-line/40">
++                      <td className="px-2 py-1 font-medium text-ink">
++                        {EXCHANGE_LABELS[q.exchange]}
++                        {q.exchange === row.bestBid.exchange && (
++                          <span className="ml-1 text-emerald-600 dark:text-emerald-400">
++                            bid★
++                          </span>
++                        )}
++                        {q.exchange === row.bestAsk.exchange && (
++                          <span className="ml-1 text-sky-600 dark:text-sky-400">
++                            ask★
++                          </span>
++                        )}
++                      </td>
++                      <td className="px-2 py-1 font-mono">{q.symbol}</td>
++                      <td className="px-2 py-1 text-right font-mono">
++                        {fmt(q.bid)}
++                      </td>
++                      <td className="px-2 py-1 text-right font-mono">
++                        {fmt(q.ask)}
++                      </td>
++                      <td className="px-2 py-1 text-right font-mono">
++                        {fmt(q.spread_bps, 2)}
++                      </td>
++                      <td className="px-2 py-1 text-right font-mono">
++                        {fmt(q.volume_24h_quote, 0)}
++                      </td>
++                      <td className="px-2 py-1 text-right font-mono">
++                        {q.funding_rate != null
++                          ? `${fmt(q.funding_rate * 100, 4)}%`
++                          : "—"}
++                      </td>
++                    </tr>
++                  ))}
++              </tbody>
++            </table>
++          </td>
++        </tr>
++      )}
++    </>
++  );
++}
+diff --git a/frontend/src/pages/SpreadMonitorPage.tsx b/frontend/src/pages/SpreadMonitorPage.tsx
+index dd508ee..59aafa2 100644
+--- a/frontend/src/pages/SpreadMonitorPage.tsx
++++ b/frontend/src/pages/SpreadMonitorPage.tsx
+@@ -23,6 +23,7 @@ import {
+   Moon,
+   RefreshCw,
+   Star,
++  HelpCircle,
+   Sun,
+   X,
+   Zap,
+@@ -59,6 +60,7 @@ import type {
+   SnapshotResponse,
+   SnapshotRow,
+ } from "../types";
++import { defaultQuoteForExchange } from "../types";
+ import { ExchangeSwitcher, MULTI_MARKET_EXCHANGES } from "../ExchangeSwitcher";
+ import { useVirtualRows } from "../useVirtualRows";
+ import { useNavigationState } from "../hooks/useNavigationState";
+@@ -112,6 +114,18 @@ const SORT_OPTIONS_CROSS: { value: string; label: string }[] = [
+ const TABLE_ROW_PX = 40;
+ const VIRTUAL_OVERSCAN = 10;
+ 
++/** Нижняя граница интервала автообновления — не чаще времени ответа биржи. */
++const AUTO_REFRESH_MIN_SEC = 10;
++
++/** Маленькая иконка «?» с пояснением в title — вместо абзацев в сайдбаре. */
++function InfoHint({ text }: { text: string }) {
++  return (
++    <span title={text} className="inline-flex cursor-help align-middle">
++      <HelpCircle className="h-3.5 w-3.5 text-ink-muted/70 hover:text-accent" />
++    </span>
++  );
++}
++
+ type DisplayMode = "list" | "tiles";
+ type TilesVariant = "cards" | "charts";
+ 
+@@ -126,6 +140,26 @@ const SPREAD_QUICK_MAX_TILES_STORAGE_KEY = "mexc-ui-spread-quick-max-tiles";
+ const SPREAD_QUICK_MAX_TILES_DEFAULT = 24;
+ 
+ const DISPLAY_STORAGE_KEY = "mexc-ui-display";
++const EXCHANGE_PAIR_COUNTS_STORAGE_KEY = "mexc-ui-exchange-pair-counts";
++
++function readExchangePairCounts(): Partial<Record<Exchange, number>> {
++  if (typeof window === "undefined") return {};
++  try {
++    const raw = window.localStorage.getItem(EXCHANGE_PAIR_COUNTS_STORAGE_KEY);
++    if (!raw) return {};
++    const parsed: unknown = JSON.parse(raw);
++    if (!parsed || typeof parsed !== "object") return {};
++    const out: Partial<Record<Exchange, number>> = {};
++    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
++      if (typeof v === "number" && Number.isFinite(v)) {
++        out[k as Exchange] = v;
++      }
++    }
++    return out;
++  } catch {
++    return {};
++  }
++}
+ 
+ // ─── Helpers ───────────────────────────────────────────────────────────────────
+ 
+@@ -1213,6 +1247,10 @@ export function SpreadMonitorPage() {
+ 
+   const [autoRefresh, setAutoRefresh] = useState(false);
+   const [intervalSec, setIntervalSec] = useState(20);
++  const [nowMs, setNowMs] = useState(() => Date.now());
++  const [exchangePairCounts, setExchangePairCounts] = useState<
++    Partial<Record<Exchange, number>>
++  >(() => readExchangePairCounts());
+ 
+   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => {
+     if (typeof window === "undefined") return "list";
+@@ -1449,10 +1487,22 @@ export function SpreadMonitorPage() {
+           console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
+         }
+         setRows(nextRows);
+-        setTotalSnapshot(
+-          typeof data.count === "number" ? data.count : nextRows.length,
+-        );
++        const total =
++          typeof data.count === "number" ? data.count : nextRows.length;
++        setTotalSnapshot(total);
+         setLoadedAt(data.loaded_at ?? null);
++        setExchangePairCounts((prev) => {
++          const next = { ...prev, [exchange]: total };
++          try {
++            window.localStorage.setItem(
++              EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
++              JSON.stringify(next),
++            );
++          } catch {
++            /* localStorage недоступен — бейджи просто не переживут перезагрузку */
++          }
++          return next;
++        });
+       } catch (e) {
+         if (e instanceof DOMException && e.name === "AbortError") return;
+         if (id !== fetchIdRef.current) return;
+@@ -1478,7 +1528,7 @@ export function SpreadMonitorPage() {
+   }, [load]);
+ 
+   useEffect(() => {
+-    setQuoteRaw(market === "futures" ? "_USDT" : "USDT");
++    setQuoteRaw(defaultQuoteForExchange(exchange, market));
+     setSortBy(market === "cross" ? "basis_mid_bps" : "spread_bps");
+     setAscending(false);
+     if (market === "cross") {
+@@ -1487,16 +1537,13 @@ export function SpreadMonitorPage() {
+       }
+       setSpreadQuickHunt(false);
+     }
+-  }, [market, restoreQuickHuntSavedView]);
++  }, [market, exchange, restoreQuickHuntSavedView]);
+ 
+-  /** При смене биржи: сбросить quoteRaw на "USDT" для DEX-бирж. */
++  /** При смене биржи: quoteRaw пересчитается эффектом выше по бирже+рынку. */
+   const handleExchangeChange = useCallback(
+     (next: Exchange) => {
+       if (next === exchange) return;
+       setExchange(next);
+-      if (next !== "mexc") {
+-        setQuoteRaw("USDT");
+-      }
+     },
+     [exchange, setExchange],
+   );
+@@ -1508,10 +1555,25 @@ export function SpreadMonitorPage() {
+ 
+   useEffect(() => {
+     if (!autoRefresh) return;
+-    const t = window.setInterval(() => void load(), intervalSec * 1000);
++    const t = window.setInterval(
++      () => void load(),
++      Math.max(AUTO_REFRESH_MIN_SEC, intervalSec) * 1000,
++    );
+     return () => window.clearInterval(t);
+   }, [autoRefresh, intervalSec, load]);
+ 
++  useEffect(() => {
++    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
++    return () => window.clearInterval(t);
++  }, []);
++
++  const updatedSecondsAgo = useMemo(() => {
++    if (!loadedAt) return null;
++    const ts = new Date(loadedAt).getTime();
++    if (!Number.isFinite(ts)) return null;
++    return Math.max(0, Math.round((nowMs - ts) / 1000));
++  }, [loadedAt, nowMs]);
++
+   const rowUniverse = useMemo(() => {
+     if (favoritesScope !== "favorites_only") return rows;
+     return rows.filter((r) => favoriteSet.has(favoriteKeyForRow(market, r)));
+@@ -1522,10 +1584,32 @@ export function SpreadMonitorPage() {
+   const effectiveAskL1Nq =
+     spreadQuickHunt && market !== "cross" ? minAskL1NotionalQuote : 0;
+ 
++  const hasActiveFilters =
++    quoteRaw.trim().toUpperCase() !==
++      defaultQuoteForExchange(exchange, market).toUpperCase() ||
++    minSpreadBps > 0 ||
++    minVolQuote > 0 ||
++    search.trim() !== "" ||
++    favoritesScope === "favorites_only" ||
++    effectiveBidL1Nq > 0 ||
++    effectiveAskL1Nq > 0;
++
++  const resetFilters = useCallback(() => {
++    setQuoteRaw(defaultQuoteForExchange(exchange, market));
++    setMinSpreadBps(0);
++    setMinVolQuote(0);
++    setSearch("");
++    setMinBidL1NotionalQuote(0);
++    setMinAskL1NotionalQuote(0);
++    setSpreadQuickHunt(false);
++    setFavoritesScopePersist("all");
++  }, [exchange, market, setFavoritesScopePersist]);
++
+   const filtered = useMemo(
+     () =>
+       applyMarketFilters(rowUniverse, {
+         market,
++        exchange,
+         quoteRaw,
+         minSpreadBps: minSpreadBps,
+         minVolQuote: minVolQuote,
+@@ -1538,6 +1622,7 @@ export function SpreadMonitorPage() {
+     [
+       rowUniverse,
+       market,
++      exchange,
+       quoteRaw,
+       minSpreadBps,
+       minVolQuote,
+@@ -1633,7 +1718,7 @@ export function SpreadMonitorPage() {
+       <aside className="hidden w-80 shrink-0 flex-col border-r border-line bg-surface-elevated shadow-panel dark:shadow-panel-dark xl:flex">
+         <div className="border-b border-line p-5">
+           <p className="text-xs font-medium uppercase tracking-wider text-ink-muted">
+-            {exchange === "mexc" ? "MEXC" : exchange === "asterdex" ? "AsterDEX" : "Lighter"}
++            {EXCHANGE_DISPLAY_NAMES[exchange]}
+           </p>
+           <h1 className="mt-1 text-lg font-semibold leading-tight text-ink">
+             Spread Monitor
+@@ -1649,6 +1734,7 @@ export function SpreadMonitorPage() {
+               active={exchange}
+               onChange={handleExchangeChange}
+               disabled={isFetching}
++              pairCounts={exchangePairCounts}
+             />
+           </section>
+ 
+@@ -1692,25 +1778,14 @@ export function SpreadMonitorPage() {
+             >
+               Базис (спот ↔ перп)
+             </button>
+-            <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+-              {market === "futures"
+-                ? "contract.mexc.com — bid1/ask1, объёмы, funding."
+-                : market === "cross"
+-                  ? "Два снимка: спот + фьючерсы, сопоставление BTCUSDT ↔ BTC_USDT, базис по mid."
+-                  : "api.mexc.com — bookTicker + 24h."}
+-            </p>
+           </section>
+           )}
+ 
+           <section className="space-y-3 border-t border-line pt-4">
+-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
++            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+               Избранное
++              <InfoHint text="Список общий для текущего рынка (спот / фьючерсы / базис) и виден в списке и плитках. Режим «Только избранные» сужает набор строк до отмеченных звёздочкой; затем к ним применяются фильтры ниже." />
+             </h2>
+-            <p className="text-[11px] leading-relaxed text-ink-muted">
+-              Список общий для текущего рынка (спот / фьючерсы / базис) и виден в списке
+-              и плитках. Режим «Только избранные» сужает набор строк до отмеченных
+-              звёздочкой; затем к ним применяются фильтры ниже.
+-            </p>
+             <label className="mb-1 block text-xs font-medium text-ink-muted">
+               Набор для таблицы
+             </label>
+@@ -1778,13 +1853,10 @@ export function SpreadMonitorPage() {
+           </section>
+ 
+           <section className="space-y-3">
+-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
++            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+               Фильтры
++              <InfoHint text="Котировка, спред, объём и поиск применяются к строкам после режима «Избранное» (ко всему снимку или только к отмеченным парам)." />
+             </h2>
+-            <p className="text-[11px] leading-relaxed text-ink-muted">
+-              Котировка, спред, объём и поиск применяются к строкам после режима
+-              «Избранное» (ко всему снимку или только к отмеченным парам).
+-            </p>
+             <div>
+               <label className="mb-1 block text-xs text-ink-muted">
+                 Котировка (суффикс символа)
+@@ -1871,10 +1943,11 @@ export function SpreadMonitorPage() {
+                   <div className="mt-3 space-y-2 border-t border-line/60 pt-3">
+                     <div>
+                       <label
+-                        className="mb-1 block text-[11px] text-ink-muted"
++                        className="mb-1 flex items-center gap-1 text-[11px] text-ink-muted"
+                         htmlFor="spread-quick-max-tiles"
+                       >
+                         Макс. плиток с графиками
++                        <InfoHint text={`Первые N пар после фильтров и сортировки — только они попадают в сетку; запросы /api/klines у мини‑графиков при появлении в зоне видимости. Диапазон ${TILES_MAX_SYMBOLS_MIN}–${TILES_MAX_SYMBOLS_MAX}, значение сохраняется отдельно от общего режима «Плитки».`} />
+                       </label>
+                       <input
+                         id="spread-quick-max-tiles"
+@@ -1890,13 +1963,6 @@ export function SpreadMonitorPage() {
+                         }
+                         className="w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
+                       />
+-                      <p className="mt-1 text-[10px] leading-relaxed text-ink-muted">
+-                        Первые N пар после фильтров и сортировки — только они
+-                        попадают в сетку; запросы /api/klines у мини‑графиков при
+-                        появлении в зоне видимости. Диапазон {TILES_MAX_SYMBOLS_MIN}–
+-                        {TILES_MAX_SYMBOLS_MAX}, значение сохраняется отдельно от
+-                        общего режима «Плитки».
+-                      </p>
+                     </div>
+                     <div>
+                       <label className="mb-1 block text-[11px] text-ink-muted">
+@@ -1950,16 +2016,16 @@ export function SpreadMonitorPage() {
+           </section>
+ 
+           <section className="space-y-3">
+-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
++            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+               Сортировка
++              <InfoHint
++                text={`«Список»: сортировка кликом по заголовку столбца. «Плитки»: чипы над сеткой (↑↓ как в таблице).${
++                  spreadQuickHunt && market !== "cross"
++                    ? " В режиме быстрого поиска список недоступен."
++                    : ""
++                }`}
++              />
+             </h2>
+-            <p className="text-xs leading-relaxed text-ink-muted">
+-              «Список»: сортировка кликом по заголовку столбца. «Плитки»: чипы над
+-              сеткой (↑↓ как в таблице).
+-              {spreadQuickHunt && market !== "cross"
+-                ? " В режиме быстрого поиска список недоступен."
+-                : ""}
+-            </p>
+             <select
+               value={sortBy}
+               onChange={(e) => setSortBy(e.target.value)}
+@@ -2067,16 +2133,13 @@ export function SpreadMonitorPage() {
+                   </button>
+                 </div>
+ 
+-                <p className="text-[11px] leading-relaxed text-ink-muted">
+-                  «Графики»: мини-линия цены закрытия (1h), запрос свечей при
+-                  прокрутке к плитке.
+-                </p>
+                 <div>
+                   <label
+-                    className="mb-1 block text-xs text-ink-muted"
++                    className="mb-1 flex items-center gap-1 text-xs text-ink-muted"
+                     htmlFor="tiles-max-symbols"
+                   >
+                     Макс. плиток на экране
++                    <InfoHint text={`Первые N пар после фильтров и сортировки. Меньше N — меньше узлов в сетке и запросов свечей в режиме «Графики» (мини-линия цены закрытия 1h, запрос свечей при прокрутке к плитке). Диапазон: ${TILES_MAX_SYMBOLS_MIN}–${TILES_MAX_SYMBOLS_MAX}.`} />
+                   </label>
+                   <input
+                     id="tiles-max-symbols"
+@@ -2090,11 +2153,6 @@ export function SpreadMonitorPage() {
+                     }
+                     className="w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
+                   />
+-                  <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+-                    Первые N пар после фильтров и сортировки. Меньше N — меньше
+-                    узлов в сетке и запросов свечей в режиме «Графики». Диапазон:{" "}
+-                    {TILES_MAX_SYMBOLS_MIN}–{TILES_MAX_SYMBOLS_MAX}.
+-                  </p>
+                 </div>
+               </div>
+             ) : null}
+@@ -2117,12 +2175,16 @@ export function SpreadMonitorPage() {
+             </label>
+             <input
+               type="range"
+-              min={10}
++              min={AUTO_REFRESH_MIN_SEC}
+               max={120}
+               step={5}
+               disabled={!autoRefresh}
+               value={intervalSec}
+-              onChange={(e) => setIntervalSec(Number(e.target.value))}
++              onChange={(e) =>
++                setIntervalSec(
++                  Math.max(AUTO_REFRESH_MIN_SEC, Number(e.target.value) || 0),
++                )
++              }
+               className="w-full accent-accent disabled:opacity-40"
+             />
+           </section>
+@@ -2193,10 +2255,24 @@ export function SpreadMonitorPage() {
+               <p className="text-xs text-ink-muted">
+                 {loadedAt ? (
+                   <>
+-                    Обновлено (UTC):{" "}
+-                    {new Date(loadedAt).toLocaleString("ru-RU", {
+-                      timeZone: "UTC",
+-                    })}
++                    {updatedSecondsAgo !== null && (
++                      <span
++                        className={
++                          updatedSecondsAgo <= Math.max(intervalSec, 30)
++                            ? "font-medium text-emerald-600 dark:text-emerald-400"
++                            : "font-medium text-amber-600 dark:text-amber-400"
++                        }
++                      >
++                        Обновлено {updatedSecondsAgo} с назад
++                      </span>
++                    )}
++                    <span title={loadedAt}>
++                      {" "}·{" "}
++                      {new Date(loadedAt).toLocaleString("ru-RU", {
++                        timeZone: "UTC",
++                      })}{" "}
++                      UTC
++                    </span>
+                   </>
+                 ) : (
+                   " "
+@@ -2624,11 +2700,29 @@ export function SpreadMonitorPage() {
+             {!showBlockingLoading &&
+               filtered.length === 0 &&
+               !error &&
+-              !isFetching && (
++              !isFetching &&
++              (rows.length > 0 ? (
++                <div className="flex flex-col items-center gap-3 p-8 text-center">
++                  <p className="text-ink-muted">
++                    0 совпадений: под фильтры не попала ни одна пара из{" "}
++                    <span className="font-mono">{rows.length}</span> в снимке{" "}
++                    {EXCHANGE_DISPLAY_NAMES[exchange]}.
++                  </p>
++                  {hasActiveFilters && (
++                    <button
++                      type="button"
++                      onClick={resetFilters}
++                      className="rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/20"
++                    >
++                      Сбросить фильтры
++                    </button>
++                  )}
++                </div>
++              ) : (
+                 <p className="p-8 text-center text-ink-muted">
+                   Нет данных для {EXCHANGE_DISPLAY_NAMES[exchange]}
+                 </p>
+-              )}
++              ))}
+           </div>
+         </div>
+       </main>
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index b89376d..bed461c 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -13,6 +13,38 @@ export type Exchange =
+ 
+ export type Market = "spot" | "futures" | "cross";
+ 
++/**
++ * Котировка (суффикс символа), в которой торгует биржа по умолчанию.
++ * Большинство бирж — USDT; dYdX торгует перпами к USD (BTC-USD → BTCUSD).
++ */
++export const EXCHANGE_DEFAULT_QUOTE: Record<Exchange, string> = {
++  mexc: "USDT",
++  asterdex: "USDT",
++  lighter: "USDT",
++  binance: "USDT",
++  bybit: "USDT",
++  okx: "USDT",
++  gateio: "USDT",
++  htx: "USDT",
++  bitget: "USDT",
++  dydx: "USD",
++  hyperliquid: "USDT",
++};
++
++/**
++ * Дефолтная котировка для пары биржа+рынок.
++ * Символьный подчёркнутый формат (BTC_USDT) — только у MEXC futures.
++ */
++export function defaultQuoteForExchange(
++  exchange: Exchange,
++  market: Market,
++): string {
++  if (exchange === "mexc") {
++    return market === "futures" ? "_USDT" : "USDT";
++  }
++  return EXCHANGE_DEFAULT_QUOTE[exchange] ?? "USDT";
++}
++
+ /** Рынок для REST стакана (в режиме «Базис» выбирается нога). */
+ export type DomMarket = "spot" | "futures";
+ 
+diff --git a/mexc_monitor/cross_market.py b/mexc_monitor/cross_market.py
+index 29336d6..3d90058 100644
+--- a/mexc_monitor/cross_market.py
++++ b/mexc_monitor/cross_market.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import concurrent.futures as cf
+ import logging
+ from dataclasses import replace
+ from datetime import datetime, timezone
+@@ -94,11 +95,26 @@ def cross_rows_to_dataframe(rows: list[CrossSpreadRow]) -> pd.DataFrame:
+ 
+ 
+ def load_cross_snapshot(settings: Settings) -> pd.DataFrame:
+-    """Два снимка (спот + фьючерсы), сопоставление по BTCUSDT ↔ BTC_USDT."""
+-    spot_rows = fetch_merged_snapshot_rows(settings)
+-    spot_rows = filter_rows_by_universe(spot_rows, "spot", settings)
+-    fut_rows = fetch_futures_snapshot_rows(settings)
+-    fut_rows = filter_rows_by_universe(fut_rows, "futures", settings)
++    """Два снимка (спот + фьючерсы), сопоставление по BTCUSDT ↔ BTC_USDT.
++
++    Спот и фьючерсы — независимые сетевые запросы, поэтому забираем их параллельно.
++    """
++
++    def _load_spot() -> list[BookTickerRow]:
++        return filter_rows_by_universe(
++            fetch_merged_snapshot_rows(settings), "spot", settings
++        )
++
++    def _load_fut() -> list[BookTickerRow]:
++        return filter_rows_by_universe(
++            fetch_futures_snapshot_rows(settings), "futures", settings
++        )
++
++    with cf.ThreadPoolExecutor(max_workers=2) as pool:
++        spot_future = pool.submit(_load_spot)
++        fut_future = pool.submit(_load_fut)
++        spot_rows = spot_future.result()
++        fut_rows = fut_future.result()
+     ts = datetime.now(timezone.utc).isoformat()
+     spot_rows = [
+         enrich_row_execution(replace(r, observed_at=ts), "spot", settings) for r in spot_rows
+-- 
+2.34.1
+

@@ -6,6 +6,7 @@ import { TradingPage } from "./pages/TradingPage";
 import { SpreadCapturePage } from "./pages/SpreadCapturePage";
 import { AsterDexPage } from "./pages/AsterDexPage";
 import { ArbitragePage } from "./pages/ArbitragePage";
+import { MultiExchangePage } from "./pages/MultiExchangePage";
 import { FuturesArbPage } from "./pages/FuturesArbPage";
 import { SpreadHistoryPage } from "./pages/SpreadHistoryPage";
 import { AlertsPage } from "./pages/AlertsPage";
@@ -21,6 +22,7 @@ function App() {
           <Route path="spread-capture" element={<SpreadCapturePage />} />
           <Route path="asterdex" element={<AsterDexPage />} />
           <Route path="arbitrage" element={<ArbitragePage />} />
+          <Route path="multi-exchange" element={<MultiExchangePage />} />
           <Route path="futures-arb" element={<FuturesArbPage />} />
           <Route path="spread-history" element={<SpreadHistoryPage />} />
           <Route path="alerts" element={<AlertsPage />} />

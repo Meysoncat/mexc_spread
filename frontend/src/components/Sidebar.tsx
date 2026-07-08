@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
   ArrowUpDown,
+  Columns3,
   Bell,
   ChartCandlestick,
   ChartLine,
@@ -21,17 +22,41 @@ export interface NavItem {
   icon: LucideIcon;
 }
 
-export const NAV_ITEMS: NavItem[] = [
-  { path: "/", label: "Spread Monitor", icon: Activity },
-  { path: "/trading", label: "Trading Admin", icon: Shield },
-  { path: "/spread-capture", label: "Spread Capture", icon: Download },
-  { path: "/asterdex", label: "AsterDEX", icon: Zap },
-  { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
-  { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
-  { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },
-  { path: "/alerts", label: "Алерты", icon: Bell },
-  { path: "/lead-lag", label: "Lead-Lag", icon: TrendingUp },
+export interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+export const NAV_GROUPS: NavGroup[] = [
+  {
+    label: "Мониторинг",
+    items: [
+      { path: "/", label: "Spread Monitor", icon: Activity },
+      { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },
+      { path: "/lead-lag", label: "Lead-Lag", icon: TrendingUp },
+    ],
+  },
+  {
+    label: "Арбитраж",
+    items: [
+      { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
+      { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
+      { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
+      { path: "/asterdex", label: "AsterDEX", icon: Zap },
+    ],
+  },
+  {
+    label: "Торговля",
+    items: [
+      { path: "/spread-capture", label: "Spread Capture", icon: Download },
+      { path: "/trading", label: "Trading Admin", icon: Shield },
+      { path: "/alerts", label: "Алерты", icon: Bell },
+    ],
+  },
 ];
+
+/** Плоский список всех пунктов (для роутинга/тестов). */
+export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -71,8 +96,19 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
 
       {/* Navigation items */}
       <nav className="flex-1 overflow-y-auto py-2">
-        <ul className="flex flex-col gap-0.5 px-2">
-          {NAV_ITEMS.map((item) => {
+        {NAV_GROUPS.map((group, gi) => (
+          <ul
+            key={group.label}
+            className={`flex flex-col gap-0.5 px-2 ${
+              gi > 0 ? "mt-3 border-t border-line pt-3" : ""
+            }`}
+          >
+            {!collapsed && (
+              <li className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted/70">
+                {group.label}
+              </li>
+            )}
+            {group.items.map((item) => {
             const isActive =
               item.path === "/"
                 ? location.pathname === "/"
@@ -117,7 +153,8 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
               </li>
             );
           })}
-        </ul>
+          </ul>
+        ))}
       </nav>
     </aside>
   );

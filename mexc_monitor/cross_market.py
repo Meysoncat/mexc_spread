@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures as cf
 import logging
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -94,11 +95,26 @@ def cross_rows_to_dataframe(rows: list[CrossSpreadRow]) -> pd.DataFrame:
 
 
 def load_cross_snapshot(settings: Settings) -> pd.DataFrame:
-    """Два снимка (спот + фьючерсы), сопоставление по BTCUSDT ↔ BTC_USDT."""
-    spot_rows = fetch_merged_snapshot_rows(settings)
-    spot_rows = filter_rows_by_universe(spot_rows, "spot", settings)
-    fut_rows = fetch_futures_snapshot_rows(settings)
-    fut_rows = filter_rows_by_universe(fut_rows, "futures", settings)
+    """Два снимка (спот + фьючерсы), сопоставление по BTCUSDT ↔ BTC_USDT.
+
+    Спот и фьючерсы — независимые сетевые запросы, поэтому забираем их параллельно.
+    """
+
+    def _load_spot() -> list[BookTickerRow]:
+        return filter_rows_by_universe(
+            fetch_merged_snapshot_rows(settings), "spot", settings
+        )
+
+    def _load_fut() -> list[BookTickerRow]:
+        return filter_rows_by_universe(
+            fetch_futures_snapshot_rows(settings), "futures", settings
+        )
+
+    with cf.ThreadPoolExecutor(max_workers=2) as pool:
+        spot_future = pool.submit(_load_spot)
+        fut_future = pool.submit(_load_fut)
+        spot_rows = spot_future.result()
+        fut_rows = fut_future.result()
     ts = datetime.now(timezone.utc).isoformat()
     spot_rows = [
         enrich_row_execution(replace(r, observed_at=ts), "spot", settings) for r in spot_rows

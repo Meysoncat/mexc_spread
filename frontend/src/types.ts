@@ -13,6 +13,38 @@ export type Exchange =
 
 export type Market = "spot" | "futures" | "cross";
 
+/**
+ * Котировка (суффикс символа), в которой торгует биржа по умолчанию.
+ * Большинство бирж — USDT; dYdX торгует перпами к USD (BTC-USD → BTCUSD).
+ */
+export const EXCHANGE_DEFAULT_QUOTE: Record<Exchange, string> = {
+  mexc: "USDT",
+  asterdex: "USDT",
+  lighter: "USDT",
+  binance: "USDT",
+  bybit: "USDT",
+  okx: "USDT",
+  gateio: "USDT",
+  htx: "USDT",
+  bitget: "USDT",
+  dydx: "USD",
+  hyperliquid: "USDT",
+};
+
+/**
+ * Дефолтная котировка для пары биржа+рынок.
+ * Символьный подчёркнутый формат (BTC_USDT) — только у MEXC futures.
+ */
+export function defaultQuoteForExchange(
+  exchange: Exchange,
+  market: Market,
+): string {
+  if (exchange === "mexc") {
+    return market === "futures" ? "_USDT" : "USDT";
+  }
+  return EXCHANGE_DEFAULT_QUOTE[exchange] ?? "USDT";
+}
+
 /** Рынок для REST стакана (в режиме «Базис» выбирается нога). */
 export type DomMarket = "spot" | "futures";
 

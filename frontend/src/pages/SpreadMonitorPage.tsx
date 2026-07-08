@@ -23,6 +23,7 @@ import {
   Moon,
   RefreshCw,
   Star,
+  HelpCircle,
   Sun,
   X,
   Zap,
@@ -59,6 +60,7 @@ import type {
   SnapshotResponse,
   SnapshotRow,
 } from "../types";
+import { defaultQuoteForExchange } from "../types";
 import { ExchangeSwitcher, MULTI_MARKET_EXCHANGES } from "../ExchangeSwitcher";
 import { useVirtualRows } from "../useVirtualRows";
 import { useNavigationState } from "../hooks/useNavigationState";
@@ -112,6 +114,18 @@ const SORT_OPTIONS_CROSS: { value: string; label: string }[] = [
 const TABLE_ROW_PX = 40;
 const VIRTUAL_OVERSCAN = 10;
 
+/** Нижняя граница интервала автообновления — не чаще времени ответа биржи. */
+const AUTO_REFRESH_MIN_SEC = 10;
+
+/** Маленькая иконка «?» с пояснением в title — вместо абзацев в сайдбаре. */
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span title={text} className="inline-flex cursor-help align-middle">
+      <HelpCircle className="h-3.5 w-3.5 text-ink-muted/70 hover:text-accent" />
+    </span>
+  );
+}
+
 type DisplayMode = "list" | "tiles";
 type TilesVariant = "cards" | "charts";
 
@@ -126,6 +140,26 @@ const SPREAD_QUICK_MAX_TILES_STORAGE_KEY = "mexc-ui-spread-quick-max-tiles";
 const SPREAD_QUICK_MAX_TILES_DEFAULT = 24;
 
 const DISPLAY_STORAGE_KEY = "mexc-ui-display";
+const EXCHANGE_PAIR_COUNTS_STORAGE_KEY = "mexc-ui-exchange-pair-counts";
+
+function readExchangePairCounts(): Partial<Record<Exchange, number>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(EXCHANGE_PAIR_COUNTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<Exchange, number>> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        out[k as Exchange] = v;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1213,6 +1247,10 @@ export function SpreadMonitorPage() {
 
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [intervalSec, setIntervalSec] = useState(20);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [exchangePairCounts, setExchangePairCounts] = useState<
+    Partial<Record<Exchange, number>>
+  >(() => readExchangePairCounts());
 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => {
     if (typeof window === "undefined") return "list";
@@ -1449,10 +1487,22 @@ export function SpreadMonitorPage() {
           console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
         }
         setRows(nextRows);
-        setTotalSnapshot(
-          typeof data.count === "number" ? data.count : nextRows.length,
-        );
+        const total =
+          typeof data.count === "number" ? data.count : nextRows.length;
+        setTotalSnapshot(total);
         setLoadedAt(data.loaded_at ?? null);
+        setExchangePairCounts((prev) => {
+          const next = { ...prev, [exchange]: total };
+          try {
+            window.localStorage.setItem(
+              EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
+              JSON.stringify(next),
+            );
+          } catch {
+            /* localStorage недоступен — бейджи просто не переживут перезагрузку */
+          }
+          return next;
+        });
       } catch (e) {
         if (e instanceof DOMException && e.name === "AbortError") return;
         if (id !== fetchIdRef.current) return;
@@ -1478,7 +1528,7 @@ export function SpreadMonitorPage() {
   }, [load]);
 
   useEffect(() => {
-    setQuoteRaw(market === "futures" ? "_USDT" : "USDT");
+    setQuoteRaw(defaultQuoteForExchange(exchange, market));
     setSortBy(market === "cross" ? "basis_mid_bps" : "spread_bps");
     setAscending(false);
     if (market === "cross") {
@@ -1487,16 +1537,13 @@ export function SpreadMonitorPage() {
       }
       setSpreadQuickHunt(false);
     }
-  }, [market, restoreQuickHuntSavedView]);
+  }, [market, exchange, restoreQuickHuntSavedView]);
 
-  /** При смене биржи: сбросить quoteRaw на "USDT" для DEX-бирж. */
+  /** При смене биржи: quoteRaw пересчитается эффектом выше по бирже+рынку. */
   const handleExchangeChange = useCallback(
     (next: Exchange) => {
       if (next === exchange) return;
       setExchange(next);
-      if (next !== "mexc") {
-        setQuoteRaw("USDT");
-      }
     },
     [exchange, setExchange],
   );
@@ -1508,9 +1555,24 @@ export function SpreadMonitorPage() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const t = window.setInterval(() => void load(), intervalSec * 1000);
+    const t = window.setInterval(
+      () => void load(),
+      Math.max(AUTO_REFRESH_MIN_SEC, intervalSec) * 1000,
+    );
     return () => window.clearInterval(t);
   }, [autoRefresh, intervalSec, load]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const updatedSecondsAgo = useMemo(() => {
+    if (!loadedAt) return null;
+    const ts = new Date(loadedAt).getTime();
+    if (!Number.isFinite(ts)) return null;
+    return Math.max(0, Math.round((nowMs - ts) / 1000));
+  }, [loadedAt, nowMs]);
 
   const rowUniverse = useMemo(() => {
     if (favoritesScope !== "favorites_only") return rows;
@@ -1522,10 +1584,32 @@ export function SpreadMonitorPage() {
   const effectiveAskL1Nq =
     spreadQuickHunt && market !== "cross" ? minAskL1NotionalQuote : 0;
 
+  const hasActiveFilters =
+    quoteRaw.trim().toUpperCase() !==
+      defaultQuoteForExchange(exchange, market).toUpperCase() ||
+    minSpreadBps > 0 ||
+    minVolQuote > 0 ||
+    search.trim() !== "" ||
+    favoritesScope === "favorites_only" ||
+    effectiveBidL1Nq > 0 ||
+    effectiveAskL1Nq > 0;
+
+  const resetFilters = useCallback(() => {
+    setQuoteRaw(defaultQuoteForExchange(exchange, market));
+    setMinSpreadBps(0);
+    setMinVolQuote(0);
+    setSearch("");
+    setMinBidL1NotionalQuote(0);
+    setMinAskL1NotionalQuote(0);
+    setSpreadQuickHunt(false);
+    setFavoritesScopePersist("all");
+  }, [exchange, market, setFavoritesScopePersist]);
+
   const filtered = useMemo(
     () =>
       applyMarketFilters(rowUniverse, {
         market,
+        exchange,
         quoteRaw,
         minSpreadBps: minSpreadBps,
         minVolQuote: minVolQuote,
@@ -1538,6 +1622,7 @@ export function SpreadMonitorPage() {
     [
       rowUniverse,
       market,
+      exchange,
       quoteRaw,
       minSpreadBps,
       minVolQuote,
@@ -1633,7 +1718,7 @@ export function SpreadMonitorPage() {
       <aside className="hidden w-80 shrink-0 flex-col border-r border-line bg-surface-elevated shadow-panel dark:shadow-panel-dark xl:flex">
         <div className="border-b border-line p-5">
           <p className="text-xs font-medium uppercase tracking-wider text-ink-muted">
-            {exchange === "mexc" ? "MEXC" : exchange === "asterdex" ? "AsterDEX" : "Lighter"}
+            {EXCHANGE_DISPLAY_NAMES[exchange]}
           </p>
           <h1 className="mt-1 text-lg font-semibold leading-tight text-ink">
             Spread Monitor
@@ -1649,6 +1734,7 @@ export function SpreadMonitorPage() {
               active={exchange}
               onChange={handleExchangeChange}
               disabled={isFetching}
+              pairCounts={exchangePairCounts}
             />
           </section>
 
@@ -1692,25 +1778,14 @@ export function SpreadMonitorPage() {
             >
               Базис (спот ↔ перп)
             </button>
-            <p className="mt-2 text-xs leading-relaxed text-ink-muted">
-              {market === "futures"
-                ? "contract.mexc.com — bid1/ask1, объёмы, funding."
-                : market === "cross"
-                  ? "Два снимка: спот + фьючерсы, сопоставление BTCUSDT ↔ BTC_USDT, базис по mid."
-                  : "api.mexc.com — bookTicker + 24h."}
-            </p>
           </section>
           )}
 
           <section className="space-y-3 border-t border-line pt-4">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
               Избранное
+              <InfoHint text="Список общий для текущего рынка (спот / фьючерсы / базис) и виден в списке и плитках. Режим «Только избранные» сужает набор строк до отмеченных звёздочкой; затем к ним применяются фильтры ниже." />
             </h2>
-            <p className="text-[11px] leading-relaxed text-ink-muted">
-              Список общий для текущего рынка (спот / фьючерсы / базис) и виден в списке
-              и плитках. Режим «Только избранные» сужает набор строк до отмеченных
-              звёздочкой; затем к ним применяются фильтры ниже.
-            </p>
             <label className="mb-1 block text-xs font-medium text-ink-muted">
               Набор для таблицы
             </label>
@@ -1778,13 +1853,10 @@ export function SpreadMonitorPage() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
               Фильтры
+              <InfoHint text="Котировка, спред, объём и поиск применяются к строкам после режима «Избранное» (ко всему снимку или только к отмеченным парам)." />
             </h2>
-            <p className="text-[11px] leading-relaxed text-ink-muted">
-              Котировка, спред, объём и поиск применяются к строкам после режима
-              «Избранное» (ко всему снимку или только к отмеченным парам).
-            </p>
             <div>
               <label className="mb-1 block text-xs text-ink-muted">
                 Котировка (суффикс символа)
@@ -1871,10 +1943,11 @@ export function SpreadMonitorPage() {
                   <div className="mt-3 space-y-2 border-t border-line/60 pt-3">
                     <div>
                       <label
-                        className="mb-1 block text-[11px] text-ink-muted"
+                        className="mb-1 flex items-center gap-1 text-[11px] text-ink-muted"
                         htmlFor="spread-quick-max-tiles"
                       >
                         Макс. плиток с графиками
+                        <InfoHint text={`Первые N пар после фильтров и сортировки — только они попадают в сетку; запросы /api/klines у мини‑графиков при появлении в зоне видимости. Диапазон ${TILES_MAX_SYMBOLS_MIN}–${TILES_MAX_SYMBOLS_MAX}, значение сохраняется отдельно от общего режима «Плитки».`} />
                       </label>
                       <input
                         id="spread-quick-max-tiles"
@@ -1890,13 +1963,6 @@ export function SpreadMonitorPage() {
                         }
                         className="w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
                       />
-                      <p className="mt-1 text-[10px] leading-relaxed text-ink-muted">
-                        Первые N пар после фильтров и сортировки — только они
-                        попадают в сетку; запросы /api/klines у мини‑графиков при
-                        появлении в зоне видимости. Диапазон {TILES_MAX_SYMBOLS_MIN}–
-                        {TILES_MAX_SYMBOLS_MAX}, значение сохраняется отдельно от
-                        общего режима «Плитки».
-                      </p>
                     </div>
                     <div>
                       <label className="mb-1 block text-[11px] text-ink-muted">
@@ -1950,16 +2016,16 @@ export function SpreadMonitorPage() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
               Сортировка
+              <InfoHint
+                text={`«Список»: сортировка кликом по заголовку столбца. «Плитки»: чипы над сеткой (↑↓ как в таблице).${
+                  spreadQuickHunt && market !== "cross"
+                    ? " В режиме быстрого поиска список недоступен."
+                    : ""
+                }`}
+              />
             </h2>
-            <p className="text-xs leading-relaxed text-ink-muted">
-              «Список»: сортировка кликом по заголовку столбца. «Плитки»: чипы над
-              сеткой (↑↓ как в таблице).
-              {spreadQuickHunt && market !== "cross"
-                ? " В режиме быстрого поиска список недоступен."
-                : ""}
-            </p>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
@@ -2067,16 +2133,13 @@ export function SpreadMonitorPage() {
                   </button>
                 </div>
 
-                <p className="text-[11px] leading-relaxed text-ink-muted">
-                  «Графики»: мини-линия цены закрытия (1h), запрос свечей при
-                  прокрутке к плитке.
-                </p>
                 <div>
                   <label
-                    className="mb-1 block text-xs text-ink-muted"
+                    className="mb-1 flex items-center gap-1 text-xs text-ink-muted"
                     htmlFor="tiles-max-symbols"
                   >
                     Макс. плиток на экране
+                    <InfoHint text={`Первые N пар после фильтров и сортировки. Меньше N — меньше узлов в сетке и запросов свечей в режиме «Графики» (мини-линия цены закрытия 1h, запрос свечей при прокрутке к плитке). Диапазон: ${TILES_MAX_SYMBOLS_MIN}–${TILES_MAX_SYMBOLS_MAX}.`} />
                   </label>
                   <input
                     id="tiles-max-symbols"
@@ -2090,11 +2153,6 @@ export function SpreadMonitorPage() {
                     }
                     className="w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
                   />
-                  <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
-                    Первые N пар после фильтров и сортировки. Меньше N — меньше
-                    узлов в сетке и запросов свечей в режиме «Графики». Диапазон:{" "}
-                    {TILES_MAX_SYMBOLS_MIN}–{TILES_MAX_SYMBOLS_MAX}.
-                  </p>
                 </div>
               </div>
             ) : null}
@@ -2117,12 +2175,16 @@ export function SpreadMonitorPage() {
             </label>
             <input
               type="range"
-              min={10}
+              min={AUTO_REFRESH_MIN_SEC}
               max={120}
               step={5}
               disabled={!autoRefresh}
               value={intervalSec}
-              onChange={(e) => setIntervalSec(Number(e.target.value))}
+              onChange={(e) =>
+                setIntervalSec(
+                  Math.max(AUTO_REFRESH_MIN_SEC, Number(e.target.value) || 0),
+                )
+              }
               className="w-full accent-accent disabled:opacity-40"
             />
           </section>
@@ -2193,10 +2255,24 @@ export function SpreadMonitorPage() {
               <p className="text-xs text-ink-muted">
                 {loadedAt ? (
                   <>
-                    Обновлено (UTC):{" "}
-                    {new Date(loadedAt).toLocaleString("ru-RU", {
-                      timeZone: "UTC",
-                    })}
+                    {updatedSecondsAgo !== null && (
+                      <span
+                        className={
+                          updatedSecondsAgo <= Math.max(intervalSec, 30)
+                            ? "font-medium text-emerald-600 dark:text-emerald-400"
+                            : "font-medium text-amber-600 dark:text-amber-400"
+                        }
+                      >
+                        Обновлено {updatedSecondsAgo} с назад
+                      </span>
+                    )}
+                    <span title={loadedAt}>
+                      {" "}·{" "}
+                      {new Date(loadedAt).toLocaleString("ru-RU", {
+                        timeZone: "UTC",
+                      })}{" "}
+                      UTC
+                    </span>
                   </>
                 ) : (
                   " "
@@ -2624,11 +2700,29 @@ export function SpreadMonitorPage() {
             {!showBlockingLoading &&
               filtered.length === 0 &&
               !error &&
-              !isFetching && (
+              !isFetching &&
+              (rows.length > 0 ? (
+                <div className="flex flex-col items-center gap-3 p-8 text-center">
+                  <p className="text-ink-muted">
+                    0 совпадений: под фильтры не попала ни одна пара из{" "}
+                    <span className="font-mono">{rows.length}</span> в снимке{" "}
+                    {EXCHANGE_DISPLAY_NAMES[exchange]}.
+                  </p>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={resetFilters}
+                      className="rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/20"
+                    >
+                      Сбросить фильтры
+                    </button>
+                  )}
+                </div>
+              ) : (
                 <p className="p-8 text-center text-ink-muted">
                   Нет данных для {EXCHANGE_DISPLAY_NAMES[exchange]}
                 </p>
-              )}
+              ))}
           </div>
         </div>
       </main>
