@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 import logging
 import os
 import threading
@@ -415,8 +416,10 @@ app.add_middleware(
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    from mexc_monitor.ws_bookticker import feeds_health
+
+    return {"status": "ok", "ws_feeds": feeds_health()}
 
 
 @app.get("/api/debug/mexc-connectivity")
@@ -1154,6 +1157,71 @@ def snapshot(
     return JSONResponse(
         content=out,
         headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/api/snapshot/stream")
+def snapshot_stream(
+    request: Request,
+    market: str = Query("spot", description="spot, futures или cross"),
+    exchange: str = Query("mexc"),
+    interval_sec: float = Query(2.0, ge=0.5, le=60.0),
+) -> Response:
+    """SSE-поток снимков: новое событие только когда снимок обновился.
+
+    Заменяет поллинг с фронта: бэкенд сам проверяет кэш (который греется
+    WS-фидами и префетчем) и пушит payload при смене loaded_at.
+    """
+    ex = (exchange or "").strip().lower()
+    if ex not in _SUPPORTED_EXCHANGES:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": f"Unknown exchange: {exchange}"},
+        )
+
+    raw_market = (market or "").strip().lower()
+    if ex == "mexc":
+        m: str | None = raw_market if raw_market in ("spot", "futures", "cross") else "spot"
+        cache_key = f"mexc:{m}"
+        builder = lambda: _build_snapshot_payload(m)  # noqa: E731
+    else:
+        if ex in _MULTI_MARKET_EXCHANGES:
+            m = raw_market if raw_market in ("spot", "futures") else None
+        else:
+            m = None
+        cache_key = f"{ex}:{m or 'default'}"
+        builder = lambda: _build_exchange_snapshot_payload(ex, m)  # noqa: E731
+    ttl = _snapshot_ttl_for(ex)
+
+    def event_generator():
+        last_sent = ""
+        last_keepalive = time.monotonic()
+        while True:
+            _mark_snapshot_hot(cache_key, builder, ttl)
+            try:
+                out = _get_snapshot_payload(
+                    cache_key, bypass_cache=False, builder=builder, ttl=ttl
+                )
+            except Exception as e:  # noqa: BLE001
+                out = {"ok": False, "error": str(e)}
+            marker = f"{out.get('loaded_at')}:{out.get('count')}:{out.get('ok')}"
+            if marker != last_sent:
+                last_sent = marker
+                last_keepalive = time.monotonic()
+                yield f"data: {json.dumps(out)}\n\n"
+            elif time.monotonic() - last_keepalive > 15.0:
+                last_keepalive = time.monotonic()
+                yield ": keepalive\n\n"
+            time.sleep(interval_sec)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

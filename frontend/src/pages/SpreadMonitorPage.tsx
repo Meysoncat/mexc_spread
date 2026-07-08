@@ -1458,6 +1458,42 @@ export function SpreadMonitorPage() {
     return () => window.clearTimeout(copyToastTimerRef.current);
   }, []);
 
+  const applySnapshot = useCallback(
+    (data: SnapshotResponse, m: Market) => {
+      if (!data.ok) {
+        const msg = data.error ?? "Неизвестная ошибка";
+        if (SNAPSHOT_LOG) console.warn("[MEXC UI] snapshot ok=false", m, msg);
+        setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${msg}`);
+        setRows([]);
+        setTotalSnapshot(0);
+        return;
+      }
+      setError(null);
+      const nextRows = Array.isArray(data.rows) ? data.rows : [];
+      if (!Array.isArray(data.rows)) {
+        console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
+      }
+      setRows(nextRows);
+      const total =
+        typeof data.count === "number" ? data.count : nextRows.length;
+      setTotalSnapshot(total);
+      setLoadedAt(data.loaded_at ?? null);
+      setExchangePairCounts((prev) => {
+        const next = { ...prev, [exchange]: total };
+        try {
+          window.localStorage.setItem(
+            EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
+            JSON.stringify(next),
+          );
+        } catch {
+          /* localStorage недоступен — бейджи просто не переживут перезагрузку */
+        }
+        return next;
+      });
+    },
+    [exchange],
+  );
+
   const load = useCallback(
     async (options?: { nocache?: boolean }) => {
       abortRef.current?.abort();
@@ -1474,35 +1510,7 @@ export function SpreadMonitorPage() {
           exchange,
         });
         if (id !== fetchIdRef.current) return;
-        if (!data.ok) {
-          const msg = data.error ?? "Неизвестная ошибка";
-          if (SNAPSHOT_LOG) console.warn("[MEXC UI] snapshot ok=false", m, msg);
-          setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${msg}`);
-          setRows([]);
-          setTotalSnapshot(0);
-          return;
-        }
-        const nextRows = Array.isArray(data.rows) ? data.rows : [];
-        if (!Array.isArray(data.rows)) {
-          console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
-        }
-        setRows(nextRows);
-        const total =
-          typeof data.count === "number" ? data.count : nextRows.length;
-        setTotalSnapshot(total);
-        setLoadedAt(data.loaded_at ?? null);
-        setExchangePairCounts((prev) => {
-          const next = { ...prev, [exchange]: total };
-          try {
-            window.localStorage.setItem(
-              EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
-              JSON.stringify(next),
-            );
-          } catch {
-            /* localStorage недоступен — бейджи просто не переживут перезагрузку */
-          }
-          return next;
-        });
+        applySnapshot(data, m);
       } catch (e) {
         if (e instanceof DOMException && e.name === "AbortError") return;
         if (id !== fetchIdRef.current) return;
@@ -1515,7 +1523,7 @@ export function SpreadMonitorPage() {
         }
       }
     },
-    [market, exchange],
+    [market, exchange, applySnapshot],
   );
 
   useEffect(() => {
@@ -1553,14 +1561,29 @@ export function SpreadMonitorPage() {
     [market],
   );
 
+  // Автообновление через SSE: бэкенд пушит снимок только когда он изменился,
+  // без перезапросов с клиента; при обрыве EventSource переподключается сам.
   useEffect(() => {
     if (!autoRefresh) return;
-    const t = window.setInterval(
-      () => void load(),
-      Math.max(AUTO_REFRESH_MIN_SEC, intervalSec) * 1000,
-    );
-    return () => window.clearInterval(t);
-  }, [autoRefresh, intervalSec, load]);
+    const m = exchange !== "mexc" ? ("futures" as Market) : market;
+    const q = new URLSearchParams({
+      market: m,
+      exchange,
+      interval_sec: String(
+        Math.min(60, Math.max(2, intervalSec)),
+      ),
+    });
+    const es = new EventSource(apiUrl(`/api/snapshot/stream?${q}`));
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data) as SnapshotResponse;
+        applySnapshot(data, m);
+      } catch {
+        /* битое событие — ждём следующее */
+      }
+    };
+    return () => es.close();
+  }, [autoRefresh, intervalSec, market, exchange, applySnapshot]);
 
   useEffect(() => {
     const t = window.setInterval(() => setNowMs(Date.now()), 1000);

@@ -296,5 +296,23 @@ def try_dydx_ws_snapshot_rows() -> list[BookTickerRow] | None:
     return _feed.snapshot_rows()
 
 
+def dydx_ws_health() -> dict[str, Any]:
+    """Состояние dYdX-фида (для /api/health)."""
+    with _feed.lock:
+        age = (
+            round(time.monotonic() - _feed.last_msg_mono, 1)
+            if _feed.last_msg_mono
+            else None
+        )
+        return {
+            "running": _feed.thread is not None and _feed.thread.is_alive(),
+            "symbols": len(_feed.books),
+            "last_message_age_sec": age,
+            "live": bool(
+                _feed.books and age is not None and age <= _STALE_AFTER_SEC
+            ),
+        }
+
+
 def stop_dydx_ws() -> None:
     _feed.stop.set()

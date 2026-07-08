@@ -1,0 +1,866 @@
+From 27de8a8cfd058f72066032c473164017140d6159 Mon Sep 17 00:00:00 2001
+From: John Doe <g3ab6rielgeogzr6gie4v@gmail.com>
+Date: Wed, 8 Jul 2026 12:42:49 +0000
+Subject: [PATCH] feat: WS feeds for OKX/Bybit/Gate/Bitget/HTX, SSE snapshot
+ stream, feeds healthcheck
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ backend/main.py                          |  72 +++-
+ frontend/src/pages/SpreadMonitorPage.tsx |  95 +++--
+ mexc_monitor/dydx/ws_feed.py             |  18 +
+ mexc_monitor/ws_bookticker.py            | 507 +++++++++++++++++++++--
+ 4 files changed, 621 insertions(+), 71 deletions(-)
+
+diff --git a/backend/main.py b/backend/main.py
+index b75071c..a4f5531 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++from typing import Any
+ import logging
+ import os
+ import threading
+@@ -415,8 +416,10 @@ app.add_middleware(
+ 
+ 
+ @app.get("/api/health")
+-def health() -> dict[str, str]:
+-    return {"status": "ok"}
++def health() -> dict[str, Any]:
++    from mexc_monitor.ws_bookticker import feeds_health
++
++    return {"status": "ok", "ws_feeds": feeds_health()}
+ 
+ 
+ @app.get("/api/debug/mexc-connectivity")
+@@ -1157,6 +1160,71 @@ def snapshot(
+     )
+ 
+ 
++@app.get("/api/snapshot/stream")
++def snapshot_stream(
++    request: Request,
++    market: str = Query("spot", description="spot, futures или cross"),
++    exchange: str = Query("mexc"),
++    interval_sec: float = Query(2.0, ge=0.5, le=60.0),
++) -> Response:
++    """SSE-поток снимков: новое событие только когда снимок обновился.
++
++    Заменяет поллинг с фронта: бэкенд сам проверяет кэш (который греется
++    WS-фидами и префетчем) и пушит payload при смене loaded_at.
++    """
++    ex = (exchange or "").strip().lower()
++    if ex not in _SUPPORTED_EXCHANGES:
++        return JSONResponse(
++            status_code=400,
++            content={"ok": False, "error": f"Unknown exchange: {exchange}"},
++        )
++
++    raw_market = (market or "").strip().lower()
++    if ex == "mexc":
++        m: str | None = raw_market if raw_market in ("spot", "futures", "cross") else "spot"
++        cache_key = f"mexc:{m}"
++        builder = lambda: _build_snapshot_payload(m)  # noqa: E731
++    else:
++        if ex in _MULTI_MARKET_EXCHANGES:
++            m = raw_market if raw_market in ("spot", "futures") else None
++        else:
++            m = None
++        cache_key = f"{ex}:{m or 'default'}"
++        builder = lambda: _build_exchange_snapshot_payload(ex, m)  # noqa: E731
++    ttl = _snapshot_ttl_for(ex)
++
++    def event_generator():
++        last_sent = ""
++        last_keepalive = time.monotonic()
++        while True:
++            _mark_snapshot_hot(cache_key, builder, ttl)
++            try:
++                out = _get_snapshot_payload(
++                    cache_key, bypass_cache=False, builder=builder, ttl=ttl
++                )
++            except Exception as e:  # noqa: BLE001
++                out = {"ok": False, "error": str(e)}
++            marker = f"{out.get('loaded_at')}:{out.get('count')}:{out.get('ok')}"
++            if marker != last_sent:
++                last_sent = marker
++                last_keepalive = time.monotonic()
++                yield f"data: {json.dumps(out)}\n\n"
++            elif time.monotonic() - last_keepalive > 15.0:
++                last_keepalive = time.monotonic()
++                yield ": keepalive\n\n"
++            time.sleep(interval_sec)
++
++    return StreamingResponse(
++        event_generator(),
++        media_type="text/event-stream",
++        headers={
++            "Cache-Control": "no-cache",
++            "Connection": "keep-alive",
++            "X-Accel-Buffering": "no",
++        },
++    )
++
++
+ @app.get("/api/history/recent")
+ def history_recent(
+     market: str = Query("spot", description="spot или futures"),
+diff --git a/frontend/src/pages/SpreadMonitorPage.tsx b/frontend/src/pages/SpreadMonitorPage.tsx
+index 59aafa2..f819ec6 100644
+--- a/frontend/src/pages/SpreadMonitorPage.tsx
++++ b/frontend/src/pages/SpreadMonitorPage.tsx
+@@ -1458,6 +1458,42 @@ export function SpreadMonitorPage() {
+     return () => window.clearTimeout(copyToastTimerRef.current);
+   }, []);
+ 
++  const applySnapshot = useCallback(
++    (data: SnapshotResponse, m: Market) => {
++      if (!data.ok) {
++        const msg = data.error ?? "Неизвестная ошибка";
++        if (SNAPSHOT_LOG) console.warn("[MEXC UI] snapshot ok=false", m, msg);
++        setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${msg}`);
++        setRows([]);
++        setTotalSnapshot(0);
++        return;
++      }
++      setError(null);
++      const nextRows = Array.isArray(data.rows) ? data.rows : [];
++      if (!Array.isArray(data.rows)) {
++        console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
++      }
++      setRows(nextRows);
++      const total =
++        typeof data.count === "number" ? data.count : nextRows.length;
++      setTotalSnapshot(total);
++      setLoadedAt(data.loaded_at ?? null);
++      setExchangePairCounts((prev) => {
++        const next = { ...prev, [exchange]: total };
++        try {
++          window.localStorage.setItem(
++            EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
++            JSON.stringify(next),
++          );
++        } catch {
++          /* localStorage недоступен — бейджи просто не переживут перезагрузку */
++        }
++        return next;
++      });
++    },
++    [exchange],
++  );
++
+   const load = useCallback(
+     async (options?: { nocache?: boolean }) => {
+       abortRef.current?.abort();
+@@ -1474,35 +1510,7 @@ export function SpreadMonitorPage() {
+           exchange,
+         });
+         if (id !== fetchIdRef.current) return;
+-        if (!data.ok) {
+-          const msg = data.error ?? "Неизвестная ошибка";
+-          if (SNAPSHOT_LOG) console.warn("[MEXC UI] snapshot ok=false", m, msg);
+-          setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${msg}`);
+-          setRows([]);
+-          setTotalSnapshot(0);
+-          return;
+-        }
+-        const nextRows = Array.isArray(data.rows) ? data.rows : [];
+-        if (!Array.isArray(data.rows)) {
+-          console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
+-        }
+-        setRows(nextRows);
+-        const total =
+-          typeof data.count === "number" ? data.count : nextRows.length;
+-        setTotalSnapshot(total);
+-        setLoadedAt(data.loaded_at ?? null);
+-        setExchangePairCounts((prev) => {
+-          const next = { ...prev, [exchange]: total };
+-          try {
+-            window.localStorage.setItem(
+-              EXCHANGE_PAIR_COUNTS_STORAGE_KEY,
+-              JSON.stringify(next),
+-            );
+-          } catch {
+-            /* localStorage недоступен — бейджи просто не переживут перезагрузку */
+-          }
+-          return next;
+-        });
++        applySnapshot(data, m);
+       } catch (e) {
+         if (e instanceof DOMException && e.name === "AbortError") return;
+         if (id !== fetchIdRef.current) return;
+@@ -1515,7 +1523,7 @@ export function SpreadMonitorPage() {
+         }
+       }
+     },
+-    [market, exchange],
++    [market, exchange, applySnapshot],
+   );
+ 
+   useEffect(() => {
+@@ -1553,14 +1561,29 @@ export function SpreadMonitorPage() {
+     [market],
+   );
+ 
++  // Автообновление через SSE: бэкенд пушит снимок только когда он изменился,
++  // без перезапросов с клиента; при обрыве EventSource переподключается сам.
+   useEffect(() => {
+     if (!autoRefresh) return;
+-    const t = window.setInterval(
+-      () => void load(),
+-      Math.max(AUTO_REFRESH_MIN_SEC, intervalSec) * 1000,
+-    );
+-    return () => window.clearInterval(t);
+-  }, [autoRefresh, intervalSec, load]);
++    const m = exchange !== "mexc" ? ("futures" as Market) : market;
++    const q = new URLSearchParams({
++      market: m,
++      exchange,
++      interval_sec: String(
++        Math.min(60, Math.max(2, intervalSec)),
++      ),
++    });
++    const es = new EventSource(apiUrl(`/api/snapshot/stream?${q}`));
++    es.onmessage = (ev) => {
++      try {
++        const data = JSON.parse(ev.data) as SnapshotResponse;
++        applySnapshot(data, m);
++      } catch {
++        /* битое событие — ждём следующее */
++      }
++    };
++    return () => es.close();
++  }, [autoRefresh, intervalSec, market, exchange, applySnapshot]);
+ 
+   useEffect(() => {
+     const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+diff --git a/mexc_monitor/dydx/ws_feed.py b/mexc_monitor/dydx/ws_feed.py
+index d5921d1..94f3245 100644
+--- a/mexc_monitor/dydx/ws_feed.py
++++ b/mexc_monitor/dydx/ws_feed.py
+@@ -296,5 +296,23 @@ def try_dydx_ws_snapshot_rows() -> list[BookTickerRow] | None:
+     return _feed.snapshot_rows()
+ 
+ 
++def dydx_ws_health() -> dict[str, Any]:
++    """Состояние dYdX-фида (для /api/health)."""
++    with _feed.lock:
++        age = (
++            round(time.monotonic() - _feed.last_msg_mono, 1)
++            if _feed.last_msg_mono
++            else None
++        )
++        return {
++            "running": _feed.thread is not None and _feed.thread.is_alive(),
++            "symbols": len(_feed.books),
++            "last_message_age_sec": age,
++            "live": bool(
++                _feed.books and age is not None and age <= _STALE_AFTER_SEC
++            ),
++        }
++
++
+ def stop_dydx_ws() -> None:
+     _feed.stop.set()
+diff --git a/mexc_monitor/ws_bookticker.py b/mexc_monitor/ws_bookticker.py
+index 93ca6c6..57f3e2f 100644
+--- a/mexc_monitor/ws_bookticker.py
++++ b/mexc_monitor/ws_bookticker.py
+@@ -1,16 +1,23 @@
+-"""Живой bookTicker по WebSocket для бирж с единым стримом на все символы.
++"""Живой bookTicker по WebSocket для CEX-бирж.
+ 
+ Паттерн как в ws_futures.py (MEXC): фоновый поток держит соединение и
+ обновляет буфер лучших bid/ask; сборка снапшота берёт буфер, если он свежий,
+ и падает обратно на REST, если стрим не готов.
+ 
+-Сейчас поддерживается Binance USDT-M futures (стрим `!bookTicker` — один
+-канал на все символы). 24h-объёмы меняются медленно, поэтому берутся по REST
+-и кэшируются отдельно (60 сек).
++Поддерживаются futures/perp:
++  - Binance USDT-M (`!bookTicker` — один канал на все символы)
++  - OKX (channel `tickers`, подписка по instId)
++  - Bybit linear (topic `tickers.<symbol>`, snapshot+delta)
++  - Gate.io USDT futures (`futures.book_ticker`)
++  - Bitget USDT-FUTURES (channel `ticker`)
++  - HTX linear-swap (`market.<code>.bbo`, gzip-фреймы)
++
++24h-объёмы меняются медленно, поэтому берутся по REST и кэшируются (60 сек).
+ """
+ 
+ from __future__ import annotations
+ 
++import gzip
+ import json
+ import logging
+ import threading
+@@ -27,15 +34,48 @@ _VOLUME_CACHE_TTL_SEC = 60.0
+ _RECONNECT_BACKOFF_SEC = [1, 2, 5, 10, 30]
+ 
+ _BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws/!bookTicker"
++_OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
++_BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
++_GATEIO_WS_URL = "wss://fx-ws.gateio.ws/v4/ws/usdt"
++_BITGET_WS_URL = "wss://ws.bitget.com/v2/ws/public"
++_HTX_WS_URL = "wss://api.hbdm.com/linear-swap-ws"
++
++# (sym, bid|None, bid_qty|None, ask|None, ask_qty|None); None = взять прежнее
++_Update = tuple[str, float | None, float | None, float | None, float | None]
+ 
+ 
+ class _Feed:
+-    """Один WS-стрим: symbol -> (bid, bid_qty, ask, ask_qty), метка свежести."""
++    """Один WS-стрим: symbol -> (bid, bid_qty, ask, ask_qty), метка свежести.
++
++    parse(msg) возвращает список обновлений; None в полях обновления означает
++    «оставить прошлое значение» (нужно для дельта-каналов вроде Bybit tickers).
++    subscribe() возвращает список сообщений подписки, отправляемых после
++    коннекта; ping_payload() шлётся каждые ping_interval секунд; control(msg)
++    может вернуть ответ на серверный ping (HTX).
++    """
+ 
+-    def __init__(self, name: str, url: str, parse: Callable[[Any], tuple | None]):
++    def __init__(
++        self,
++        name: str,
++        url: str,
++        parse: Callable[[Any], list[_Update] | None],
++        *,
++        subscribe: Callable[[], list[str]] | None = None,
++        ping_interval: float = 0.0,
++        ping_payload: Callable[[], str] | None = None,
++        control: Callable[[Any], str | None] | None = None,
++        gzip_frames: bool = False,
++        silent_timeout: float = 60.0,
++    ):
+         self.name = name
+         self.url = url
+         self.parse = parse
++        self.subscribe = subscribe
++        self.ping_interval = ping_interval
++        self.ping_payload = ping_payload
++        self.control = control
++        self.gzip_frames = gzip_frames
++        self.silent_timeout = silent_timeout
+         self.lock = threading.Lock()
+         self.book: dict[str, tuple[float, float, float, float]] = {}
+         self.last_msg_mono = 0.0
+@@ -59,6 +99,42 @@ class _Feed:
+                 return None
+             return dict(self.book)
+ 
++    def health(self) -> dict[str, Any]:
++        with self.lock:
++            age = (
++                round(time.monotonic() - self.last_msg_mono, 1)
++                if self.last_msg_mono
++                else None
++            )
++            return {
++                "running": self.thread is not None and self.thread.is_alive(),
++                "symbols": len(self.book),
++                "last_message_age_sec": age,
++                "live": bool(
++                    self.book
++                    and age is not None
++                    and age <= _STALE_AFTER_SEC
++                ),
++            }
++
++    def _apply(self, updates: list[_Update]) -> None:
++        with self.lock:
++            for sym, bid, bq, ask, aq in updates:
++                prev = self.book.get(sym)
++                if prev is None and (bid is None or ask is None):
++                    continue
++                p_bid, p_bq, p_ask, p_aq = prev or (0.0, 0.0, 0.0, 0.0)
++                row = (
++                    p_bid if bid is None else bid,
++                    p_bq if bq is None else bq,
++                    p_ask if ask is None else ask,
++                    p_aq if aq is None else aq,
++                )
++                if row[0] <= 0 or row[2] <= 0:
++                    continue
++                self.book[sym] = row
++            self.last_msg_mono = time.monotonic()
++
+     def _run(self) -> None:
+         import websocket
+ 
+@@ -66,33 +142,53 @@ class _Feed:
+         while not self.stop.is_set():
+             try:
+                 ws = websocket.create_connection(self.url, timeout=15)
+-                attempt = 0
+                 logger.info("ws-bookticker %s connected", self.name)
+-                # bookTicker шлёт тысячи сообщений/сек: тишина дольше 10с
+-                # означает «мёртвое» соединение — переподключаемся.
+-                ws.settimeout(10)
++                if self.subscribe is not None:
++                    for msg in self.subscribe():
++                        ws.send(msg)
++                attempt = 0
++                ws.settimeout(5)
++                last_raw = time.monotonic()
++                last_ping = time.monotonic()
+                 while not self.stop.is_set():
++                    now = time.monotonic()
++                    if (
++                        self.ping_payload is not None
++                        and self.ping_interval > 0
++                        and now - last_ping >= self.ping_interval
++                    ):
++                        ws.send(self.ping_payload())
++                        last_ping = now
+                     try:
+                         raw = ws.recv()
+                     except websocket.WebSocketTimeoutException:
+-                        logger.warning(
+-                            "ws-bookticker %s stream silent, reconnecting",
+-                            self.name,
+-                        )
+-                        break
++                        if time.monotonic() - last_raw > self.silent_timeout:
++                            logger.warning(
++                                "ws-bookticker %s stream silent, reconnecting",
++                                self.name,
++                            )
++                            break
++                        continue
+                     if not raw:
+                         continue
++                    last_raw = time.monotonic()
++                    if self.gzip_frames and isinstance(raw, (bytes, bytearray)):
++                        try:
++                            raw = gzip.decompress(raw)
++                        except OSError:
++                            continue
+                     try:
+                         msg = json.loads(raw)
+-                    except (json.JSONDecodeError, ValueError):
++                    except (json.JSONDecodeError, ValueError, TypeError):
+                         continue
+-                    parsed = self.parse(msg)
+-                    if parsed is None:
+-                        continue
+-                    sym, bid, bq, ask, aq = parsed
+-                    with self.lock:
+-                        self.book[sym] = (bid, bq, ask, aq)
+-                        self.last_msg_mono = time.monotonic()
++                    if self.control is not None:
++                        reply = self.control(msg)
++                        if reply is not None:
++                            ws.send(reply)
++                            continue
++                    updates = self.parse(msg)
++                    if updates:
++                        self._apply(updates)
+                 try:
+                     ws.close()
+                 except Exception:  # noqa: BLE001
+@@ -115,26 +211,312 @@ class _Feed:
+                     return
+ 
+ 
+-def _parse_binance(msg: Any) -> tuple | None:
++def _f(v: Any) -> float | None:
++    if v is None or v == "":
++        return None
++    try:
++        return float(v)
++    except (TypeError, ValueError):
++        return None
++
++
++# ---------------------------------------------------------------- Binance
++
++
++def _parse_binance(msg: Any) -> list[_Update] | None:
+     if not isinstance(msg, dict):
+         return None
+     sym = msg.get("s")
+     if not sym:
+         return None
+-    try:
+-        bid = float(msg.get("b") or 0)
+-        ask = float(msg.get("a") or 0)
+-        bq = float(msg.get("B") or 0)
+-        aq = float(msg.get("A") or 0)
+-    except (TypeError, ValueError):
++    bid, ask = _f(msg.get("b")), _f(msg.get("a"))
++    if not bid or not ask:
++        return None
++    return [(sym, bid, _f(msg.get("B")) or 0.0, ask, _f(msg.get("A")) or 0.0)]
++
++
++# ---------------------------------------------------------------- OKX
++
++
++def _okx_subscribe() -> list[str]:
++    from mexc_monitor.okx.client import OkxPublicClient
++
++    inst_ids = [t.symbol for t in OkxPublicClient().book_tickers("SWAP")]
++    msgs: list[str] = []
++    for i in range(0, len(inst_ids), 50):
++        args = [
++            {"channel": "tickers", "instId": inst_id}
++            for inst_id in inst_ids[i : i + 50]
++        ]
++        msgs.append(json.dumps({"op": "subscribe", "args": args}))
++    return msgs
++
++
++def _parse_okx(msg: Any) -> list[_Update] | None:
++    from mexc_monitor.okx.client import _normalize_symbol
++
++    if not isinstance(msg, dict):
++        return None
++    data = msg.get("data")
++    if not isinstance(data, list):
++        return None
++    out: list[_Update] = []
++    for item in data:
++        if not isinstance(item, dict):
++            continue
++        inst_id = item.get("instId")
++        bid, ask = _f(item.get("bidPx")), _f(item.get("askPx"))
++        if not inst_id or not bid or not ask:
++            continue
++        out.append(
++            (
++                _normalize_symbol(inst_id),
++                bid,
++                _f(item.get("bidSz")) or 0.0,
++                ask,
++                _f(item.get("askSz")) or 0.0,
++            )
++        )
++    return out or None
++
++
++# ---------------------------------------------------------------- Bybit
++
++
++def _bybit_subscribe() -> list[str]:
++    from mexc_monitor.bybit.client import BybitPublicClient
++
++    symbols = [t.symbol for t in BybitPublicClient().book_tickers("linear")]
++    msgs: list[str] = []
++    for i in range(0, len(symbols), 10):
++        args = [f"tickers.{s}" for s in symbols[i : i + 10]]
++        msgs.append(json.dumps({"op": "subscribe", "args": args}))
++    return msgs
++
++
++def _parse_bybit(msg: Any) -> list[_Update] | None:
++    if not isinstance(msg, dict):
++        return None
++    topic = msg.get("topic", "")
++    if not topic.startswith("tickers."):
++        return None
++    data = msg.get("data")
++    if not isinstance(data, dict):
++        return None
++    sym = data.get("symbol") or topic.split(".", 1)[1]
++    if not sym:
++        return None
++    # delta-сообщения содержат только изменившиеся поля — None мёржится
++    return [
++        (
++            sym,
++            _f(data.get("bid1Price")),
++            _f(data.get("bid1Size")),
++            _f(data.get("ask1Price")),
++            _f(data.get("ask1Size")),
++        )
++    ]
++
++
++# ---------------------------------------------------------------- Gate.io
++
++
++def _gateio_subscribe() -> list[str]:
++    from mexc_monitor.gateio.client import GateioPublicClient
++
++    contracts = [
++        t.symbol for t in GateioPublicClient().book_tickers(market="futures")
++    ]
++    now = int(time.time())
++    return [
++        json.dumps(
++            {
++                "time": now,
++                "channel": "futures.book_ticker",
++                "event": "subscribe",
++                "payload": [c],
++            }
++        )
++        for c in contracts
++    ]
++
++
++def _parse_gateio(msg: Any) -> list[_Update] | None:
++    from mexc_monitor.gateio.client import _normalize_symbol
++
++    if not isinstance(msg, dict):
+         return None
+-    if bid <= 0 or ask <= 0:
++    if msg.get("channel") != "futures.book_ticker" or msg.get("event") != "update":
+         return None
+-    return sym, bid, bq, ask, aq
++    r = msg.get("result")
++    if not isinstance(r, dict):
++        return None
++    sym = r.get("s")
++    bid, ask = _f(r.get("b")), _f(r.get("a"))
++    if not sym or not bid or not ask:
++        return None
++    return [
++        (
++            _normalize_symbol(sym),
++            bid,
++            _f(r.get("B")) or 0.0,
++            ask,
++            _f(r.get("A")) or 0.0,
++        )
++    ]
++
++
++def _gateio_ping() -> str:
++    return json.dumps({"time": int(time.time()), "channel": "futures.ping"})
++
++
++# ---------------------------------------------------------------- Bitget
++
++
++def _bitget_subscribe() -> list[str]:
++    from mexc_monitor.bitget.client import BitgetPublicClient
++
++    symbols = [t.symbol for t in BitgetPublicClient().book_tickers()]
++    msgs: list[str] = []
++    for i in range(0, len(symbols), 50):
++        args = [
++            {"instType": "USDT-FUTURES", "channel": "ticker", "instId": s}
++            for s in symbols[i : i + 50]
++        ]
++        msgs.append(json.dumps({"op": "subscribe", "args": args}))
++    return msgs
++
++
++def _parse_bitget(msg: Any) -> list[_Update] | None:
++    if not isinstance(msg, dict):
++        return None
++    arg = msg.get("arg")
++    data = msg.get("data")
++    if not isinstance(arg, dict) or not isinstance(data, list):
++        return None
++    if arg.get("channel") != "ticker":
++        return None
++    out: list[_Update] = []
++    for item in data:
++        if not isinstance(item, dict):
++            continue
++        sym = item.get("instId") or arg.get("instId")
++        bid, ask = _f(item.get("bidPr")), _f(item.get("askPr"))
++        if not sym or not bid or not ask:
++            continue
++        out.append(
++            (
++                sym,
++                bid,
++                _f(item.get("bidSz")) or 0.0,
++                ask,
++                _f(item.get("askSz")) or 0.0,
++            )
++        )
++    return out or None
++
++
++# ---------------------------------------------------------------- HTX
++
++
++def _htx_contract_codes() -> list[str]:
++    from mexc_monitor.http_shared import shared_get
++
++    r = shared_get(
++        "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info",
++        timeout=15,
++    )
++    data = r.json() if r.status_code == 200 else {}
++    items = data.get("data", []) if isinstance(data, dict) else []
++    return [
++        it["contract_code"]
++        for it in items
++        if isinstance(it, dict)
++        and it.get("contract_code")
++        and it.get("contract_status") == 1
++        and str(it.get("business_type", "swap")) in ("swap", "all")
++    ]
++
++
++def _htx_subscribe() -> list[str]:
++    return [
++        json.dumps({"sub": f"market.{code}.bbo", "id": code})
++        for code in _htx_contract_codes()
++    ]
++
++
++def _htx_control(msg: Any) -> str | None:
++    if isinstance(msg, dict) and "ping" in msg:
++        return json.dumps({"pong": msg["ping"]})
++    return None
++
++
++def _parse_htx(msg: Any) -> list[_Update] | None:
++    if not isinstance(msg, dict):
++        return None
++    ch = msg.get("ch", "")
++    tick = msg.get("tick")
++    if not ch.endswith(".bbo") or not isinstance(tick, dict):
++        return None
++    code = ch.split(".")[1] if ch.count(".") >= 2 else ""
++    if not code:
++        return None
++    bid_arr = tick.get("bid") or []
++    ask_arr = tick.get("ask") or []
++    bid = _f(bid_arr[0]) if len(bid_arr) > 0 else None
++    bq = _f(bid_arr[1]) if len(bid_arr) > 1 else None
++    ask = _f(ask_arr[0]) if len(ask_arr) > 0 else None
++    aq = _f(ask_arr[1]) if len(ask_arr) > 1 else None
++    if not bid or not ask:
++        return None
++    sym = code.upper().replace("-", "")
++    return [(sym, bid, bq or 0.0, ask, aq or 0.0)]
+ 
+ 
+ _feeds: dict[str, _Feed] = {
+-    "binance": _Feed("binance", _BINANCE_FUTURES_WS_URL, _parse_binance),
++    "binance": _Feed(
++        "binance", _BINANCE_FUTURES_WS_URL, _parse_binance, silent_timeout=10.0
++    ),
++    "okx": _Feed(
++        "okx",
++        _OKX_WS_URL,
++        _parse_okx,
++        subscribe=_okx_subscribe,
++        ping_interval=20.0,
++        ping_payload=lambda: "ping",
++    ),
++    "bybit": _Feed(
++        "bybit",
++        _BYBIT_WS_URL,
++        _parse_bybit,
++        subscribe=_bybit_subscribe,
++        ping_interval=20.0,
++        ping_payload=lambda: json.dumps({"op": "ping"}),
++    ),
++    "gateio": _Feed(
++        "gateio",
++        _GATEIO_WS_URL,
++        _parse_gateio,
++        subscribe=_gateio_subscribe,
++        ping_interval=20.0,
++        ping_payload=_gateio_ping,
++    ),
++    "bitget": _Feed(
++        "bitget",
++        _BITGET_WS_URL,
++        _parse_bitget,
++        subscribe=_bitget_subscribe,
++        ping_interval=25.0,
++        ping_payload=lambda: "ping",
++    ),
++    "htx": _Feed(
++        "htx",
++        _HTX_WS_URL,
++        _parse_htx,
++        subscribe=_htx_subscribe,
++        control=_htx_control,
++        gzip_frames=True,
++    ),
+ }
+ 
+ _volume_lock = threading.Lock()
+@@ -157,8 +539,58 @@ def _binance_volumes() -> dict[str, tuple[float, float]]:
+     return out
+ 
+ 
++def _okx_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.okx.client import OkxPublicClient, _normalize_symbol
++
++    return {
++        _normalize_symbol(t.symbol): (t.volume_24h_base, t.volume_24h_quote)
++        for t in OkxPublicClient().book_tickers("SWAP")
++    }
++
++
++def _bybit_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.bybit.client import BybitPublicClient
++
++    return {
++        t.symbol: (t.volume_24h_base, t.volume_24h_quote)
++        for t in BybitPublicClient().book_tickers("linear")
++    }
++
++
++def _gateio_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.gateio.client import GateioPublicClient, _normalize_symbol
++
++    return {
++        _normalize_symbol(t.symbol): (t.volume_24h_base, t.volume_24h_quote)
++        for t in GateioPublicClient().book_tickers(market="futures")
++    }
++
++
++def _bitget_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.bitget.client import BitgetPublicClient
++
++    return {
++        t.symbol: (t.volume_24h_base or 0.0, t.volume_24h_quote or 0.0)
++        for t in BitgetPublicClient().book_tickers()
++    }
++
++
++def _htx_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.htx.client import HtxPublicClient
++
++    return {
++        t.symbol: (t.volume_24h_base, t.volume_24h_quote)
++        for t in HtxPublicClient().book_tickers(market="futures")
++    }
++
++
+ _volume_loaders: dict[str, Callable[[], dict[str, tuple[float, float]]]] = {
+     "binance": _binance_volumes,
++    "okx": _okx_volumes,
++    "bybit": _bybit_volumes,
++    "gateio": _gateio_volumes,
++    "bitget": _bitget_volumes,
++    "htx": _htx_volumes,
+ }
+ 
+ 
+@@ -188,6 +620,15 @@ def ensure_started() -> None:
+         feed.ensure_started()
+ 
+ 
++def feeds_health() -> dict[str, dict[str, Any]]:
++    """Состояние всех WS-фидов (для /api/health)."""
++    from mexc_monitor.dydx.ws_feed import dydx_ws_health
++
++    out = {name: feed.health() for name, feed in _feeds.items()}
++    out["dydx"] = dydx_ws_health()
++    return out
++
++
+ def try_ws_snapshot_rows(exchange: str, market: str | None) -> list[BookTickerRow] | None:
+     """Строки снапшота из WS-буфера, если стрим жив и свеж; иначе None (REST).
+ 
+-- 
+2.34.1
+
