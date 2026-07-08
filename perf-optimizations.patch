@@ -1,0 +1,1139 @@
+From b5233b434f9c8fe826d7b3f0dff17080336f0fbb Mon Sep 17 00:00:00 2001
+From: John Doe <g3ab6rielgeogzr6gie4v@gmail.com>
+Date: Wed, 8 Jul 2026 09:16:47 +0000
+Subject: [PATCH] perf: background snapshot prefetch, WS feeds (Binance
+ bookTicker, dYdX orderbook), ETag/304, keep-alive HTTP pool, route
+ code-splitting
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ backend/main.py                | 130 +++++++++++++-
+ frontend/src/App.tsx           |  85 +++++++---
+ mexc_monitor/aster/client.py   |   4 +-
+ mexc_monitor/binance/client.py |   4 +-
+ mexc_monitor/bitget/client.py  |   4 +-
+ mexc_monitor/bybit/client.py   |   4 +-
+ mexc_monitor/dydx/client.py    |   4 +-
+ mexc_monitor/dydx/ws_feed.py   | 300 +++++++++++++++++++++++++++++++++
+ mexc_monitor/gateio/client.py  |   4 +-
+ mexc_monitor/http_shared.py    |  38 +++++
+ mexc_monitor/htx/client.py     |   4 +-
+ mexc_monitor/lighter/client.py |   4 +-
+ mexc_monitor/okx/client.py     |   4 +-
+ mexc_monitor/ws_bookticker.py  | 241 ++++++++++++++++++++++++++
+ 14 files changed, 788 insertions(+), 42 deletions(-)
+ create mode 100644 mexc_monitor/dydx/ws_feed.py
+ create mode 100644 mexc_monitor/http_shared.py
+ create mode 100644 mexc_monitor/ws_bookticker.py
+
+diff --git a/backend/main.py b/backend/main.py
+index def4da4..b75071c 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ import logging
+ import os
+@@ -8,8 +9,9 @@ import time
+ from datetime import datetime, timezone
+ from pathlib import Path
+ 
+-from fastapi import Depends, FastAPI, Header, HTTPException, Query
++from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+ from fastapi.middleware.cors import CORSMiddleware
++from fastapi.responses import JSONResponse
+ from starlette.middleware.gzip import GZipMiddleware
+ 
+ from mexc_monitor.client import MexcApiError
+@@ -147,6 +149,9 @@ def _startup_prefetch_futures_ws() -> None:
+ 
+ @app.on_event("shutdown")
+ def _shutdown_workers() -> None:
++    from mexc_monitor.ws_bookticker import stop_all as stop_ws_booktickers
++
++    stop_ws_booktickers()
+     _portfolio_risk.stop()
+     _registry.shutdown_all()
+     stop_history_worker()
+@@ -172,6 +177,83 @@ _snapshot_build_locks: dict[str, threading.Lock] = {}
+ def _snapshot_ttl_for(exchange: str) -> float:
+     return _SNAPSHOT_CACHE_TTL_OVERRIDES.get(exchange, _SNAPSHOT_CACHE_TTL_SEC)
+ 
++
++# Фоновый префетч: ключи, запрошенные недавно, обновляются до истечения TTL,
++# чтобы пользователь никогда не ждал холодную пересборку (особенно dYdX).
++_SNAPSHOT_PREFETCH_ENABLED = str(
++    os.environ.get("MEXC_SNAPSHOT_PREFETCH", "true")
++).strip().lower() in ("true", "1", "yes")
++# Ключ считается «горячим», если его запрашивали в последние N секунд.
++_SNAPSHOT_PREFETCH_HOT_WINDOW_SEC = max(
++    30.0, float(os.environ.get("MEXC_SNAPSHOT_PREFETCH_HOT_WINDOW_SEC", "180"))
++)
++# key -> (время последнего запроса, builder, ttl)
++_snapshot_hot_keys: dict[str, tuple[float, object, float]] = {}
++_snapshot_prefetch_stop = threading.Event()
++_snapshot_prefetch_thread: threading.Thread | None = None
++
++
++def _snapshot_prefetch_loop() -> None:
++    while not _snapshot_prefetch_stop.wait(1.0):
++        now = time.monotonic()
++        with _snapshot_cache_lock:
++            hot = {
++                k: v
++                for k, v in _snapshot_hot_keys.items()
++                if now - v[0] <= _SNAPSHOT_PREFETCH_HOT_WINDOW_SEC
++            }
++            _snapshot_hot_keys.clear()
++            _snapshot_hot_keys.update(hot)
++            expiring = [
++                (k, builder, ttl)
++                for k, (_, builder, ttl) in hot.items()
++                if (c := _snapshot_cache.get(k)) is None or c[0] - now <= 2.0
++            ]
++        for key, builder, ttl in expiring:
++            if _snapshot_prefetch_stop.is_set():
++                return
++            try:
++                payload = builder()  # type: ignore[operator]
++                if payload.get("ok") and payload.get("count"):
++                    with _snapshot_cache_lock:
++                        _snapshot_cache[key] = (time.monotonic() + ttl, payload)
++            except Exception as e:  # noqa: BLE001 — фоновый цикл не должен умирать
++                logger.warning("snapshot prefetch %s failed: %s", key, e)
++
++
++def _mark_snapshot_hot(cache_key: str, builder, ttl: float) -> None:
++    if not _SNAPSHOT_PREFETCH_ENABLED or ttl <= 0:
++        return
++    with _snapshot_cache_lock:
++        _snapshot_hot_keys[cache_key] = (time.monotonic(), builder, ttl)
++
++
++@app.on_event("startup")
++def _startup_snapshot_prefetch() -> None:
++    global _snapshot_prefetch_thread
++    if not _SNAPSHOT_PREFETCH_ENABLED:
++        return
++    _snapshot_prefetch_stop.clear()
++    _snapshot_prefetch_thread = threading.Thread(
++        target=_snapshot_prefetch_loop, name="snapshot-prefetch", daemon=True
++    )
++    _snapshot_prefetch_thread.start()
++    # Прогреваем WS-фиды сразу: первый запрос dYdX получает данные из стрима
++    # (~3-4 сек прогрева), а не через медленный REST-обход рынков.
++    try:
++        from mexc_monitor.dydx.ws_feed import ensure_dydx_ws_started
++        from mexc_monitor.ws_bookticker import ensure_started as ensure_bookticker_ws
++
++        ensure_dydx_ws_started()
++        ensure_bookticker_ws()
++    except Exception as e:  # noqa: BLE001
++        logger.warning("ws feed warmup failed: %s", e)
++
++
++@app.on_event("shutdown")
++def _shutdown_snapshot_prefetch() -> None:
++    _snapshot_prefetch_stop.set()
++
+ _DEPTH_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_DEPTH_CACHE_TTL_SEC", "1")))
+ _depth_cache_lock = threading.Lock()
+ _depth_cache: dict[tuple[str, str, int], tuple[float, dict]] = {}
+@@ -306,7 +388,9 @@ def _get_snapshot_payload(
+         if hit is not None:
+             return hit
+         payload = builder()
+-        if payload.get("ok"):
++        # Пустой снимок (например, все запросы уперлись в 429) не кэшируем,
++        # чтобы не залипать на TTL без данных.
++        if payload.get("ok") and payload.get("count"):
+             with _snapshot_cache_lock:
+                 _snapshot_cache[cache_key] = (time.monotonic() + ttl, payload)
+ 
+@@ -935,10 +1019,14 @@ def _build_exchange_snapshot_payload(exchange: str, market: str | None = None) -
+     actual_market = market or default_market
+ 
+     try:
+-        if exchange in _MULTI_MARKET_EXCHANGES:
+-            rows_list = snapshot_fn(market=actual_market)
+-        else:
+-            rows_list = snapshot_fn()
++        from mexc_monitor.ws_bookticker import try_ws_snapshot_rows
++
++        rows_list = try_ws_snapshot_rows(exchange, actual_market)
++        if rows_list is None:
++            if exchange in _MULTI_MARKET_EXCHANGES:
++                rows_list = snapshot_fn(market=actual_market)
++            else:
++                rows_list = snapshot_fn()
+     except Exception as e:
+         logger.warning("snapshot exchange=%s failed: %s", exchange, e)
+         return {
+@@ -986,16 +1074,16 @@ def _build_exchange_snapshot_payload(exchange: str, market: str | None = None) -
+ 
+ @app.get("/api/snapshot")
+ def snapshot(
++    request: Request,
+     market: str = Query("spot", description="spot, futures или cross"),
+     exchange: str = Query("mexc", description="Биржа: mexc, binance, bybit, okx, gateio, htx, bitget, asterdex, lighter, dydx, hyperliquid"),
+     nocache: bool = Query(
+         False,
+         description="Пропустить серверный кэш снимка (принудительно сходить на биржу)",
+     ),
+-) -> dict:
++) -> Response:
+     ex = (exchange or "").strip().lower()
+     if ex not in _SUPPORTED_EXCHANGES:
+-        from fastapi.responses import JSONResponse
+         return JSONResponse(
+             status_code=400,
+             content={
+@@ -1015,6 +1103,7 @@ def snapshot(
+                 m,
+             )
+         cache_key = f"mexc:{m}"
++        _mark_snapshot_hot(cache_key, lambda: _build_snapshot_payload(m), _snapshot_ttl_for("mexc"))
+         out = _get_snapshot_payload(
+             cache_key,
+             bypass_cache=nocache,
+@@ -1029,6 +1118,11 @@ def snapshot(
+         else:
+             m = None
+         cache_key = f"{ex}:{m or 'default'}"
++        _mark_snapshot_hot(
++            cache_key,
++            lambda: _build_exchange_snapshot_payload(ex, m),
++            _snapshot_ttl_for(ex),
++        )
+         out = _get_snapshot_payload(
+             cache_key,
+             bypass_cache=nocache,
+@@ -1042,7 +1136,25 @@ def snapshot(
+             ex,
+             out.get("error"),
+         )
+-    return out
++        return JSONResponse(content=out)
++
++    # ETag по содержимому снимка: если кэш не обновлялся, отдаём 304 без тела —
++    # браузер переиспользует уже полученный ответ (экономия сотен КБ на запрос).
++    etag = 'W/"{}"'.format(
++        hashlib.md5(
++            f"{ex}:{out.get('market')}:{out.get('loaded_at')}:{out.get('count')}".encode()
++        ).hexdigest()
++    )
++    if_none_match = request.headers.get("if-none-match", "")
++    if etag in if_none_match:
++        return Response(
++            status_code=304,
++            headers={"ETag": etag, "Cache-Control": "no-cache"},
++        )
++    return JSONResponse(
++        content=out,
++        headers={"ETag": etag, "Cache-Control": "no-cache"},
++    )
+ 
+ 
+ @app.get("/api/history/recent")
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 781bcb2..aec07f3 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,35 +1,72 @@
++import { lazy, Suspense } from "react";
+ import { Routes, Route, Navigate } from "react-router-dom";
+ import { NavigationStateProvider } from "./context/NavigationStateContext";
+ import { Layout } from "./components/Layout";
+ import { SpreadMonitorPage } from "./pages/SpreadMonitorPage";
+-import { TradingPage } from "./pages/TradingPage";
+-import { SpreadCapturePage } from "./pages/SpreadCapturePage";
+-import { AsterDexPage } from "./pages/AsterDexPage";
+-import { ArbitragePage } from "./pages/ArbitragePage";
+-import { MultiExchangePage } from "./pages/MultiExchangePage";
+-import { FuturesArbPage } from "./pages/FuturesArbPage";
+-import { SpreadHistoryPage } from "./pages/SpreadHistoryPage";
+-import { AlertsPage } from "./pages/AlertsPage";
+-import { LeadLagPage } from "./pages/LeadLagPage";
++
++// Остальные страницы грузятся лениво — стартовый бандл содержит только главную.
++const TradingPage = lazy(() =>
++  import("./pages/TradingPage").then((m) => ({ default: m.TradingPage })),
++);
++const SpreadCapturePage = lazy(() =>
++  import("./pages/SpreadCapturePage").then((m) => ({
++    default: m.SpreadCapturePage,
++  })),
++);
++const AsterDexPage = lazy(() =>
++  import("./pages/AsterDexPage").then((m) => ({ default: m.AsterDexPage })),
++);
++const ArbitragePage = lazy(() =>
++  import("./pages/ArbitragePage").then((m) => ({ default: m.ArbitragePage })),
++);
++const MultiExchangePage = lazy(() =>
++  import("./pages/MultiExchangePage").then((m) => ({
++    default: m.MultiExchangePage,
++  })),
++);
++const FuturesArbPage = lazy(() =>
++  import("./pages/FuturesArbPage").then((m) => ({ default: m.FuturesArbPage })),
++);
++const SpreadHistoryPage = lazy(() =>
++  import("./pages/SpreadHistoryPage").then((m) => ({
++    default: m.SpreadHistoryPage,
++  })),
++);
++const AlertsPage = lazy(() =>
++  import("./pages/AlertsPage").then((m) => ({ default: m.AlertsPage })),
++);
++const LeadLagPage = lazy(() =>
++  import("./pages/LeadLagPage").then((m) => ({ default: m.LeadLagPage })),
++);
++
++function PageFallback() {
++  return (
++    <div className="flex h-64 items-center justify-center text-sm text-ink-muted">
++      Загрузка…
++    </div>
++  );
++}
+ 
+ function App() {
+   return (
+     <NavigationStateProvider>
+-      <Routes>
+-        <Route element={<Layout />}>
+-          <Route index element={<SpreadMonitorPage />} />
+-          <Route path="trading" element={<TradingPage />} />
+-          <Route path="spread-capture" element={<SpreadCapturePage />} />
+-          <Route path="asterdex" element={<AsterDexPage />} />
+-          <Route path="arbitrage" element={<ArbitragePage />} />
+-          <Route path="multi-exchange" element={<MultiExchangePage />} />
+-          <Route path="futures-arb" element={<FuturesArbPage />} />
+-          <Route path="spread-history" element={<SpreadHistoryPage />} />
+-          <Route path="alerts" element={<AlertsPage />} />
+-          <Route path="lead-lag" element={<LeadLagPage />} />
+-          <Route path="*" element={<Navigate to="/" replace />} />
+-        </Route>
+-      </Routes>
++      <Suspense fallback={<PageFallback />}>
++        <Routes>
++          <Route element={<Layout />}>
++            <Route index element={<SpreadMonitorPage />} />
++            <Route path="trading" element={<TradingPage />} />
++            <Route path="spread-capture" element={<SpreadCapturePage />} />
++            <Route path="asterdex" element={<AsterDexPage />} />
++            <Route path="arbitrage" element={<ArbitragePage />} />
++            <Route path="multi-exchange" element={<MultiExchangePage />} />
++            <Route path="futures-arb" element={<FuturesArbPage />} />
++            <Route path="spread-history" element={<SpreadHistoryPage />} />
++            <Route path="alerts" element={<AlertsPage />} />
++            <Route path="lead-lag" element={<LeadLagPage />} />
++            <Route path="*" element={<Navigate to="/" replace />} />
++          </Route>
++        </Routes>
++      </Suspense>
+     </NavigationStateProvider>
+   );
+ }
+diff --git a/mexc_monitor/aster/client.py b/mexc_monitor/aster/client.py
+index 4341431..65b5903 100644
+--- a/mexc_monitor/aster/client.py
++++ b/mexc_monitor/aster/client.py
+@@ -21,6 +21,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -92,7 +94,7 @@ class AsterPublicClient:
+     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.HTTPError as e:
+             raise AsterApiError(f"HTTP error: {type(e).__name__}: {e}") from e
+         if r.status_code >= 400:
+diff --git a/mexc_monitor/binance/client.py b/mexc_monitor/binance/client.py
+index 83675ee..b616693 100644
+--- a/mexc_monitor/binance/client.py
++++ b/mexc_monitor/binance/client.py
+@@ -24,6 +24,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -109,7 +111,7 @@ class BinancePublicClient:
+         """HTTP GET с обработкой ошибок."""
+         url = f"{base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise BinanceApiError(
+                 f"Binance API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/bitget/client.py b/mexc_monitor/bitget/client.py
+index d358690..65e1c7d 100644
+--- a/mexc_monitor/bitget/client.py
++++ b/mexc_monitor/bitget/client.py
+@@ -18,6 +18,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -112,7 +114,7 @@ class BitgetPublicClient:
+         """HTTP GET с обработкой ошибок и проверкой Bitget response code."""
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise BitgetApiError(
+                 f"Bitget API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/bybit/client.py b/mexc_monitor/bybit/client.py
+index a417438..baad551 100644
+--- a/mexc_monitor/bybit/client.py
++++ b/mexc_monitor/bybit/client.py
+@@ -20,6 +20,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -105,7 +107,7 @@ class BybitPublicClient:
+         """HTTP GET с обработкой ошибок Bybit API."""
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise BybitApiError(
+                 f"Bybit API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/dydx/client.py b/mexc_monitor/dydx/client.py
+index 141c7f5..e38fee8 100644
+--- a/mexc_monitor/dydx/client.py
++++ b/mexc_monitor/dydx/client.py
+@@ -25,6 +25,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -108,7 +110,7 @@ class DydxPublicClient:
+         """HTTP GET с обработкой ошибок dYdX API."""
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise DydxApiError(
+                 f"dYdX API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/dydx/ws_feed.py b/mexc_monitor/dydx/ws_feed.py
+new file mode 100644
+index 0000000..d5921d1
+--- /dev/null
++++ b/mexc_monitor/dydx/ws_feed.py
+@@ -0,0 +1,300 @@
++"""dYdX v4 indexer WebSocket: живые стаканы всех ACTIVE рынков.
++
++REST-сборка снапшота — это ~114 запросов стакана и упирается в rate limit
++индексера (~15 секунд). WS-стрим `v4_orderbook` даёт те же данные пушем:
++после подписки поддерживаем локальные книги и отдаём top-of-book мгновенно.
++
++Метаданные (volume24H, nextFundingRate, статус) берём одним REST-запросом
++/v4/perpetualMarkets и кэшируем (60 сек).
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++import threading
++import time
++from datetime import datetime, timezone
++from typing import Any
++
++from mexc_monitor.models import BookTickerRow
++
++logger = logging.getLogger(__name__)
++
++DEFAULT_WS_URL = "wss://indexer.dydx.trade/v4/ws"
++_STALE_AFTER_SEC = 30.0
++_MARKETS_CACHE_TTL_SEC = 60.0
++_RECONNECT_BACKOFF_SEC = [1, 2, 5, 10, 30]
++# Индексер ограничивает v4_orderbook 32 подписками на соединение —
++# шардируем рынки по нескольким соединениям.
++_MARKETS_PER_CONNECTION = 30
++_SUBSCRIBE_PAUSE_SEC = 0.05
++
++
++def _parse_float(v: Any) -> float:
++    if v is None or v == "":
++        return 0.0
++    try:
++        return float(v)
++    except (TypeError, ValueError):
++        return 0.0
++
++
++class _DydxOrderbookFeed:
++    def __init__(self, url: str = DEFAULT_WS_URL):
++        self.url = url
++        self.lock = threading.Lock()
++        # market -> ({price: size} bids, {price: size} asks)
++        self.books: dict[str, tuple[dict[float, float], dict[float, float]]] = {}
++        self.last_msg_mono = 0.0
++        self.stop = threading.Event()
++        self.thread: threading.Thread | None = None
++        self.markets_meta: dict[str, dict[str, Any]] = {}
++        self.markets_meta_expires = 0.0
++
++    def ensure_started(self) -> None:
++        if self.thread is not None and self.thread.is_alive():
++            return
++        self.stop.clear()
++        self.thread = threading.Thread(
++            target=self._run_manager, name="ws-dydx-orderbook", daemon=True
++        )
++        self.thread.start()
++
++    # -- markets meta (REST, кэш) ------------------------------------------
++
++    def _refresh_markets_meta(self) -> dict[str, dict[str, Any]]:
++        now = time.monotonic()
++        with self.lock:
++            if self.markets_meta and self.markets_meta_expires > now:
++                return dict(self.markets_meta)
++        from mexc_monitor.dydx.client import DydxPublicClient
++
++        try:
++            markets = DydxPublicClient().perpetual_markets()
++        except Exception as e:  # noqa: BLE001
++            logger.warning("dydx ws: perpetualMarkets failed: %s", e)
++            with self.lock:
++                return dict(self.markets_meta)
++        meta = {
++            name: info
++            for name, info in markets.items()
++            if isinstance(info, dict) and info.get("status") == "ACTIVE"
++        }
++        with self.lock:
++            self.markets_meta = meta
++            self.markets_meta_expires = time.monotonic() + _MARKETS_CACHE_TTL_SEC
++        return dict(meta)
++
++    # -- ws loop -------------------------------------------------------------
++
++    def _apply_levels(
++        self,
++        side: dict[float, float],
++        levels: Any,
++        *,
++        initial: bool,
++    ) -> None:
++        if not isinstance(levels, list):
++            return
++        for lvl in levels:
++            if isinstance(lvl, dict):
++                price = _parse_float(lvl.get("price"))
++                size = _parse_float(lvl.get("size"))
++            elif isinstance(lvl, list) and len(lvl) >= 2:
++                price = _parse_float(lvl[0])
++                size = _parse_float(lvl[1])
++            else:
++                continue
++            if price <= 0:
++                continue
++            if size <= 0 and not initial:
++                side.pop(price, None)
++            elif size > 0:
++                side[price] = size
++
++    def _handle_message(self, msg: dict[str, Any]) -> None:
++        mtype = msg.get("type")
++        market = msg.get("id")
++        contents = msg.get("contents")
++        if not market or not isinstance(contents, dict):
++            return
++        if mtype == "subscribed":
++            bids: dict[float, float] = {}
++            asks: dict[float, float] = {}
++            self._apply_levels(bids, contents.get("bids"), initial=True)
++            self._apply_levels(asks, contents.get("asks"), initial=True)
++            with self.lock:
++                self.books[market] = (bids, asks)
++                self.last_msg_mono = time.monotonic()
++        elif mtype == "channel_data":
++            with self.lock:
++                book = self.books.get(market)
++                if book is None:
++                    return
++                self._apply_levels(book[0], contents.get("bids"), initial=False)
++                self._apply_levels(book[1], contents.get("asks"), initial=False)
++                self.last_msg_mono = time.monotonic()
++
++    def _run_manager(self) -> None:
++        """Шардирует ACTIVE-рынки по соединениям (лимит 32 подписки/соединение)."""
++        meta: dict[str, dict[str, Any]] = {}
++        while not self.stop.is_set() and not meta:
++            meta = self._refresh_markets_meta()
++            if not meta and self.stop.wait(5):
++                return
++        names = sorted(meta.keys())
++        shards = [
++            names[i : i + _MARKETS_PER_CONNECTION]
++            for i in range(0, len(names), _MARKETS_PER_CONNECTION)
++        ]
++        workers = [
++            threading.Thread(
++                target=self._run_shard,
++                args=(shard,),
++                name=f"ws-dydx-orderbook-{i}",
++                daemon=True,
++            )
++            for i, shard in enumerate(shards)
++        ]
++        for w in workers:
++            w.start()
++        for w in workers:
++            w.join()
++
++    def _run_shard(self, names: list[str]) -> None:
++        import websocket
++
++        attempt = 0
++        while not self.stop.is_set():
++            try:
++                ws = websocket.create_connection(self.url, timeout=15)
++                attempt = 0
++                logger.info("dydx ws shard connected, subscribing %s markets", len(names))
++                with self.lock:
++                    for name in names:
++                        self.books.pop(name, None)
++                for name in names:
++                    ws.send(
++                        json.dumps(
++                            {
++                                "type": "subscribe",
++                                "channel": "v4_orderbook",
++                                "id": name,
++                                "batched": True,
++                            }
++                        )
++                    )
++                    if self.stop.wait(_SUBSCRIBE_PAUSE_SEC):
++                        ws.close()
++                        return
++                ws.settimeout(30)
++                while not self.stop.is_set():
++                    raw = ws.recv()
++                    if not raw:
++                        continue
++                    try:
++                        msg = json.loads(raw)
++                    except (json.JSONDecodeError, ValueError):
++                        continue
++                    if isinstance(msg, dict):
++                        if msg.get("channel") == "v4_orderbook":
++                            self._handle_message(msg)
++                        elif msg.get("type") == "error":
++                            logger.warning("dydx ws error msg: %s", msg.get("message"))
++                try:
++                    ws.close()
++                except Exception:  # noqa: BLE001
++                    pass
++            except Exception as e:  # noqa: BLE001 — reconnect loop
++                if self.stop.is_set():
++                    return
++                delay = _RECONNECT_BACKOFF_SEC[
++                    min(attempt, len(_RECONNECT_BACKOFF_SEC) - 1)
++                ]
++                attempt += 1
++                logger.warning(
++                    "dydx ws shard error (%s: %s), reconnect in %ss",
++                    type(e).__name__,
++                    e,
++                    delay,
++                )
++                if self.stop.wait(delay):
++                    return
++
++    # -- snapshot --------------------------------------------------------------
++
++    def snapshot_rows(self) -> list[BookTickerRow] | None:
++        with self.lock:
++            if not self.books:
++                return None
++            if (time.monotonic() - self.last_msg_mono) > _STALE_AFTER_SEC:
++                return None
++            tops: dict[str, tuple[float, float, float, float]] = {}
++            for market, (bids, asks) in self.books.items():
++                if not bids or not asks:
++                    continue
++                bid_price = max(bids)
++                ask_price = min(asks)
++                if bid_price <= 0 or ask_price <= 0:
++                    continue
++                tops[market] = (
++                    bid_price,
++                    bids[bid_price],
++                    ask_price,
++                    asks[ask_price],
++                )
++        if len(tops) < 10:
++            return None
++
++        meta = self._refresh_markets_meta()
++        now_iso = datetime.now(timezone.utc).isoformat()
++        rows: list[BookTickerRow] = []
++        for market, (bid, bq, ask, aq) in tops.items():
++            info = meta.get(market, {})
++            volume_24h_quote = _parse_float(info.get("volume24H"))
++            oracle_price = _parse_float(info.get("oraclePrice"))
++            volume_24h_base = (
++                volume_24h_quote / oracle_price if oracle_price > 0 else 0.0
++            )
++            funding = info.get("nextFundingRate")
++            mid = (bid + ask) / 2
++            spread_abs = ask - bid
++            rows.append(
++                BookTickerRow(
++                    symbol=market.replace("-", ""),
++                    bid=bid,
++                    ask=ask,
++                    bid_qty=bq,
++                    ask_qty=aq,
++                    mid=mid,
++                    spread_abs=spread_abs,
++                    spread_bps=(10_000 * spread_abs / mid) if mid > 0 else None,
++                    volume_24h_base=volume_24h_base,
++                    volume_24h_quote=volume_24h_quote,
++                    funding_rate=_parse_float(funding) if funding is not None else None,
++                    observed_at=now_iso,
++                )
++            )
++        return rows
++
++
++_feed = _DydxOrderbookFeed()
++
++
++def ensure_dydx_ws_started() -> None:
++    """Запускает WS-стрим заранее (прогрев при старте бэкенда)."""
++    _feed.ensure_started()
++
++
++def try_dydx_ws_snapshot_rows() -> list[BookTickerRow] | None:
++    """Строки снапшота из WS-книг, если стрим жив; иначе None (REST fallback).
++
++    Первый вызов запускает стрим — тёплые данные появятся через несколько секунд.
++    """
++    _feed.ensure_started()
++    return _feed.snapshot_rows()
++
++
++def stop_dydx_ws() -> None:
++    _feed.stop.set()
+diff --git a/mexc_monitor/gateio/client.py b/mexc_monitor/gateio/client.py
+index ceb6950..e5f3bb0 100644
+--- a/mexc_monitor/gateio/client.py
++++ b/mexc_monitor/gateio/client.py
+@@ -21,6 +21,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -112,7 +114,7 @@ class GateioPublicClient:
+         """HTTP GET с обработкой ошибок."""
+         url = f"{base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise GateioApiError(
+                 f"Gate.io API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/http_shared.py b/mexc_monitor/http_shared.py
+new file mode 100644
+index 0000000..f26334b
+--- /dev/null
++++ b/mexc_monitor/http_shared.py
+@@ -0,0 +1,38 @@
++"""Общий httpx.Client с keep-alive пулом соединений.
++
++Отдельный модуль без внутренних импортов mexc_monitor, чтобы клиенты бирж
++могли использовать его без циклических импортов (http_utils тянет config).
++"""
++
++from __future__ import annotations
++
++import threading
++from typing import Any
++
++import httpx
++
++_shared_client_lock = threading.Lock()
++_shared_client: httpx.Client | None = None
++
++
++def shared_get(
++    url: str,
++    *,
++    params: dict[str, Any] | None = None,
++    timeout: float | None = None,
++) -> httpx.Response:
++    """GET через общий клиент: переиспользует TCP+TLS соединения к биржам.
++
++    Разовые httpx.get() открывают новое соединение на каждый запрос и
++    тратят время на handshake; общий пул убирает эти накладные расходы.
++    """
++    global _shared_client
++    with _shared_client_lock:
++        if _shared_client is None or _shared_client.is_closed:
++            _shared_client = httpx.Client(
++                limits=httpx.Limits(
++                    max_connections=64, max_keepalive_connections=32
++                ),
++            )
++        client = _shared_client
++    return client.get(url, params=params, timeout=timeout)
+diff --git a/mexc_monitor/htx/client.py b/mexc_monitor/htx/client.py
+index bec4d85..e041e15 100644
+--- a/mexc_monitor/htx/client.py
++++ b/mexc_monitor/htx/client.py
+@@ -26,6 +26,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -120,7 +122,7 @@ class HtxPublicClient:
+         """HTTP GET с обработкой ошибок HTX API."""
+         url = f"{base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise HtxApiError(
+                 f"HTX API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/lighter/client.py b/mexc_monitor/lighter/client.py
+index 903307d..30127d8 100644
+--- a/mexc_monitor/lighter/client.py
++++ b/mexc_monitor/lighter/client.py
+@@ -22,6 +22,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -121,7 +123,7 @@ class LighterPublicClient:
+         """HTTP GET с обработкой ошибок."""
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.HTTPError as e:
+             raise LighterApiError(f"HTTP error: {type(e).__name__}: {e}") from e
+         if r.status_code >= 400:
+diff --git a/mexc_monitor/okx/client.py b/mexc_monitor/okx/client.py
+index ec53fa4..d42daa1 100644
+--- a/mexc_monitor/okx/client.py
++++ b/mexc_monitor/okx/client.py
+@@ -19,6 +19,8 @@ from typing import Any
+ 
+ import httpx
+ 
++from mexc_monitor.http_shared import shared_get
++
+ from mexc_monitor.models import BookTickerRow
+ 
+ logger = logging.getLogger(__name__)
+@@ -108,7 +110,7 @@ class OkxPublicClient:
+         """HTTP GET с обработкой ошибок OKX API."""
+         url = f"{self._base_url}{path}"
+         try:
+-            r = httpx.get(url, params=params, timeout=self._timeout)
++            r = shared_get(url, params=params, timeout=self._timeout)
+         except httpx.TimeoutException as e:
+             raise OkxApiError(
+                 f"OKX API timeout after {self._timeout}s: {url}"
+diff --git a/mexc_monitor/ws_bookticker.py b/mexc_monitor/ws_bookticker.py
+new file mode 100644
+index 0000000..93ca6c6
+--- /dev/null
++++ b/mexc_monitor/ws_bookticker.py
+@@ -0,0 +1,241 @@
++"""Живой bookTicker по WebSocket для бирж с единым стримом на все символы.
++
++Паттерн как в ws_futures.py (MEXC): фоновый поток держит соединение и
++обновляет буфер лучших bid/ask; сборка снапшота берёт буфер, если он свежий,
++и падает обратно на REST, если стрим не готов.
++
++Сейчас поддерживается Binance USDT-M futures (стрим `!bookTicker` — один
++канал на все символы). 24h-объёмы меняются медленно, поэтому берутся по REST
++и кэшируются отдельно (60 сек).
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++import threading
++import time
++from datetime import datetime, timezone
++from typing import Any, Callable
++
++from mexc_monitor.models import BookTickerRow
++
++logger = logging.getLogger(__name__)
++
++_STALE_AFTER_SEC = 15.0
++_VOLUME_CACHE_TTL_SEC = 60.0
++_RECONNECT_BACKOFF_SEC = [1, 2, 5, 10, 30]
++
++_BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws/!bookTicker"
++
++
++class _Feed:
++    """Один WS-стрим: symbol -> (bid, bid_qty, ask, ask_qty), метка свежести."""
++
++    def __init__(self, name: str, url: str, parse: Callable[[Any], tuple | None]):
++        self.name = name
++        self.url = url
++        self.parse = parse
++        self.lock = threading.Lock()
++        self.book: dict[str, tuple[float, float, float, float]] = {}
++        self.last_msg_mono = 0.0
++        self.stop = threading.Event()
++        self.thread: threading.Thread | None = None
++
++    def ensure_started(self) -> None:
++        if self.thread is not None and self.thread.is_alive():
++            return
++        self.stop.clear()
++        self.thread = threading.Thread(
++            target=self._run, name=f"ws-bookticker-{self.name}", daemon=True
++        )
++        self.thread.start()
++
++    def snapshot(self, *, max_age_sec: float = _STALE_AFTER_SEC) -> dict | None:
++        with self.lock:
++            if not self.book:
++                return None
++            if (time.monotonic() - self.last_msg_mono) > max_age_sec:
++                return None
++            return dict(self.book)
++
++    def _run(self) -> None:
++        import websocket
++
++        attempt = 0
++        while not self.stop.is_set():
++            try:
++                ws = websocket.create_connection(self.url, timeout=15)
++                attempt = 0
++                logger.info("ws-bookticker %s connected", self.name)
++                # bookTicker шлёт тысячи сообщений/сек: тишина дольше 10с
++                # означает «мёртвое» соединение — переподключаемся.
++                ws.settimeout(10)
++                while not self.stop.is_set():
++                    try:
++                        raw = ws.recv()
++                    except websocket.WebSocketTimeoutException:
++                        logger.warning(
++                            "ws-bookticker %s stream silent, reconnecting",
++                            self.name,
++                        )
++                        break
++                    if not raw:
++                        continue
++                    try:
++                        msg = json.loads(raw)
++                    except (json.JSONDecodeError, ValueError):
++                        continue
++                    parsed = self.parse(msg)
++                    if parsed is None:
++                        continue
++                    sym, bid, bq, ask, aq = parsed
++                    with self.lock:
++                        self.book[sym] = (bid, bq, ask, aq)
++                        self.last_msg_mono = time.monotonic()
++                try:
++                    ws.close()
++                except Exception:  # noqa: BLE001
++                    pass
++            except Exception as e:  # noqa: BLE001 — reconnect loop
++                if self.stop.is_set():
++                    return
++                delay = _RECONNECT_BACKOFF_SEC[
++                    min(attempt, len(_RECONNECT_BACKOFF_SEC) - 1)
++                ]
++                attempt += 1
++                logger.warning(
++                    "ws-bookticker %s error (%s: %s), reconnect in %ss",
++                    self.name,
++                    type(e).__name__,
++                    e,
++                    delay,
++                )
++                if self.stop.wait(delay):
++                    return
++
++
++def _parse_binance(msg: Any) -> tuple | None:
++    if not isinstance(msg, dict):
++        return None
++    sym = msg.get("s")
++    if not sym:
++        return None
++    try:
++        bid = float(msg.get("b") or 0)
++        ask = float(msg.get("a") or 0)
++        bq = float(msg.get("B") or 0)
++        aq = float(msg.get("A") or 0)
++    except (TypeError, ValueError):
++        return None
++    if bid <= 0 or ask <= 0:
++        return None
++    return sym, bid, bq, ask, aq
++
++
++_feeds: dict[str, _Feed] = {
++    "binance": _Feed("binance", _BINANCE_FUTURES_WS_URL, _parse_binance),
++}
++
++_volume_lock = threading.Lock()
++# exchange -> (истекает_mono, symbol -> (vol_base, vol_quote))
++_volume_cache: dict[str, tuple[float, dict[str, tuple[float, float]]]] = {}
++
++
++def _binance_volumes() -> dict[str, tuple[float, float]]:
++    from mexc_monitor.binance.client import BinancePublicClient, _parse_float
++
++    client = BinancePublicClient()
++    out: dict[str, tuple[float, float]] = {}
++    for t in client.ticker_24h(market="futures"):
++        sym = t.get("symbol") if isinstance(t, dict) else None
++        if sym:
++            out[sym] = (
++                _parse_float(t.get("volume")),
++                _parse_float(t.get("quoteVolume")),
++            )
++    return out
++
++
++_volume_loaders: dict[str, Callable[[], dict[str, tuple[float, float]]]] = {
++    "binance": _binance_volumes,
++}
++
++
++def _volumes_for(exchange: str) -> dict[str, tuple[float, float]]:
++    now = time.monotonic()
++    with _volume_lock:
++        cached = _volume_cache.get(exchange)
++        if cached is not None and cached[0] > now:
++            return cached[1]
++    loader = _volume_loaders.get(exchange)
++    if loader is None:
++        return {}
++    try:
++        volumes = loader()
++    except Exception as e:  # noqa: BLE001 — объёмы не критичны для снапшота
++        logger.warning("ws-bookticker %s volumes failed: %s", exchange, e)
++        stale = _volume_cache.get(exchange)
++        return stale[1] if stale is not None else {}
++    with _volume_lock:
++        _volume_cache[exchange] = (now + _VOLUME_CACHE_TTL_SEC, volumes)
++    return volumes
++
++
++def ensure_started() -> None:
++    """Запускает все WS-фиды заранее (прогрев при старте бэкенда)."""
++    for feed in _feeds.values():
++        feed.ensure_started()
++
++
++def try_ws_snapshot_rows(exchange: str, market: str | None) -> list[BookTickerRow] | None:
++    """Строки снапшота из WS-буфера, если стрим жив и свеж; иначе None (REST).
++
++    Первый вызов запускает фоновый стрим — данные появятся через секунды,
++    а до тех пор снапшот строится по REST как раньше.
++    """
++    if market not in (None, "futures", "perp"):
++        return None
++    if exchange == "dydx":
++        from mexc_monitor.dydx.ws_feed import try_dydx_ws_snapshot_rows
++
++        return try_dydx_ws_snapshot_rows()
++    feed = _feeds.get(exchange)
++    if feed is None:
++        return None
++    feed.ensure_started()
++    book = feed.snapshot()
++    if not book or len(book) < 10:
++        return None
++
++    volumes = _volumes_for(exchange)
++    now_iso = datetime.now(timezone.utc).isoformat()
++    rows: list[BookTickerRow] = []
++    for sym, (bid, bq, ask, aq) in book.items():
++        mid = (bid + ask) / 2
++        spread_abs = ask - bid
++        vol = volumes.get(sym, (0.0, 0.0))
++        rows.append(
++            BookTickerRow(
++                symbol=sym,
++                bid=bid,
++                ask=ask,
++                bid_qty=bq,
++                ask_qty=aq,
++                mid=mid,
++                spread_abs=spread_abs,
++                spread_bps=(10_000 * spread_abs / mid) if mid > 0 else None,
++                volume_24h_base=vol[0],
++                volume_24h_quote=vol[1],
++                observed_at=now_iso,
++            )
++        )
++    return rows
++
++
++def stop_all() -> None:
++    from mexc_monitor.dydx.ws_feed import stop_dydx_ws
++
++    stop_dydx_ws()
++    for feed in _feeds.values():
++        feed.stop.set()
+-- 
+2.34.1
+

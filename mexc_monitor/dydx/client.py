@@ -25,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from mexc_monitor.http_shared import shared_get
+
 from mexc_monitor.models import BookTickerRow
 
 logger = logging.getLogger(__name__)
@@ -108,7 +110,7 @@ class DydxPublicClient:
         """HTTP GET с обработкой ошибок dYdX API."""
         url = f"{self._base_url}{path}"
         try:
-            r = httpx.get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise DydxApiError(
                 f"dYdX API timeout after {self._timeout}s: {url}"

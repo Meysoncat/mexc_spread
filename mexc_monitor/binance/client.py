@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from mexc_monitor.http_shared import shared_get
+
 from mexc_monitor.models import BookTickerRow
 
 logger = logging.getLogger(__name__)
@@ -109,7 +111,7 @@ class BinancePublicClient:
         """HTTP GET с обработкой ошибок."""
         url = f"{base_url}{path}"
         try:
-            r = httpx.get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise BinanceApiError(
                 f"Binance API timeout after {self._timeout}s: {url}"

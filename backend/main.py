@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -8,8 +9,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from mexc_monitor.client import MexcApiError
@@ -147,6 +149,9 @@ def _startup_prefetch_futures_ws() -> None:
 
 @app.on_event("shutdown")
 def _shutdown_workers() -> None:
+    from mexc_monitor.ws_bookticker import stop_all as stop_ws_booktickers
+
+    stop_ws_booktickers()
     _portfolio_risk.stop()
     _registry.shutdown_all()
     stop_history_worker()
@@ -171,6 +176,83 @@ _snapshot_build_locks: dict[str, threading.Lock] = {}
 
 def _snapshot_ttl_for(exchange: str) -> float:
     return _SNAPSHOT_CACHE_TTL_OVERRIDES.get(exchange, _SNAPSHOT_CACHE_TTL_SEC)
+
+
+# Фоновый префетч: ключи, запрошенные недавно, обновляются до истечения TTL,
+# чтобы пользователь никогда не ждал холодную пересборку (особенно dYdX).
+_SNAPSHOT_PREFETCH_ENABLED = str(
+    os.environ.get("MEXC_SNAPSHOT_PREFETCH", "true")
+).strip().lower() in ("true", "1", "yes")
+# Ключ считается «горячим», если его запрашивали в последние N секунд.
+_SNAPSHOT_PREFETCH_HOT_WINDOW_SEC = max(
+    30.0, float(os.environ.get("MEXC_SNAPSHOT_PREFETCH_HOT_WINDOW_SEC", "180"))
+)
+# key -> (время последнего запроса, builder, ttl)
+_snapshot_hot_keys: dict[str, tuple[float, object, float]] = {}
+_snapshot_prefetch_stop = threading.Event()
+_snapshot_prefetch_thread: threading.Thread | None = None
+
+
+def _snapshot_prefetch_loop() -> None:
+    while not _snapshot_prefetch_stop.wait(1.0):
+        now = time.monotonic()
+        with _snapshot_cache_lock:
+            hot = {
+                k: v
+                for k, v in _snapshot_hot_keys.items()
+                if now - v[0] <= _SNAPSHOT_PREFETCH_HOT_WINDOW_SEC
+            }
+            _snapshot_hot_keys.clear()
+            _snapshot_hot_keys.update(hot)
+            expiring = [
+                (k, builder, ttl)
+                for k, (_, builder, ttl) in hot.items()
+                if (c := _snapshot_cache.get(k)) is None or c[0] - now <= 2.0
+            ]
+        for key, builder, ttl in expiring:
+            if _snapshot_prefetch_stop.is_set():
+                return
+            try:
+                payload = builder()  # type: ignore[operator]
+                if payload.get("ok") and payload.get("count"):
+                    with _snapshot_cache_lock:
+                        _snapshot_cache[key] = (time.monotonic() + ttl, payload)
+            except Exception as e:  # noqa: BLE001 — фоновый цикл не должен умирать
+                logger.warning("snapshot prefetch %s failed: %s", key, e)
+
+
+def _mark_snapshot_hot(cache_key: str, builder, ttl: float) -> None:
+    if not _SNAPSHOT_PREFETCH_ENABLED or ttl <= 0:
+        return
+    with _snapshot_cache_lock:
+        _snapshot_hot_keys[cache_key] = (time.monotonic(), builder, ttl)
+
+
+@app.on_event("startup")
+def _startup_snapshot_prefetch() -> None:
+    global _snapshot_prefetch_thread
+    if not _SNAPSHOT_PREFETCH_ENABLED:
+        return
+    _snapshot_prefetch_stop.clear()
+    _snapshot_prefetch_thread = threading.Thread(
+        target=_snapshot_prefetch_loop, name="snapshot-prefetch", daemon=True
+    )
+    _snapshot_prefetch_thread.start()
+    # Прогреваем WS-фиды сразу: первый запрос dYdX получает данные из стрима
+    # (~3-4 сек прогрева), а не через медленный REST-обход рынков.
+    try:
+        from mexc_monitor.dydx.ws_feed import ensure_dydx_ws_started
+        from mexc_monitor.ws_bookticker import ensure_started as ensure_bookticker_ws
+
+        ensure_dydx_ws_started()
+        ensure_bookticker_ws()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ws feed warmup failed: %s", e)
+
+
+@app.on_event("shutdown")
+def _shutdown_snapshot_prefetch() -> None:
+    _snapshot_prefetch_stop.set()
 
 _DEPTH_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_DEPTH_CACHE_TTL_SEC", "1")))
 _depth_cache_lock = threading.Lock()
@@ -306,7 +388,9 @@ def _get_snapshot_payload(
         if hit is not None:
             return hit
         payload = builder()
-        if payload.get("ok"):
+        # Пустой снимок (например, все запросы уперлись в 429) не кэшируем,
+        # чтобы не залипать на TTL без данных.
+        if payload.get("ok") and payload.get("count"):
             with _snapshot_cache_lock:
                 _snapshot_cache[cache_key] = (time.monotonic() + ttl, payload)
 
@@ -935,10 +1019,14 @@ def _build_exchange_snapshot_payload(exchange: str, market: str | None = None) -
     actual_market = market or default_market
 
     try:
-        if exchange in _MULTI_MARKET_EXCHANGES:
-            rows_list = snapshot_fn(market=actual_market)
-        else:
-            rows_list = snapshot_fn()
+        from mexc_monitor.ws_bookticker import try_ws_snapshot_rows
+
+        rows_list = try_ws_snapshot_rows(exchange, actual_market)
+        if rows_list is None:
+            if exchange in _MULTI_MARKET_EXCHANGES:
+                rows_list = snapshot_fn(market=actual_market)
+            else:
+                rows_list = snapshot_fn()
     except Exception as e:
         logger.warning("snapshot exchange=%s failed: %s", exchange, e)
         return {
@@ -986,16 +1074,16 @@ def _build_exchange_snapshot_payload(exchange: str, market: str | None = None) -
 
 @app.get("/api/snapshot")
 def snapshot(
+    request: Request,
     market: str = Query("spot", description="spot, futures или cross"),
     exchange: str = Query("mexc", description="Биржа: mexc, binance, bybit, okx, gateio, htx, bitget, asterdex, lighter, dydx, hyperliquid"),
     nocache: bool = Query(
         False,
         description="Пропустить серверный кэш снимка (принудительно сходить на биржу)",
     ),
-) -> dict:
+) -> Response:
     ex = (exchange or "").strip().lower()
     if ex not in _SUPPORTED_EXCHANGES:
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=400,
             content={
@@ -1015,6 +1103,7 @@ def snapshot(
                 m,
             )
         cache_key = f"mexc:{m}"
+        _mark_snapshot_hot(cache_key, lambda: _build_snapshot_payload(m), _snapshot_ttl_for("mexc"))
         out = _get_snapshot_payload(
             cache_key,
             bypass_cache=nocache,
@@ -1029,6 +1118,11 @@ def snapshot(
         else:
             m = None
         cache_key = f"{ex}:{m or 'default'}"
+        _mark_snapshot_hot(
+            cache_key,
+            lambda: _build_exchange_snapshot_payload(ex, m),
+            _snapshot_ttl_for(ex),
+        )
         out = _get_snapshot_payload(
             cache_key,
             bypass_cache=nocache,
@@ -1042,7 +1136,25 @@ def snapshot(
             ex,
             out.get("error"),
         )
-    return out
+        return JSONResponse(content=out)
+
+    # ETag по содержимому снимка: если кэш не обновлялся, отдаём 304 без тела —
+    # браузер переиспользует уже полученный ответ (экономия сотен КБ на запрос).
+    etag = 'W/"{}"'.format(
+        hashlib.md5(
+            f"{ex}:{out.get('market')}:{out.get('loaded_at')}:{out.get('count')}".encode()
+        ).hexdigest()
+    )
+    if_none_match = request.headers.get("if-none-match", "")
+    if etag in if_none_match:
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+    return JSONResponse(
+        content=out,
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/api/history/recent")

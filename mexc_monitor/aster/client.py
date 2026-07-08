@@ -21,6 +21,8 @@ from typing import Any
 
 import httpx
 
+from mexc_monitor.http_shared import shared_get
+
 from mexc_monitor.models import BookTickerRow
 
 logger = logging.getLogger(__name__)
@@ -92,7 +94,7 @@ class AsterPublicClient:
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self._base_url}{path}"
         try:
-            r = httpx.get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, params=params, timeout=self._timeout)
         except httpx.HTTPError as e:
             raise AsterApiError(f"HTTP error: {type(e).__name__}: {e}") from e
         if r.status_code >= 400:
