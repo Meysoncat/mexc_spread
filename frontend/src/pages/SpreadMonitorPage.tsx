@@ -16,6 +16,7 @@ import {
   ChevronUp,
   Download,
   ChartLine,
+  Columns3,
   LayoutGrid,
   LayoutList,
   List,
@@ -112,6 +113,7 @@ const SORT_OPTIONS_CROSS: { value: string; label: string }[] = [
 ];
 
 const TABLE_ROW_PX = 40;
+const COMPACT_TABLE_ROW_PX = 29;
 const VIRTUAL_OVERSCAN = 10;
 
 /** Нижняя граница интервала автообновления — не чаще времени ответа биржи. */
@@ -141,6 +143,109 @@ const SPREAD_QUICK_MAX_TILES_DEFAULT = 24;
 
 const DISPLAY_STORAGE_KEY = "mexc-ui-display";
 const EXCHANGE_PAIR_COUNTS_STORAGE_KEY = "mexc-ui-exchange-pair-counts";
+
+const SORT_BY_STORAGE_KEY = "mexc-ui-sort-by";
+const SORT_ASC_STORAGE_KEY = "mexc-ui-sort-asc";
+const MIN_VOL_QUOTE_STORAGE_KEY = "mexc-ui-min-vol-quote";
+const MIN_SPREAD_BPS_STORAGE_KEY = "mexc-ui-min-spread-bps";
+const COMPACT_ROWS_STORAGE_KEY = "mexc-ui-compact-rows";
+const HIDDEN_COLS_STORAGE_PREFIX = "mexc-ui-hidden-cols-";
+
+/** Дефолтная сортировка — чистый спред: вверху реализуемые возможности, а не неликвид. */
+const DEFAULT_SORT_BY = "net_spread_bps";
+/** Дефолтный фильтр ликвидности: скрывает пары тоньше 10k USDT за сутки. */
+const DEFAULT_MIN_VOL_QUOTE = 10_000;
+
+type TableKind = "spotfut" | "cross";
+
+const SPOTFUT_HIDEABLE_COLS: { key: string; label: string }[] = [
+  { key: "bid", label: "Bid" },
+  { key: "ask", label: "Ask" },
+  { key: "spread_abs", label: "Спред (абс.)" },
+  { key: "spread_bps", label: "Спред bps" },
+  { key: "net_spread_bps", label: "Net bps" },
+  { key: "trend", label: "Trend" },
+  { key: "l1", label: "L1 USDT" },
+  { key: "mid", label: "Mid" },
+  { key: "vol_base", label: "Объём 24h (база)" },
+  { key: "vol_quote", label: "Объём 24h (котировка)" },
+  { key: "funding", label: "Funding" },
+  { key: "bid_qty", label: "Bid qty" },
+  { key: "ask_qty", label: "Ask qty" },
+];
+
+const CROSS_HIDEABLE_COLS: { key: string; label: string }[] = [
+  { key: "basis_bps", label: "Базис bps" },
+  { key: "basis_abs", label: "Базис abs" },
+  { key: "spot_mid", label: "Mid спот" },
+  { key: "fut_mid", label: "Mid фьюч" },
+  { key: "spot_bps", label: "bps спот" },
+  { key: "fut_bps", label: "bps фьюч" },
+  { key: "vol_spot", label: "Объём 24h (спот)" },
+  { key: "vol_fut", label: "Оборот 24h (фьюч)" },
+  { key: "funding", label: "Funding" },
+];
+
+const DEFAULT_HIDDEN_COLS: Record<TableKind, string[]> = {
+  spotfut: ["vol_base", "bid_qty", "ask_qty"],
+  cross: [],
+};
+
+function readHiddenCols(kind: TableKind): Set<string> {
+  if (typeof window === "undefined") return new Set(DEFAULT_HIDDEN_COLS[kind]);
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_COLS_STORAGE_PREFIX + kind);
+    if (raw == null) return new Set(DEFAULT_HIDDEN_COLS[kind]);
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set(DEFAULT_HIDDEN_COLS[kind]);
+    return new Set(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return new Set(DEFAULT_HIDDEN_COLS[kind]);
+  }
+}
+
+function writeHiddenCols(kind: TableKind, cols: Set<string>): void {
+  try {
+    window.localStorage.setItem(
+      HIDDEN_COLS_STORAGE_PREFIX + kind,
+      JSON.stringify([...cols]),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function readStoredNumber(key: string, fallback: number): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredString(key: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  try {
+    return window.localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredBool(key: string, fallback = false): boolean {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return raw === "1";
+  } catch {
+    return fallback;
+  }
+}
 
 function readExchangePairCounts(): Partial<Record<Exchange, number>> {
   if (typeof window === "undefined") return {};
@@ -525,6 +630,7 @@ const MarketRowTr = memo(function MarketRowTr({
   domBookMarket,
   isFavorite,
   onToggleFavorite,
+  hiddenCols,
 }: {
   r: MarketRow;
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
@@ -536,41 +642,43 @@ const MarketRowTr = memo(function MarketRowTr({
   domBookMarket: DomMarket;
   isFavorite: boolean;
   onToggleFavorite: () => void;
+  hiddenCols: ReadonlySet<string>;
 }) {
+  const h = hiddenCols;
   return (
     <tr
-      className={`cursor-default border-b border-line/60 transition hover:bg-accent/5 ${spreadHeatmapClass(r.net_spread_bps)}`}
+      className={`group cursor-default border-b border-line/60 transition hover:bg-accent/5 ${spreadHeatmapClass(r.net_spread_bps)}`}
       title="Ctrl+щелчок — копировать символ"
       onMouseDown={(e) => onCtrlCopy(e, r.symbol)}
     >
-      <td className="px-4 py-2.5 font-sans font-medium text-ink">
-        <div className="flex items-center justify-between gap-1">
-          <span className="min-w-0 truncate">{r.symbol}</span>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              className={`rounded-md p-1 transition hover:bg-accent/15 ${
-                isFavorite
-                  ? "text-amber-500"
-                  : "text-ink-muted hover:text-amber-400"
-              }`}
-              title={isFavorite ? "Убрать из избранного" : "В избранное"}
-              aria-label={
-                isFavorite
-                  ? `Убрать ${r.symbol} из избранного`
-                  : `Добавить ${r.symbol} в избранное`
-              }
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleFavorite();
-              }}
-            >
-              <Star
-                className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`}
-                strokeWidth={2}
-              />
-            </button>
+      <td className="sticky left-0 z-[1] bg-surface-elevated px-4 py-2.5 font-sans font-medium text-ink">
+        <div className="relative flex items-center gap-1">
+          <span className="min-w-0 flex-1 truncate">{r.symbol}</span>
+          <button
+            type="button"
+            className={`shrink-0 rounded-md p-1 transition hover:bg-accent/15 ${
+              isFavorite
+                ? "text-amber-500"
+                : "text-ink-muted opacity-0 transition-opacity hover:text-amber-400 focus-visible:opacity-100 group-hover:opacity-100"
+            }`}
+            title={isFavorite ? "Убрать из избранного" : "В избранное"}
+            aria-label={
+              isFavorite
+                ? `Убрать ${r.symbol} из избранного`
+                : `Добавить ${r.symbol} в избранное`
+            }
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite();
+            }}
+          >
+            <Star
+              className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`}
+              strokeWidth={2}
+            />
+          </button>
+          <div className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-0.5 opacity-0 shadow-md transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [&:has(:focus-visible)]:pointer-events-auto [&:has(:focus-visible)]:opacity-100">
             <button
               type="button"
               className="rounded-md p-1 text-accent transition hover:bg-accent/15"
@@ -646,31 +754,49 @@ const MarketRowTr = memo(function MarketRowTr({
           </div>
         </div>
       </td>
-      <td className="px-4 py-2.5">{fmt(r.bid, 8)}</td>
-      <td className="px-4 py-2.5">{fmt(r.ask, 8)}</td>
-      <td className="px-4 py-2.5">{fmt(r.spread_abs, 8)}</td>
-      <td className="px-4 py-2.5 text-accent font-mono tabular-nums">
-        {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
-      </td>
-      <td className={`px-4 py-2.5 font-mono tabular-nums font-semibold ${
-        r.net_spread_bps == null ? "text-ink-muted"
-        : r.net_spread_bps >= 10 ? "text-emerald-500"
-        : r.net_spread_bps >= 0 ? "text-emerald-600 dark:text-emerald-400"
-        : r.net_spread_bps <= -10 ? "text-rose-500"
-        : "text-ink-muted"
-      }`}>
-        {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
-      </td>
-      <InlineSpreadTrend symbol={r.symbol} />
-      <td className="px-4 py-2.5">{fmt(r.mid, 8)}</td>
-      <td className="px-4 py-2.5">{fmt(r.l1_max_notional_quote ?? 0, 2)}</td>
-      <td className="px-4 py-2.5">{fmt(r.volume_24h_base, 4)}</td>
-      <td className="px-4 py-2.5">{fmt(r.volume_24h_quote, 2)}</td>
-      <td className="px-4 py-2.5">
-        {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
-      </td>
-      <td className="px-4 py-2.5">{fmt(r.bid_qty, 6)}</td>
-      <td className="px-4 py-2.5">{fmt(r.ask_qty, 6)}</td>
+      {!h.has("bid") && <td className="px-4 py-2.5">{fmt(r.bid, 8)}</td>}
+      {!h.has("ask") && <td className="px-4 py-2.5">{fmt(r.ask, 8)}</td>}
+      {!h.has("spread_abs") && (
+        <td className="px-4 py-2.5">{fmt(r.spread_abs, 8)}</td>
+      )}
+      {!h.has("spread_bps") && (
+        <td className="px-4 py-2.5 text-accent font-mono tabular-nums">
+          {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
+        </td>
+      )}
+      {!h.has("net_spread_bps") && (
+        <td className={`px-4 py-2.5 font-mono tabular-nums font-semibold ${
+          r.net_spread_bps == null ? "text-ink-muted"
+          : r.net_spread_bps >= 10 ? "text-emerald-500"
+          : r.net_spread_bps >= 0 ? "text-emerald-600 dark:text-emerald-400"
+          : r.net_spread_bps <= -10 ? "text-rose-500"
+          : "text-ink-muted"
+        }`}>
+          {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
+        </td>
+      )}
+      {!h.has("trend") && <InlineSpreadTrend symbol={r.symbol} />}
+      {!h.has("l1") && (
+        <td className="px-4 py-2.5">{fmt(r.l1_max_notional_quote ?? 0, 2)}</td>
+      )}
+      {!h.has("mid") && <td className="px-4 py-2.5">{fmt(r.mid, 8)}</td>}
+      {!h.has("vol_base") && (
+        <td className="px-4 py-2.5">{fmt(r.volume_24h_base, 4)}</td>
+      )}
+      {!h.has("vol_quote") && (
+        <td className="px-4 py-2.5">{fmt(r.volume_24h_quote, 2)}</td>
+      )}
+      {!h.has("funding") && (
+        <td className="px-4 py-2.5">
+          {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
+        </td>
+      )}
+      {!h.has("bid_qty") && (
+        <td className="px-4 py-2.5">{fmt(r.bid_qty, 6)}</td>
+      )}
+      {!h.has("ask_qty") && (
+        <td className="px-4 py-2.5">{fmt(r.ask_qty, 6)}</td>
+      )}
     </tr>
   );
 });
@@ -684,6 +810,7 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
   onOpenWorkspace,
   isFavorite,
   onToggleFavorite,
+  hiddenCols,
 }: {
   r: CrossMarketRow;
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
@@ -693,48 +820,50 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
   onOpenWorkspace: (w: WorkspaceOpenContext) => void;
   isFavorite: boolean;
   onToggleFavorite: () => void;
+  hiddenCols: ReadonlySet<string>;
 }) {
+  const h = hiddenCols;
   return (
     <tr
-      className="cursor-default border-b border-line/60 transition hover:bg-accent/5"
+      className="group cursor-default border-b border-line/60 transition hover:bg-accent/5"
       title="Ctrl+щелчок — копировать спот и перп"
       onMouseDown={(e) => onCtrlCopy(e, r.symbol_spot, r.symbol_futures)}
     >
-      <td className="px-4 py-2.5 font-sans font-medium text-ink">
+      <td className="sticky left-0 z-[1] bg-surface-elevated px-4 py-2.5 font-sans font-medium text-ink">
         <div className="flex flex-col gap-0.5">
-          <div className="flex items-center justify-between gap-1">
-            <span className="min-w-0 truncate font-mono text-xs">
+          <div className="relative flex items-center gap-1">
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {r.symbol_spot}
             </span>
-            <div className="flex shrink-0 items-center gap-0.5">
-              <button
-                type="button"
-                className={`rounded-md p-1 transition hover:bg-accent/15 ${
-                  isFavorite
-                    ? "text-amber-500"
-                    : "text-ink-muted hover:text-amber-400"
-                }`}
-                title={
-                  isFavorite
-                    ? "Убрать пару из избранного"
-                    : "Пара спот+перп в избранное"
-                }
-                aria-label={
-                  isFavorite
-                    ? "Убрать из избранного"
-                    : "Добавить пару в избранное"
-                }
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavorite();
-                }}
-              >
-                <Star
-                  className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`}
-                  strokeWidth={2}
-                />
-              </button>
+            <button
+              type="button"
+              className={`shrink-0 rounded-md p-1 transition hover:bg-accent/15 ${
+                isFavorite
+                  ? "text-amber-500"
+                  : "text-ink-muted opacity-0 transition-opacity hover:text-amber-400 focus-visible:opacity-100 group-hover:opacity-100"
+              }`}
+              title={
+                isFavorite
+                  ? "Убрать пару из избранного"
+                  : "Пара спот+перп в избранное"
+              }
+              aria-label={
+                isFavorite
+                  ? "Убрать из избранного"
+                  : "Добавить пару в избранное"
+              }
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFavorite();
+              }}
+            >
+              <Star
+                className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`}
+                strokeWidth={2}
+              />
+            </button>
+            <div className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-0.5 opacity-0 shadow-md transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [&:has(:focus-visible)]:pointer-events-auto [&:has(:focus-visible)]:opacity-100">
               <button
                 type="button"
                 className="rounded-md p-1 text-accent transition hover:bg-accent/15"
@@ -800,7 +929,7 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
             </span>
             <button
               type="button"
-              className="shrink-0 rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-accent"
+              className="shrink-0 rounded-md p-1 text-ink-muted opacity-0 transition hover:bg-accent/15 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
               title="Стакан фьючерса (DOM)"
               aria-label={`Стакан фьюч ${r.symbol_futures}`}
               onMouseDown={(e) => e.stopPropagation()}
@@ -814,23 +943,41 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
           </div>
         </div>
       </td>
-      <td className="px-4 py-2.5 text-accent">
-        {r.basis_mid_bps == null ? "—" : fmt(r.basis_mid_bps, 2)}
-      </td>
-      <td className="px-4 py-2.5">{fmt(r.basis_mid_abs, 8)}</td>
-      <td className="px-4 py-2.5">{fmt(r.spot_mid, 8)}</td>
-      <td className="px-4 py-2.5">{fmt(r.fut_mid, 8)}</td>
-      <td className="px-4 py-2.5">
-        {r.spot_spread_bps == null ? "—" : fmt(r.spot_spread_bps, 2)}
-      </td>
-      <td className="px-4 py-2.5">
-        {r.fut_spread_bps == null ? "—" : fmt(r.fut_spread_bps, 2)}
-      </td>
-      <td className="px-4 py-2.5">{fmt(r.volume_24h_quote_spot, 2)}</td>
-      <td className="px-4 py-2.5">{fmt(r.volume_24h_quote_fut, 2)}</td>
-      <td className="px-4 py-2.5">
-        {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
-      </td>
+      {!h.has("basis_bps") && (
+        <td className="px-4 py-2.5 text-accent">
+          {r.basis_mid_bps == null ? "—" : fmt(r.basis_mid_bps, 2)}
+        </td>
+      )}
+      {!h.has("basis_abs") && (
+        <td className="px-4 py-2.5">{fmt(r.basis_mid_abs, 8)}</td>
+      )}
+      {!h.has("spot_mid") && (
+        <td className="px-4 py-2.5">{fmt(r.spot_mid, 8)}</td>
+      )}
+      {!h.has("fut_mid") && (
+        <td className="px-4 py-2.5">{fmt(r.fut_mid, 8)}</td>
+      )}
+      {!h.has("spot_bps") && (
+        <td className="px-4 py-2.5">
+          {r.spot_spread_bps == null ? "—" : fmt(r.spot_spread_bps, 2)}
+        </td>
+      )}
+      {!h.has("fut_bps") && (
+        <td className="px-4 py-2.5">
+          {r.fut_spread_bps == null ? "—" : fmt(r.fut_spread_bps, 2)}
+        </td>
+      )}
+      {!h.has("vol_spot") && (
+        <td className="px-4 py-2.5">{fmt(r.volume_24h_quote_spot, 2)}</td>
+      )}
+      {!h.has("vol_fut") && (
+        <td className="px-4 py-2.5">{fmt(r.volume_24h_quote_fut, 2)}</td>
+      )}
+      {!h.has("funding") && (
+        <td className="px-4 py-2.5">
+          {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
+        </td>
+      )}
     </tr>
   );
 });
@@ -1234,16 +1381,35 @@ export function SpreadMonitorPage() {
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
 
   const [quoteRaw, setQuoteRaw] = useState("USDT");
-  const [minSpreadBps, setMinSpreadBps] = useState(0);
-  const [minVolQuote, setMinVolQuote] = useState(0);
+  const [minSpreadBps, setMinSpreadBps] = useState(() =>
+    readStoredNumber(MIN_SPREAD_BPS_STORAGE_KEY, 0),
+  );
+  const [minVolQuote, setMinVolQuote] = useState(() =>
+    readStoredNumber(MIN_VOL_QUOTE_STORAGE_KEY, DEFAULT_MIN_VOL_QUOTE),
+  );
   /** Режим быстрого отбора: спред + L1 «плотность» bid/ask (нотация USDT≈). */
   const [spreadQuickHunt, setSpreadQuickHunt] = useState(false);
   const [minBidL1NotionalQuote, setMinBidL1NotionalQuote] = useState(0);
   const [minAskL1NotionalQuote, setMinAskL1NotionalQuote] = useState(0);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
-  const [sortBy, setSortBy] = useState("spread_bps");
-  const [ascending, setAscending] = useState(false);
+  const [sortBy, setSortBy] = useState(() =>
+    readStoredString(SORT_BY_STORAGE_KEY, DEFAULT_SORT_BY),
+  );
+  const [ascending, setAscending] = useState(() =>
+    readStoredBool(SORT_ASC_STORAGE_KEY),
+  );
+
+  const [hiddenColsByKind, setHiddenColsByKind] = useState<
+    Record<TableKind, Set<string>>
+  >(() => ({
+    spotfut: readHiddenCols("spotfut"),
+    cross: readHiddenCols("cross"),
+  }));
+  const [compactRows, setCompactRows] = useState(() =>
+    readStoredBool(COMPACT_ROWS_STORAGE_KEY),
+  );
+  const [colsMenuOpen, setColsMenuOpen] = useState(false);
 
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [intervalSec, setIntervalSec] = useState(20);
@@ -1292,6 +1458,8 @@ export function SpreadMonitorPage() {
   const beforeQuickHuntTilesVariantRef = useRef<TilesVariant | null>(null);
   const spreadQuickHuntRef = useRef(false);
   spreadQuickHuntRef.current = spreadQuickHunt;
+  /** Пропуск сброса сортировки на первом рендере — иначе затирается сохранённая. */
+  const marketSortInitRef = useRef(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("mexc-ui-theme");
@@ -1458,6 +1626,50 @@ export function SpreadMonitorPage() {
     return () => window.clearTimeout(copyToastTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_BY_STORAGE_KEY, sortBy);
+      localStorage.setItem(SORT_ASC_STORAGE_KEY, ascending ? "1" : "0");
+      localStorage.setItem(MIN_VOL_QUOTE_STORAGE_KEY, String(minVolQuote));
+      localStorage.setItem(MIN_SPREAD_BPS_STORAGE_KEY, String(minSpreadBps));
+    } catch {
+      /* ignore */
+    }
+  }, [sortBy, ascending, minVolQuote, minSpreadBps]);
+
+  const tableKind: TableKind = market === "cross" ? "cross" : "spotfut";
+  const hiddenColsUser = hiddenColsByKind[tableKind];
+  const hiddenCols = useMemo(() => {
+    if (market !== "spot") return hiddenColsUser;
+    const s = new Set(hiddenColsUser);
+    s.add("funding");
+    return s;
+  }, [market, hiddenColsUser]);
+
+  const toggleHiddenCol = useCallback(
+    (key: string) => {
+      setHiddenColsByKind((prev) => {
+        const next = new Set(prev[tableKind]);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        writeHiddenCols(tableKind, next);
+        return { ...prev, [tableKind]: next };
+      });
+    },
+    [tableKind],
+  );
+
+  const toggleCompactRows = useCallback(() => {
+    setCompactRows((prev) => {
+      try {
+        localStorage.setItem(COMPACT_ROWS_STORAGE_KEY, prev ? "0" : "1");
+      } catch {
+        /* ignore */
+      }
+      return !prev;
+    });
+  }, []);
+
   const applySnapshot = useCallback(
     (data: SnapshotResponse, m: Market) => {
       if (!data.ok) {
@@ -1537,8 +1749,11 @@ export function SpreadMonitorPage() {
 
   useEffect(() => {
     setQuoteRaw(defaultQuoteForExchange(exchange, market));
-    setSortBy(market === "cross" ? "basis_mid_bps" : "spread_bps");
-    setAscending(false);
+    if (marketSortInitRef.current) {
+      setSortBy(market === "cross" ? "basis_mid_bps" : DEFAULT_SORT_BY);
+      setAscending(false);
+    }
+    marketSortInitRef.current = true;
     if (market === "cross") {
       if (spreadQuickHuntRef.current) {
         restoreQuickHuntSavedView();
@@ -1676,7 +1891,7 @@ export function SpreadMonitorPage() {
   const { start, end, topPad, bottomPad } = useVirtualRows(
     tableScrollRef,
     displayMode === "list" ? filtered.length : 0,
-    TABLE_ROW_PX,
+    compactRows ? COMPACT_TABLE_ROW_PX : TABLE_ROW_PX,
     VIRTUAL_OVERSCAN,
   );
 
@@ -1689,7 +1904,10 @@ export function SpreadMonitorPage() {
   const showBlockingLoading = isFetching && !hasRows;
   const showStaleTable = isFetching && hasRows;
 
-  const tableColSpan = market === "cross" ? 10 : 13;
+  const hideableCols =
+    market === "cross" ? CROSS_HIDEABLE_COLS : SPOTFUT_HIDEABLE_COLS;
+  const tableColSpan =
+    1 + hideableCols.filter((c) => !hiddenCols.has(c.key)).length;
 
   const volBaseLabel =
     market === "spot"
@@ -2108,6 +2326,74 @@ export function SpreadMonitorPage() {
               </button>
             </div>
 
+            {displayMode === "list" && (
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+                  <input
+                    type="checkbox"
+                    checked={compactRows}
+                    onChange={toggleCompactRows}
+                    className="h-3.5 w-3.5 accent-[var(--accent,#6366f1)]"
+                  />
+                  Компактные строки
+                  <InfoHint text="Уменьшенные отступы строк — больше пар на экране." />
+                </label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setColsMenuOpen((v) => !v)}
+                    className="flex w-full items-center justify-between gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-xs font-medium text-ink-muted transition hover:text-ink"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Columns3 className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+                      Колонки
+                    </span>
+                    {colsMenuOpen ? (
+                      <ChevronUp className="h-3.5 w-3.5" strokeWidth={2} />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} />
+                    )}
+                  </button>
+                  {colsMenuOpen && (
+                    <div className="mt-1 space-y-1 rounded-lg border border-line bg-surface p-2">
+                      {hideableCols.map((c) => (
+                        <label
+                          key={c.key}
+                          className={`flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs transition hover:bg-accent/10 ${
+                            market === "spot" && c.key === "funding"
+                              ? "opacity-40"
+                              : "text-ink-muted"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!hiddenColsUser.has(c.key)}
+                            disabled={market === "spot" && c.key === "funding"}
+                            onChange={() => toggleHiddenCol(c.key)}
+                            className="h-3.5 w-3.5 accent-[var(--accent,#6366f1)]"
+                          />
+                          {c.label}
+                        </label>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHiddenColsByKind((prev) => {
+                            const next = new Set(DEFAULT_HIDDEN_COLS[tableKind]);
+                            writeHiddenCols(tableKind, next);
+                            return { ...prev, [tableKind]: next };
+                          });
+                        }}
+                        className="mt-1 w-full rounded border border-line px-2 py-1 text-[11px] text-ink-muted transition hover:text-ink"
+                      >
+                        Сбросить к умолчаниям
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {spreadQuickHunt && market !== "cross" ? (
               <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-400/95">
                 Быстрый поиск: всегда плитки с мини‑графиками; число плиток и
@@ -2373,202 +2659,246 @@ export function SpreadMonitorPage() {
               <table
                 className={`w-full table-fixed border-collapse text-left text-sm ${
                   market === "cross" ? "min-w-[1180px]" : "min-w-[1360px]"
-                }`}
+                } ${compactRows ? "[&_tbody_td]:!py-1" : ""}`}
               >
                 <thead>
                   <tr className="sticky top-0 z-10 border-b border-line bg-surface-elevated/95 backdrop-blur-sm">
                     {market === "cross" ? (
                       <>
                         <SortableTh
-                          className="w-[14%]"
+                          className="sticky left-0 z-20 w-[14%] bg-surface-elevated"
                           sortKey="symbol_spot"
                           label="Пара"
                           sortBy={sortBy}
                           ascending={ascending}
                           onSort={toggleColumnSort}
                         />
-                        <SortableTh
-                          className="w-[8%]"
-                          sortKey="basis_mid_bps"
-                          label="Базис bps"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="basis_mid_abs"
-                          label="Базис abs"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="spot_mid"
-                          label="Mid спот"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="fut_mid"
-                          label="Mid фьюч"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[7%]"
-                          sortKey="spot_spread_bps"
-                          label="bps спот"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[7%]"
-                          sortKey="fut_spread_bps"
-                          label="bps фьюч"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[10%]"
-                          sortKey="volume_24h_quote_spot"
-                          label={crossVolSpotLabel}
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[10%]"
-                          sortKey="volume_24h_quote_fut"
-                          label={crossVolFutLabel}
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="funding_rate"
-                          label="Funding"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
+                        {!hiddenCols.has("basis_bps") && (
+                          <SortableTh
+                            className="w-[8%]"
+                            sortKey="basis_mid_bps"
+                            label="Базис bps"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("basis_abs") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="basis_mid_abs"
+                            label="Базис abs"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("spot_mid") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="spot_mid"
+                            label="Mid спот"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("fut_mid") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="fut_mid"
+                            label="Mid фьюч"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("spot_bps") && (
+                          <SortableTh
+                            className="w-[7%]"
+                            sortKey="spot_spread_bps"
+                            label="bps спот"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("fut_bps") && (
+                          <SortableTh
+                            className="w-[7%]"
+                            sortKey="fut_spread_bps"
+                            label="bps фьюч"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("vol_spot") && (
+                          <SortableTh
+                            className="w-[10%]"
+                            sortKey="volume_24h_quote_spot"
+                            label={crossVolSpotLabel}
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("vol_fut") && (
+                          <SortableTh
+                            className="w-[10%]"
+                            sortKey="volume_24h_quote_fut"
+                            label={crossVolFutLabel}
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("funding") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="funding_rate"
+                            label="Funding"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
                       </>
                     ) : (
                       <>
                         <SortableTh
-                          className="w-[10%]"
+                          className="sticky left-0 z-20 w-[12%] bg-surface-elevated"
                           sortKey="symbol"
                           label="Символ"
                           sortBy={sortBy}
                           ascending={ascending}
                           onSort={toggleColumnSort}
                         />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="bid"
-                          label="Bid"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="ask"
-                          label="Ask"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="spread_abs"
-                          label="Спред"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[7%]"
-                          sortKey="spread_bps"
-                          label="bps"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[7%]"
-                          sortKey="net_spread_bps"
-                          label="Net"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted">
-                          Trend
-                        </th>
-                        <SortableTh
-                          className="w-[8%]"
-                          sortKey="l1_max_notional_quote"
-                          label="L1 USDT"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="mid"
-                          label="Mid"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[10%]"
-                          sortKey="volume_24h_base"
-                          label={volBaseLabel}
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[10%]"
-                          sortKey="volume_24h_quote"
-                          label={volQuoteLabel}
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="funding_rate"
-                          label="Funding"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="bid_qty"
-                          label="Bid qty"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
-                        <SortableTh
-                          className="w-[9%]"
-                          sortKey="ask_qty"
-                          label="Ask qty"
-                          sortBy={sortBy}
-                          ascending={ascending}
-                          onSort={toggleColumnSort}
-                        />
+                        {!hiddenCols.has("bid") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="bid"
+                            label="Bid"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("ask") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="ask"
+                            label="Ask"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("spread_abs") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="spread_abs"
+                            label="Спред"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("spread_bps") && (
+                          <SortableTh
+                            className="w-[7%]"
+                            sortKey="spread_bps"
+                            label="bps"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("net_spread_bps") && (
+                          <SortableTh
+                            className="w-[7%]"
+                            sortKey="net_spread_bps"
+                            label="Net"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("trend") && (
+                          <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted">
+                            Trend
+                          </th>
+                        )}
+                        {!hiddenCols.has("l1") && (
+                          <SortableTh
+                            className="w-[8%]"
+                            sortKey="l1_max_notional_quote"
+                            label="L1 USDT"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("mid") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="mid"
+                            label="Mid"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("vol_base") && (
+                          <SortableTh
+                            className="w-[10%]"
+                            sortKey="volume_24h_base"
+                            label={volBaseLabel}
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("vol_quote") && (
+                          <SortableTh
+                            className="w-[10%]"
+                            sortKey="volume_24h_quote"
+                            label={volQuoteLabel}
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("funding") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="funding_rate"
+                            label="Funding"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("bid_qty") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="bid_qty"
+                            label="Bid qty"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
+                        {!hiddenCols.has("ask_qty") && (
+                          <SortableTh
+                            className="w-[9%]"
+                            sortKey="ask_qty"
+                            label="Ask qty"
+                            sortBy={sortBy}
+                            ascending={ascending}
+                            onSort={toggleColumnSort}
+                          />
+                        )}
                       </>
                     )}
                   </tr>
@@ -2606,6 +2936,7 @@ export function SpreadMonitorPage() {
                               toggleFavoriteKey(market, fk);
                               bumpFavorites();
                             }}
+                            hiddenCols={hiddenCols}
                           />
                         );
                       })
@@ -2630,6 +2961,7 @@ export function SpreadMonitorPage() {
                               toggleFavoriteKey(market, fk);
                               bumpFavorites();
                             }}
+                            hiddenCols={hiddenCols}
                           />
                         );
                       })}
