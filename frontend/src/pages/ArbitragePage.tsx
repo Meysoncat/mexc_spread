@@ -19,13 +19,18 @@ export function ArbitragePage() {
   const [status, setStatus] = useState<any>(null);
   const [trades, setTrades] = useState<any[]>([]);
   const [tab, setTab] = useState<"status" | "trades" | "settings">("status");
+  const [fetchFailed, setFetchFailed] = useState(false);
   const pollRef = useRef<number>(0);
 
   const fetchStatus = useCallback(async () => {
     try {
       const r = await fetch(apiUrl("/api/arbitrage/status"));
-      if (r.ok) { const d = await r.json(); if (d.ok) setStatus(d); }
-    } catch {}
+      if (r.ok) {
+        const d = await r.json();
+        if (d.ok) { setStatus(d); setFetchFailed(false); return; }
+      }
+      setFetchFailed(true);
+    } catch { setFetchFailed(true); }
   }, []);
   const fetchTrades = useCallback(async () => {
     try {
@@ -76,8 +81,25 @@ export function ArbitragePage() {
         </div>
       </div>
 
+      {/* Ошибка связи с бэкендом (0.6) */}
+      {fetchFailed && initialLoading && (
+        <div className="mx-5 mt-3 flex items-center gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          <span className="flex-1">
+            Не удалось загрузить статус арбитражного движка: бэкенд не
+            отвечает на /api/arbitrage/status. Проверьте, что сервер запущен.
+          </span>
+          <button
+            type="button"
+            onClick={() => { fetchStatus(); fetchTrades(); }}
+            className="shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+          >
+            Повторить
+          </button>
+        </div>
+      )}
+
       {/* Stats bar */}
-      {initialLoading && (
+      {initialLoading && !fetchFailed && (
         <div className="border-b border-line px-5 py-2 flex items-center gap-6">
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} className="h-3 w-16" />
@@ -150,7 +172,17 @@ export function ArbitragePage() {
                 <th className="px-2 py-1.5">Удерж.</th><th className="px-2 py-1.5">Причина</th>
               </tr></thead>
               <tbody>
-                {initialLoading && <SkeletonTableRows rows={6} colSpan={8} />}
+                {initialLoading && !fetchFailed && <SkeletonTableRows rows={6} colSpan={8} />}
+                {!initialLoading && trades.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-2 py-8 text-center text-sm text-ink-muted">
+                      Сделок пока нет.{" "}
+                      {running
+                        ? "Движок работает и ждёт, когда базис превысит порог входа — сделки появятся здесь автоматически."
+                        : "Движок остановлен — нажмите «Старт» вверху, чтобы начать торговать (режим paper безопасен: сделки виртуальные)."}
+                    </td>
+                  </tr>
+                )}
                 {[...trades].reverse().map((t, i) => (
                   <tr key={i} className="border-b border-line/50 hover:bg-accent/5">
                     <td className="px-2 py-1.5 font-mono text-ink-muted">{t.close_time_iso ? new Date(t.close_time_iso).toLocaleTimeString() : "—"}</td>

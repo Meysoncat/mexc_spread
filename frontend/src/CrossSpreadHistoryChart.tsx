@@ -109,8 +109,23 @@ export function CrossSpreadHistoryChart({ open, onClose, isDark }: { open: boole
             </button>
           ))}
         </div>
-        <div className="flex-1 p-2">
+        <div className="relative flex-1 p-2">
           <div ref={chartRef} className="h-[min(50vh,420px)] w-full min-h-[280px]" />
+          {!loading && count === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+              <div className="pointer-events-auto max-w-md rounded-xl border border-line bg-surface-elevated/95 px-5 py-4 text-center text-sm text-ink-muted shadow-lg">
+                <p className="font-medium text-ink">
+                  Нет точек за выбранный период для {symbol || "…"}
+                </p>
+                <p className="mt-2 leading-relaxed">
+                  История базиса копится автоматически, пока работает бэкенд и
+                  сборщик кросс-спреда MEXC ↔ AsterDEX. Проверьте написание
+                  символа (например BTCUSDT), выберите период подлиннее или
+                  оставьте сервер работать — точки появятся через несколько минут.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

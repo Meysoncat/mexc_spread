@@ -41,6 +41,25 @@ interface CompareRow {
   crossSpreadBps: number | null;
 }
 
+/** 0.6: технические ошибки → понятное объяснение для пользователя. */
+function humanizeError(msg: string): string {
+  const m = msg.trim();
+  if (/HTTP 403/i.test(m))
+    return "биржа отклонила запрос (403) — возможна гео-блокировка, попробуйте VPN";
+  if (/HTTP 429/i.test(m))
+    return "слишком много запросов (429) — подождите минуту и обновите";
+  if (/HTTP 5\d\d/i.test(m))
+    return `биржа временно недоступна (${m}) — повторите позже`;
+  if (/HTTP 4\d\d/i.test(m)) return `запрос отклонён (${m})`;
+  if (/failed to fetch|networkerror|load failed/i.test(m))
+    return "нет связи с бэкендом — проверьте, что сервер запущен";
+  if (/timeout|timed?\s?out/i.test(m))
+    return "биржа не ответила вовремя — попробуйте обновить";
+  if (/нет данных/i.test(m))
+    return "биржа вернула пустой ответ — возможно, рынок не поддерживается";
+  return m;
+}
+
 function fmt(n: number | null | undefined, digits = 4): string {
   if (n == null || !Number.isFinite(n)) return "—";
   return n.toLocaleString("ru-RU", {
@@ -233,13 +252,19 @@ export function MultiExchangePage() {
 
       {Object.entries(errors).filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
         .length > 0 && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
-          Ошибки:{" "}
-          {Object.entries(errors)
-            .filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
-            .map(([ex, msg]) => `${EXCHANGE_LABELS[ex] ?? ex}: ${msg}`)
-            .join(" · ")}
-        </p>
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <p className="font-medium">Часть бирж не ответила — сравнение построено без них:</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {Object.entries(errors)
+              .filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
+              .map(([ex, msg]) => (
+                <li key={ex}>
+                  <span className="font-medium">{EXCHANGE_LABELS[ex] ?? ex}</span>
+                  : {humanizeError(String(msg))}
+                </li>
+              ))}
+          </ul>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-3">
@@ -290,7 +315,11 @@ export function MultiExchangePage() {
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={5} className="px-3 py-8 text-center text-ink-muted">
-                  {anyLoading ? "Загрузка…" : "Нет совпадений"}
+                  {anyLoading
+                    ? "Загрузка…"
+                    : rows.length === 0
+                      ? "Нет пар, присутствующих минимум на двух из выбранных бирж — добавьте биржи выше или нажмите «Обновить»"
+                      : "Под фильтры не попала ни одна пара — ослабьте поиск или мин. кросс-спред"}
                 </td>
               </tr>
             )}

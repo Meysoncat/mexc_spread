@@ -3,6 +3,12 @@ import { DollarSign } from "lucide-react";
 
 const POLL_INTERVAL_SEC = 10;
 
+const ENGINE_LABELS: Record<string, string> = {
+  capture: "Spread Capture",
+  arb: "Арбитраж MEXC↔Aster",
+  futures: "Futures Arb",
+};
+
 interface EnginePnl {
   engine_name: string;
   net_pnl: number;
@@ -62,9 +68,12 @@ export function PnlWidget() {
   return (
     <div
       className="flex items-center gap-2 rounded-md border border-line px-3 py-1.5 text-xs"
-      title={pnl.engines.map((e) => `${e.engine_name}: ${e.net_pnl.toFixed(2)}`).join("\n")}
+      title={`Суммарный PnL торговых движков (USDT):\n${pnl.engines
+        .map((e) => `${ENGINE_LABELS[e.engine_name] ?? e.engine_name}: ${e.net_pnl.toFixed(2)}`)
+        .join("\n")}`}
     >
       <DollarSign className="h-3.5 w-3.5 text-ink-muted" />
+      <span className="font-medium text-ink-muted">PnL</span>
       <span className="font-mono font-semibold tabular-nums">
         <span className={positive ? "text-emerald-500" : "text-rose-500"}>
           {positive ? "+" : ""}{pnl.total_pnl.toFixed(2)}

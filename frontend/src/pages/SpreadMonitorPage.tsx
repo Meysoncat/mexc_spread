@@ -22,6 +22,8 @@ import {
   List,
   Maximize2,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Star,
   HelpCircle,
@@ -150,6 +152,8 @@ const MIN_VOL_QUOTE_STORAGE_KEY = "mexc-ui-min-vol-quote";
 const MIN_SPREAD_BPS_STORAGE_KEY = "mexc-ui-min-spread-bps";
 const COMPACT_ROWS_STORAGE_KEY = "mexc-ui-compact-rows";
 const HIDDEN_COLS_STORAGE_PREFIX = "mexc-ui-hidden-cols-";
+/** Панель фильтров сворачиваемая; по умолчанию скрыта — ходовые фильтры есть в строке над таблицей. */
+const FILTERS_COLLAPSED_STORAGE_KEY = "mexc-ui-filters-collapsed";
 
 /** Дефолтная сортировка — чистый спред: вверху реализуемые возможности, а не неликвид. */
 const DEFAULT_SORT_BY = "net_spread_bps";
@@ -1410,6 +1414,10 @@ export function SpreadMonitorPage() {
     readStoredBool(COMPACT_ROWS_STORAGE_KEY),
   );
   const [colsMenuOpen, setColsMenuOpen] = useState(false);
+  /** 0.3: панель фильтров свёрнута по умолчанию — таблице достаётся вся ширина. */
+  const [filtersCollapsed, setFiltersCollapsed] = useState(() =>
+    readStoredBool(FILTERS_COLLAPSED_STORAGE_KEY, true),
+  );
 
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [intervalSec, setIntervalSec] = useState(20);
@@ -1658,6 +1666,17 @@ export function SpreadMonitorPage() {
     },
     [tableKind],
   );
+
+  const toggleFiltersCollapsed = useCallback(() => {
+    setFiltersCollapsed((prev) => {
+      try {
+        localStorage.setItem(FILTERS_COLLAPSED_STORAGE_KEY, prev ? "0" : "1");
+      } catch {
+        /* ignore */
+      }
+      return !prev;
+    });
+  }, []);
 
   const toggleCompactRows = useCallback(() => {
     setCompactRows((prev) => {
@@ -1955,15 +1974,30 @@ export function SpreadMonitorPage() {
         isDark={dark}
       />
 
-      {/* Filters sidebar (page-local, not the navigation sidebar) */}
-      <aside className="hidden w-80 shrink-0 flex-col border-r border-line bg-surface-elevated shadow-panel dark:shadow-panel-dark xl:flex">
-        <div className="border-b border-line p-5">
-          <p className="text-xs font-medium uppercase tracking-wider text-ink-muted">
-            {EXCHANGE_DISPLAY_NAMES[exchange]}
-          </p>
-          <h1 className="mt-1 text-lg font-semibold leading-tight text-ink">
-            Spread Monitor
-          </h1>
+      {/* Filters sidebar (page-local, not the navigation sidebar). 0.3: collapsible. */}
+      <aside
+        className={`hidden w-80 shrink-0 flex-col border-r border-line bg-surface-elevated shadow-panel dark:shadow-panel-dark ${
+          filtersCollapsed ? "" : "xl:flex"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2 border-b border-line p-5">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-ink-muted">
+              {EXCHANGE_DISPLAY_NAMES[exchange]}
+            </p>
+            <h1 className="mt-1 text-lg font-semibold leading-tight text-ink">
+              Spread Monitor
+            </h1>
+          </div>
+          <button
+            type="button"
+            onClick={toggleFiltersCollapsed}
+            className="shrink-0 rounded-lg border border-line p-2 text-ink-muted transition hover:bg-surface hover:text-ink"
+            title="Свернуть панель фильтров — ходовые фильтры останутся в строке над таблицей"
+            aria-label="Свернуть панель фильтров"
+          >
+            <PanelLeftClose className="h-4 w-4" strokeWidth={2} />
+          </button>
         </div>
 
         <div className="flex flex-1 flex-col gap-6 overflow-y-auto scroll-thin p-5">
@@ -2513,6 +2547,24 @@ export function SpreadMonitorPage() {
             </div>
           )}
           <div className="flex items-center gap-3">
+            {filtersCollapsed && (
+              <button
+                type="button"
+                onClick={toggleFiltersCollapsed}
+                className="hidden shrink-0 items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink transition hover:bg-surface-elevated xl:inline-flex"
+                title="Развернуть панель со всеми фильтрами, избранным и настройками вида"
+                aria-label="Развернуть панель фильтров"
+              >
+                <PanelLeftOpen className="h-4 w-4" strokeWidth={2} />
+                Фильтры
+                {hasActiveFilters && (
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-accent"
+                    title="Есть активные фильтры"
+                  />
+                )}
+              </button>
+            )}
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/15 text-accent">
               <Activity className="h-5 w-5" strokeWidth={2} />
             </div>
@@ -2628,6 +2680,74 @@ export function SpreadMonitorPage() {
             </button>
           </div>
         </header>
+
+        {/* 0.3: компактная строка ходовых фильтров — видна, когда боковая панель свёрнута */}
+        {filtersCollapsed && (
+          <div className="hidden flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface-elevated/70 px-6 py-2.5 xl:flex">
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              Поиск
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="BTC…"
+                className="w-36 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              Мин. {market === "cross" ? "|базис|" : "спред"} (bps)
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={minSpreadBps || ""}
+                onChange={(e) => setMinSpreadBps(Number(e.target.value) || 0)}
+                className="w-20 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              Мин. объём 24h
+              <input
+                type="number"
+                min={0}
+                step={1000}
+                value={minVolQuote || ""}
+                onChange={(e) => setMinVolQuote(Number(e.target.value) || 0)}
+                className="w-28 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-accent"
+              />
+            </label>
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={favoritesScope === "favorites_only"}
+                onChange={(e) =>
+                  setFavoritesScopePersist(
+                    e.target.checked ? "favorites_only" : "all",
+                  )
+                }
+                className="h-3.5 w-3.5 accent-[var(--accent,#6366f1)]"
+              />
+              Только ★
+            </label>
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                className="h-3.5 w-3.5 accent-[var(--accent,#6366f1)]"
+              />
+              Авто {intervalSec} с
+            </label>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-ink-muted transition hover:border-accent/40 hover:text-ink"
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="relative flex-1 overflow-hidden p-4">
           {copyToast && (
