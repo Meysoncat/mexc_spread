@@ -7,6 +7,8 @@ then proxies requests to the local API.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 METASCALP_PORTS = range(17845, 17856)
 DEFAULT_TIMEOUT = 5.0
+# How long to remember a *failed* discovery before retrying the port scan.
+# Without this, every call to connections()/positions()/orders() re-scans
+# all 11 ports (2s timeout each → up to 22s per call) whenever MetaScalp
+# isn't running — which made /api/portfolio-risk/status hang for minutes
+# via the portfolio risk manager's per-engine status polling. A success is
+# cached indefinitely (until the next request fails on that base_url).
+DISCOVERY_NEGATIVE_TTL_SEC = 60.0
 
 
 class MetaScalpClient:
@@ -34,23 +43,87 @@ class MetaScalpClient:
         self._base_url = base_url
         self._timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+        # Discovery cache. We remember the resolved base_url (or None if the
+        # last scan failed) and when we last checked, so we don't re-scan
+        # METASCALP_PORTS on every request when MetaScalp isn't running.
+        # `_resolved_base` is None both before the first scan and after a
+        # failed scan; `_resolved_at` tells those two states apart.
+        self._resolved_base: str | None = None
+        self._resolved_at: float = 0.0
+        self._has_resolved: bool = False
+        self._resolve_lock = threading.Lock()
 
     def _resolve_base_url(self) -> str | None:
-        """Scan MetaScalp ports and return the first responding one."""
-        if self._base_url is not None:
-            return self._base_url
-        for port in METASCALP_PORTS:
-            url = f"http://127.0.0.1:{port}"
-            try:
-                r = self._client.get(f"{url}/ping", timeout=2.0)
-                if r.status_code == 200:
-                    self._base_url = url
-                    logger.info("MetaScalp found at %s", url)
-                    return url
-            except Exception:
-                continue
-        logger.warning("MetaScalp not found on ports %s", list(METASCALP_PORTS))
-        return None
+        """Scan MetaScalp ports and return the first responding one.
+
+        Results are cached: a successful discovery is remembered indefinitely,
+        a failed discovery is remembered for DISCOVERY_NEGATIVE_TTL_SEC so we
+        don't burn 22 seconds re-scanning on every call when MetaScalp is down.
+        """
+        # Fast path under the lock-free read: if we have a recent enough
+        # answer, return it without scanning.
+        now = time.monotonic()
+        if self._has_resolved:
+            cached = self._resolved_base
+            # Success cache: keep forever (next failed request invalidates it).
+            if cached is not None:
+                return cached
+            # Negative cache: only valid for DISCOVERY_NEGATIVE_TTL_SEC.
+            if now - self._resolved_at < DISCOVERY_NEGATIVE_TTL_SEC:
+                return None
+
+        # Serialize scans so concurrent callers don't each walk all 11 ports.
+        with self._resolve_lock:
+            # Re-check inside the lock — another thread may have just scanned.
+            now = time.monotonic()
+            if self._has_resolved:
+                cached = self._resolved_base
+                if cached is not None:
+                    return cached
+                if now - self._resolved_at < DISCOVERY_NEGATIVE_TTL_SEC:
+                    return None
+
+            if self._base_url is not None:
+                # Caller pinned a base_url at construction — trust it forever.
+                self._resolved_base = self._base_url
+                self._resolved_at = now
+                self._has_resolved = True
+                return self._base_url
+
+            for port in METASCALP_PORTS:
+                url = f"http://127.0.0.1:{port}"
+                try:
+                    r = self._client.get(f"{url}/ping", timeout=2.0)
+                    if r.status_code == 200:
+                        self._resolved_base = url
+                        self._resolved_at = now
+                        self._has_resolved = True
+                        logger.info("MetaScalp found at %s", url)
+                        return url
+                except Exception:
+                    continue
+            # Cache the negative result so we don't re-scan immediately.
+            self._resolved_base = None
+            self._resolved_at = now
+            self._has_resolved = True
+            logger.warning(
+                "MetaScalp not found on ports %s; retrying in %.0fs",
+                list(METASCALP_PORTS), DISCOVERY_NEGATIVE_TTL_SEC,
+            )
+            return None
+
+    def _invalidate_base_url(self) -> None:
+        """Drop the cached base_url — call when a request to it fails.
+
+        A previously-healthy MetaScalp instance that has since gone down
+        should be re-discovered, not stuck pointing at a dead URL forever.
+        We keep _has_resolved=True so the next call re-scans immediately
+        (no negative-TTL wait).
+        """
+        with self._resolve_lock:
+            self._resolved_base = None
+            self._resolved_at = 0.0
+            self._has_resolved = False
 
     def _get(self, path: str) -> dict[str, Any]:
         base = self._resolve_base_url()
@@ -61,8 +134,13 @@ class MetaScalpClient:
             r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as e:
+            # Server responded with an HTTP error — it's alive, don't invalidate.
             return {"ok": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
         except Exception as e:
+            # Transport error (connection refused, timeout) — MetaScalp likely
+            # went down since discovery. Drop the cached base_url so the next
+            # call re-scans instead of pointing at a dead URL forever.
+            self._invalidate_base_url()
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def _post(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -76,6 +154,7 @@ class MetaScalpClient:
         except httpx.HTTPStatusError as e:
             return {"ok": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
         except Exception as e:
+            self._invalidate_base_url()
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def _delete(self, path: str) -> dict[str, Any]:
@@ -89,6 +168,7 @@ class MetaScalpClient:
         except httpx.HTTPStatusError as e:
             return {"ok": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
         except Exception as e:
+            self._invalidate_base_url()
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     # ── Discovery ──────────────────────────────────────────────────────────
