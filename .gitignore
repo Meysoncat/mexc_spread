@@ -9,3 +9,45 @@ frontend/dist/
 data/
 !frontend/src/data/
 *.sqlite
+
+# Secrets — never commit env files or local credentials.
+.env
+.env.*
+!.env.example
+
+# Local tooling / IDE state.
+.zcode/
+.idea/
+.vscode/
+
+# Skill runtime artifacts (web-user-sim screenshots, reports, debug scripts).
+.web-user-sim/
+
+# Logs.
+*.log
+api*.log
+_run_modern*.log
+frontend/ui*.log
+
+# Ad-hoc debug / scratch files at repo root.
+_debug*.png
+_selector*.png
+_cdp_*.py
+_cdp_*.json
+
+# Ad-hoc snapshots / patches not meant for the repo.
+frontend_src_snapshot.zip
+mexc_spread_*.patch
+mexc_spread_iteration_*.patch
+
+# Scratch files from other AI tooling (Kimi webbridge etc.) — not ours.
+patch_backend.py
+screenshot*.json
+snap*.json
+snapshot*.json
+wb-*.json
+webbridge-*.json
+
+# Local roadmap drafts not yet promoted into docs/.
+mexc_spread_roadmap.md
+
