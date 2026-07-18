@@ -8,7 +8,11 @@ import {
   Settings,
   Zap,
 } from "lucide-react";
-import { apiUrl } from "./config";
+import { apiFetch } from "./config";
+import { SymbolPicker } from "./components/SymbolPicker";
+import { LiveModeWarning } from "./components/LiveModeWarning";
+import { useEngineCapabilities } from "./hooks/useEngineCapabilities";
+import { useNavigationState } from "./hooks/useNavigationState";
 
 interface CaptureSettings {
   symbol: string;
@@ -107,24 +111,51 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
   const [tab, setTab] = useState<"settings" | "trades" | "log">("settings");
   const [events, setEvents] = useState<any[]>([]);
 
+  const [fetchFailed, setFetchFailed] = useState(false);
   const pollRef = useRef<number>(0);
+
+  // Глобальный символ из контекста навигации — bidirectional sync с settings.symbol.
+  const { state: navState, setSymbol: setNavSymbol } = useNavigationState();
+  const syncingSymbol = useRef(false); // защита от петель обновлений
+
+  // settings.symbol (бэкенд) → глобальный символ (один раз при загрузке).
+  useEffect(() => {
+    if (syncingSymbol.current) return;
+    const backendSym = settings?.symbol;
+    if (backendSym && backendSym !== navState.symbol) {
+      setNavSymbol(backendSym);
+    }
+  }, [settings?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Глобальный символ → settings.symbol (PATCH на бэкенд).
+  useEffect(() => {
+    if (!settings) return;
+    if (syncingSymbol.current) return;
+    if (navState.symbol && navState.symbol !== settings.symbol) {
+      syncingSymbol.current = true;
+      updateSetting({ symbol: navState.symbol }).finally(() => {
+        syncingSymbol.current = false;
+      });
+    }
+  }, [navState.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/capture/status"));
-      if (!r.ok) return;
+      const r = await apiFetch("/api/capture/status");
+      if (!r.ok) { setFetchFailed(true); return; }
       const data = await r.json();
-      if (!data.ok) return;
+      if (!data.ok) { setFetchFailed(true); return; }
       setSettings(data.settings);
       setPosition(data.position);
       setStats(data.stats);
       setRunning(data.running);
-    } catch { /* ignore */ }
+      setFetchFailed(false);
+    } catch { setFetchFailed(true); }
   }, []);
 
   const fetchPnl = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/capture/pnl"));
+      const r = await apiFetch("/api/capture/pnl");
       if (!r.ok) return;
       const data = await r.json();
       setPnl(data.ok ? data.pnl : null);
@@ -133,7 +164,7 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
 
   const fetchTrades = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/capture/trades?limit=20"));
+      const r = await apiFetch("/api/capture/trades?limit=20");
       if (!r.ok) return;
       const data = await r.json();
       if (data.ok) setTrades(data.trades ?? []);
@@ -142,7 +173,7 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
 
   const fetchEvents = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/capture/events?limit=30"));
+      const r = await apiFetch("/api/capture/events?limit=30");
       if (!r.ok) return;
       const data = await r.json();
       if (data.ok) setEvents(data.events ?? []);
@@ -173,7 +204,7 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
 
   const updateSetting = async (patch: Record<string, any>) => {
     try {
-      const r = await fetch(apiUrl("/api/capture/settings"), {
+      const r = await apiFetch("/api/capture/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -191,28 +222,38 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
   };
 
   const doStart = async () => {
-    await fetch(apiUrl("/api/capture/start"), { method: "POST" });
+    await apiFetch("/api/capture/start", {
+      method: "POST",
+    });
     fetchStatus();
   };
 
   const doStop = async () => {
-    await fetch(apiUrl("/api/capture/stop"), { method: "POST" });
+    await apiFetch("/api/capture/stop", {
+      method: "POST",
+    });
     fetchStatus();
   };
 
   const doResetPosition = async () => {
-    await fetch(apiUrl("/api/capture/reset-position"), { method: "POST" });
+    await apiFetch("/api/capture/reset-position", {
+      method: "POST",
+    });
     fetchStatus();
     fetchPnl();
   };
 
   const doResetStats = async () => {
-    await fetch(apiUrl("/api/capture/reset-stats"), { method: "POST" });
+    await apiFetch("/api/capture/reset-stats", {
+      method: "POST",
+    });
     fetchStatus();
     fetchTrades();
   };
 
   if (!open && !pageMode) return null;
+
+  const captureCap = useEngineCapabilities("capture");
 
   const content = (
     <>
@@ -257,6 +298,13 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
           )}
         </div>
       </div>
+
+      {/* Live-mode readiness warning: shown when user has selected "live" but
+          the backend has no OrderExecutor injected for capture, so live mode
+          would silently simulate fills instead of placing real orders. */}
+      {settings?.mode === "live" && !captureCap.liveReady && (
+        <LiveModeWarning engineName="Spread Capture" reasons={captureCap.reasons} />
+      )}
 
         {/* Position & PNL bar */}
         {position && position.state !== "idle" && pnl && (
@@ -327,16 +375,29 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-5">
+          {tab === "settings" && !settings && (
+            <div className="flex flex-col items-center gap-3 py-8 text-center">
+              {fetchFailed ? (
+                <>
+                  <p className="text-sm text-ink-muted">Не удалось загрузить настройки захвата спреда: бэкенд не отвечает.</p>
+                  <button onClick={fetchStatus} className="rounded-lg border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition hover:bg-surface-elevated">Повторить</button>
+                </>
+              ) : (
+                <p className="text-sm text-ink-muted">Загрузка…</p>
+              )}
+            </div>
+          )}
           {tab === "settings" && settings && (
             <>
             <div className="grid grid-cols-2 gap-4 max-w-2xl">
               <label className="block">
                 <span className="text-xs text-ink-muted">Тикер</span>
-                <input
-                  type="text"
+                <SymbolPicker
                   value={settings.symbol}
-                  onChange={(e) => updateSetting({ symbol: e.target.value })}
-                  className="mt-0.5 w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus:ring-2 focus:ring-amber-500"
+                  onChange={(s) => updateSetting({ symbol: s })}
+                  exchange={navState.exchange}
+                  market={navState.market}
+                  className="mt-0.5 w-full px-3 py-2 text-sm"
                 />
               </label>
               <label className="block">

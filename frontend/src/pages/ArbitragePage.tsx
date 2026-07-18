@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, Pause, Play, Shield } from "lucide-react";
-import { apiUrl } from "../config";
+import { apiFetch } from "../config";
 import { Skeleton, SkeletonCard, SkeletonTableRows } from "../components/ui/Skeleton";
+import { SymbolPicker } from "../components/SymbolPicker";
+import { LiveModeWarning } from "../components/LiveModeWarning";
+import { useEngineCapabilities } from "../hooks/useEngineCapabilities";
+import { useNavigationState } from "../hooks/useNavigationState";
 
 function fmt(n: number | null | undefined, d = 2): string {
   if (n == null) return "—";
@@ -16,15 +20,37 @@ function fmtTime(s: number): string {
 // ─── Page Component ────────────────────────────────────────────────────────────
 
 export function ArbitragePage() {
+  const { state: navState, setSymbol: setNavSymbol } = useNavigationState();
   const [status, setStatus] = useState<any>(null);
   const [trades, setTrades] = useState<any[]>([]);
+  const [symbolsText, setSymbolsText] = useState("");
   const [tab, setTab] = useState<"status" | "trades" | "settings">("status");
   const [fetchFailed, setFetchFailed] = useState(false);
   const pollRef = useRef<number>(0);
 
+  // Синхронизируем локальную строку символов с настройками с бэкенда.
+  useEffect(() => {
+    if (status?.settings?.symbols) {
+      setSymbolsText(status.settings.symbols.join(", "));
+    }
+  }, [status?.settings?.symbols]);
+
+  /** Добавить глобальный символ в список (без дубликатов) и сохранить. */
+  const addGlobalSymbol = () => {
+    const sym = navState.symbol.toUpperCase();
+    const current = symbolsText
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (!current.includes(sym)) current.push(sym);
+    const next = current.join(", ");
+    setSymbolsText(next);
+    updateSetting({ symbols: next });
+  };
+
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/arbitrage/status"));
+      const r = await apiFetch("/api/arbitrage/status");
       if (r.ok) {
         const d = await r.json();
         if (d.ok) { setStatus(d); setFetchFailed(false); return; }
@@ -34,8 +60,11 @@ export function ArbitragePage() {
   }, []);
   const fetchTrades = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/arbitrage/trades?limit=30"));
-      if (r.ok) { const d = await r.json(); if (d.ok) setTrades(d.trades ?? []); }
+      const r = await apiFetch("/api/arbitrage/trades?limit=30");
+      if (r.ok) {
+        const d = await r.json();
+        if (d.ok) setTrades(d.trades ?? []);
+      }
     } catch {}
   }, []);
 
@@ -46,16 +75,32 @@ export function ArbitragePage() {
     return () => window.clearInterval(pollRef.current);
   }, [tab, fetchStatus, fetchTrades]);
 
-  const doStart = () => fetch(apiUrl("/api/arbitrage/start"), { method: "POST" }).then(fetchStatus);
-  const doStop = () => fetch(apiUrl("/api/arbitrage/stop"), { method: "POST" }).then(fetchStatus);
-  const doKill = (v: boolean) => fetch(apiUrl(`/api/arbitrage/kill-switch?enabled=${v}`), { method: "POST" }).then(fetchStatus);
-  const updateSetting = (patch: any) => fetch(apiUrl("/api/arbitrage/settings"), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then(fetchStatus);
+  const doStart = () =>
+    apiFetch("/api/arbitrage/start", {
+      method: "POST",
+    }).then(fetchStatus);
+  const doStop = () =>
+    apiFetch("/api/arbitrage/stop", {
+      method: "POST",
+    }).then(fetchStatus);
+  const doKill = (v: boolean) =>
+    apiFetch(`/api/arbitrage/kill-switch?enabled=${v}`, {
+      method: "POST",
+    }).then(fetchStatus);
+  const updateSetting = (patch: any) =>
+    apiFetch("/api/arbitrage/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then(fetchStatus);
 
   const running = status?.running ?? false;
   const stats = status?.stats;
   const settings = status?.settings;
   const positions = status?.open_positions ?? [];
   const initialLoading = status === null;
+  const { liveReady: arbLiveReady, reasons: arbLiveReasons } =
+    useEngineCapabilities("arbitrage");
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -80,6 +125,13 @@ export function ArbitragePage() {
           </button>
         </div>
       </div>
+
+      {/* Live-mode readiness warning: shown when user has selected "live" but
+          the backend has no OrderExecutor injected for arbitrage, so live mode
+          would silently auto-mark fills instead of placing real orders. */}
+      {settings?.mode === "live" && !arbLiveReady && (
+        <LiveModeWarning engineName="Arbitrage" reasons={arbLiveReasons} />
+      )}
 
       {/* Ошибка связи с бэкендом (0.6) */}
       {fetchFailed && initialLoading && (
@@ -202,9 +254,26 @@ export function ArbitragePage() {
 
         {tab === "settings" && settings && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 max-w-2xl">
-            <label className="block"><span className="text-xs text-ink-muted">Символы (через запятую)</span>
-              <input type="text" defaultValue={settings.symbols?.join(",")} onBlur={(e) => updateSetting({ symbols: e.target.value })}
-                className="mt-0.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm font-mono text-ink" /></label>
+            <label className="block sm:col-span-2"><span className="text-xs text-ink-muted">Символы (через запятую)</span>
+              <div className="mt-0.5 flex gap-2">
+                <input type="text" value={symbolsText} onChange={(e) => setSymbolsText(e.target.value)} onBlur={(e) => updateSetting({ symbols: e.target.value })}
+                  className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-sm font-mono text-ink" />
+                <SymbolPicker
+                  value={navState.symbol}
+                  onChange={setNavSymbol}
+                  exchange={navState.exchange}
+                  market={navState.market}
+                  className="w-28 px-2 py-2 text-sm"
+                />
+                <button
+                  onClick={addGlobalSymbol}
+                  title="Добавить символ в список"
+                  className="shrink-0 rounded-lg border border-line bg-surface px-3 py-2 text-sm font-medium text-ink hover:bg-emerald-500/10 hover:text-emerald-500"
+                >
+                  +
+                </button>
+              </div>
+            </label>
             <label className="block"><span className="text-xs text-ink-muted">Режим</span>
               <select defaultValue={settings.mode} onChange={(e) => updateSetting({ mode: e.target.value })}
                 className="mt-0.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink">

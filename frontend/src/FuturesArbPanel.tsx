@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, BarChart3, Pause, Play, X } from "lucide-react";
-import { apiUrl } from "./config";
+import { apiFetch } from "./config";
 
 function fmt(n: number | null | undefined, d = 2): string {
   if (n == null) return "—";
@@ -56,21 +56,21 @@ export function FuturesArbPanel({ open, onClose }: { open: boolean; onClose: () 
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/futures-arb/status"));
+      const r = await apiFetch("/api/futures-arb/status");
       if (r.ok) { const d = await r.json(); if (d.ok) setStatus(d); }
     } catch {}
   }, []);
 
   const fetchPositions = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/futures-arb/positions"));
+      const r = await apiFetch("/api/futures-arb/positions");
       if (r.ok) { const d = await r.json(); if (d.ok) setPositions(d.positions ?? []); }
     } catch {}
   }, []);
 
   const fetchHistory = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/futures-arb/history?limit=50"));
+      const r = await apiFetch("/api/futures-arb/history?limit=50");
       if (r.ok) { const d = await r.json(); if (d.ok) setHistory(d.positions ?? []); }
     } catch {}
   }, []);
@@ -92,10 +92,10 @@ export function FuturesArbPanel({ open, onClose }: { open: boolean; onClose: () 
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const doStart = () => fetch(apiUrl("/api/futures-arb/start"), { method: "POST" }).then(fetchStatus);
-  const doStop = () => fetch(apiUrl("/api/futures-arb/stop"), { method: "POST" }).then(fetchStatus);
+  const doStart = () => apiFetch("/api/futures-arb/start", { method: "POST" }).then(fetchStatus);
+  const doStop = () => apiFetch("/api/futures-arb/stop", { method: "POST" }).then(fetchStatus);
   const doClosePosition = (id: string) => {
-    fetch(apiUrl("/api/futures-arb/close-position"), {
+    apiFetch("/api/futures-arb/close-position", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ position_id: id }),

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { DollarSign } from "lucide-react";
+import { apiFetch } from "../config";
 
 const POLL_INTERVAL_SEC = 10;
 
@@ -25,9 +26,9 @@ export function PnlWidget() {
   const fetchPnl = useCallback(async () => {
     try {
       const results = await Promise.all([
-        fetch("/api/capture/status").then((r) => r.ok ? r.json() : null).catch(() => null),
-        fetch("/api/arbitrage/status").then((r) => r.ok ? r.json() : null).catch(() => null),
-        fetch("/api/futures-arb/status").then((r) => r.ok ? r.json() : null).catch(() => null),
+        apiFetch("/api/capture/status").then((r) => r.ok ? r.json() : null).catch(() => null),
+        apiFetch("/api/arbitrage/status").then((r) => r.ok ? r.json() : null).catch(() => null),
+        apiFetch("/api/futures-arb/status").then((r) => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       const engines: EnginePnl[] = [];

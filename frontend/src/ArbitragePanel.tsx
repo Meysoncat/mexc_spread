@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, Pause, Play, Shield } from "lucide-react";
-import { apiUrl } from "./config";
+import { apiFetch } from "./config";
 import { Skeleton, SkeletonCard, SkeletonTableRows } from "./components/ui/Skeleton";
 
 function fmt(n: number | null | undefined, d = 2): string {
@@ -21,13 +21,13 @@ export function ArbitragePanel({ open, onClose }: { open: boolean; onClose: () =
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/arbitrage/status"));
+      const r = await apiFetch("/api/arbitrage/status");
       if (r.ok) { const d = await r.json(); if (d.ok) setStatus(d); }
     } catch {}
   }, []);
   const fetchTrades = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/arbitrage/trades?limit=30"));
+      const r = await apiFetch("/api/arbitrage/trades?limit=30");
       if (r.ok) { const d = await r.json(); if (d.ok) setTrades(d.trades ?? []); }
     } catch {}
   }, []);
@@ -46,10 +46,10 @@ export function ArbitragePanel({ open, onClose }: { open: boolean; onClose: () =
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const doStart = () => fetch(apiUrl("/api/arbitrage/start"), { method: "POST" }).then(fetchStatus);
-  const doStop = () => fetch(apiUrl("/api/arbitrage/stop"), { method: "POST" }).then(fetchStatus);
-  const doKill = (v: boolean) => fetch(apiUrl(`/api/arbitrage/kill-switch?enabled=${v}`), { method: "POST" }).then(fetchStatus);
-  const updateSetting = (patch: any) => fetch(apiUrl("/api/arbitrage/settings"), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then(fetchStatus);
+  const doStart = () => apiFetch("/api/arbitrage/start", { method: "POST" }).then(fetchStatus);
+  const doStop = () => apiFetch("/api/arbitrage/stop", { method: "POST" }).then(fetchStatus);
+  const doKill = (v: boolean) => apiFetch(`/api/arbitrage/kill-switch?enabled=${v}`, { method: "POST" }).then(fetchStatus);
+  const updateSetting = (patch: any) => apiFetch("/api/arbitrage/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then(fetchStatus);
 
   if (!open) return null;
   const running = status?.running ?? false;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bell, BellOff, CheckCircle2, CircleAlert, ExternalLink } from "lucide-react";
 import { AlertsSettingsPanel } from "../AlertsSettingsPanel";
-import { apiUrl } from "../config";
+import { apiFetch } from "../config";
 
 interface AlertConfigSummary {
   enabled: boolean;
@@ -25,7 +25,7 @@ export function AlertsPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/alerts/settings"));
+      const r = await apiFetch("/api/alerts/settings");
       if (!r.ok) {
         setFetchFailed(true);
         return;

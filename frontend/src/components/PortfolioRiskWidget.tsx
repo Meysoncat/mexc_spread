@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { ShieldAlert, ShieldCheck, AlertTriangle } from "lucide-react";
 import type { PortfolioRiskStatus } from "../types";
+import { apiFetch } from "../config";
 import { SkeletonPill } from "./ui/Skeleton";
 
 const POLL_INTERVAL_SEC = 10;
@@ -10,7 +11,7 @@ export function PortfolioRiskWidget() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch("/api/portfolio-risk/status");
+      const r = await apiFetch("/api/portfolio-risk/status");
       if (!r.ok) return;
       const data: PortfolioRiskStatus = await r.json();
       setStatus(data);

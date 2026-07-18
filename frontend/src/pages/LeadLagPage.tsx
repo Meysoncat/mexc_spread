@@ -9,8 +9,10 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { apiUrl } from "../config";
+import { apiFetch } from "../config";
 import { SkeletonCard } from "../components/ui/Skeleton";
+import { SymbolPicker } from "../components/SymbolPicker";
+import { useNavigationState } from "../hooks/useNavigationState";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -436,12 +438,13 @@ function PriceComparisonChart({
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export function LeadLagPage() {
+  const { state: navState, setSymbol: setSelectedSymbol } = useNavigationState();
+  const selectedSymbol = navState.symbol;
   const [status, setStatus] = useState<LeadLagStatus | null>(null);
   const [signals, setSignals] = useState<LeadLagSignal[]>([]);
   const [stats, setStats] = useState<LeadLagStats | null>(null);
   const [estimates, setEstimates] = useState<LagEstimate[]>([]);
   const [prices, setPrices] = useState<ExchangePrice[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [windowHours, setWindowHours] = useState(24);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -465,7 +468,7 @@ export function LeadLagPage() {
 
   const fetchStatus = useCallback(async (signal?: AbortSignal) => {
     try {
-      const r = await fetch(apiUrl("/api/lead-lag/status"), {
+      const r = await apiFetch("/api/lead-lag/status", {
         signal: withTimeout(signal),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -488,8 +491,8 @@ export function LeadLagPage() {
 
   const fetchSignals = useCallback(async (signal?: AbortSignal) => {
     try {
-      const r = await fetch(
-        apiUrl("/api/lead-lag/signals?active=true&limit=50"),
+      const r = await apiFetch(
+        "/api/lead-lag/signals?active=true&limit=50",
         { signal: withTimeout(signal) },
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -504,8 +507,8 @@ export function LeadLagPage() {
   const fetchStats = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const r = await fetch(
-          apiUrl(`/api/lead-lag/stats?window_hours=${windowHours}`),
+        const r = await apiFetch(
+          `/api/lead-lag/stats?window_hours=${windowHours}`,
           { signal: withTimeout(signal) },
         );
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -521,7 +524,7 @@ export function LeadLagPage() {
 
   const fetchEstimates = useCallback(async (signal?: AbortSignal) => {
     try {
-      const r = await fetch(apiUrl("/api/lead-lag/lag-estimates"), {
+      const r = await apiFetch("/api/lead-lag/lag-estimates", {
         signal: withTimeout(signal),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -542,8 +545,8 @@ export function LeadLagPage() {
         return;
       }
       try {
-        const r = await fetch(
-          apiUrl(`/api/lead-lag/prices?symbol=${encodeURIComponent(selectedSymbol)}`),
+        const r = await apiFetch(
+          `/api/lead-lag/prices?symbol=${encodeURIComponent(selectedSymbol)}`,
           { signal: withTimeout(signal) },
         );
         if (!r.ok) {
@@ -617,9 +620,15 @@ export function LeadLagPage() {
   const handleStart = useCallback(async () => {
     setStarting(true);
     try {
-      const r = await fetch(apiUrl("/api/lead-lag/start"), { method: "POST" });
+      const r = await apiFetch("/api/lead-lag/start", {
+        method: "POST",
+      });
       if (r.ok) {
         await fetchStatus();
+      } else if (r.status === 401 || r.status === 403) {
+        setError("Нужен ADMIN_TOKEN: откройте Trading Admin и введите токен");
+      } else {
+        setError(`Ошибка запуска: HTTP ${r.status}`);
       }
     } catch {
       setError("Не удалось запустить движок");
@@ -630,16 +639,10 @@ export function LeadLagPage() {
 
   // ─── Symbol selector ───────────────────────────────────────────────────────
 
+  // Символы, отслеживаемые lead-lag движком — опции для SymbolPicker.
   const availableSymbols = useMemo(() => {
     return status?.symbols_monitored ?? [];
   }, [status]);
-
-  // Auto-select first symbol if none selected
-  useEffect(() => {
-    if (!selectedSymbol && availableSymbols.length > 0) {
-      setSelectedSymbol(availableSymbols[0]);
-    }
-  }, [availableSymbols, selectedSymbol]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -719,17 +722,12 @@ export function LeadLagPage() {
                   Сравнение цен
                 </h2>
                 {availableSymbols.length > 0 && (
-                  <select
+                  <SymbolPicker
                     value={selectedSymbol}
-                    onChange={(e) => setSelectedSymbol(e.target.value)}
-                    className="ml-auto rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink"
-                  >
-                    {availableSymbols.map((sym) => (
-                      <option key={sym} value={sym}>
-                        {sym}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setSelectedSymbol}
+                    options={availableSymbols}
+                    className="ml-auto w-32"
+                  />
                 )}
               </div>
               <PriceComparisonChart prices={prices} symbol={selectedSymbol} />

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bell, Send } from "lucide-react";
-import { apiUrl } from "./config";
+import { apiFetch } from "./config";
 
 interface AlertConfig {
   enabled: boolean;
@@ -22,7 +22,7 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
 
   const fetchConfig = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/alerts/settings"));
+      const r = await apiFetch("/api/alerts/settings");
       if (r.ok) {
         const data = await r.json();
         if (data.ok) setConfig(data.config);
@@ -45,7 +45,7 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
     setSaving(true);
     setMessage(null);
     try {
-      const r = await fetch(apiUrl("/api/alerts/settings"), {
+      const r = await apiFetch("/api/alerts/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -67,7 +67,9 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
     setTesting(true);
     setMessage(null);
     try {
-      const r = await fetch(apiUrl("/api/alerts/test"), { method: "POST" });
+      const r = await apiFetch("/api/alerts/test", {
+        method: "POST",
+      });
       const data = await r.json();
       setMessage(data.ok ? "✅ Тестовое сообщение отправлено" : `❌ ${data.message}`);
     } catch {

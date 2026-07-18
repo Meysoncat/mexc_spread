@@ -21,6 +21,7 @@ import {
   LayoutList,
   List,
   Maximize2,
+  MoreHorizontal,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -39,8 +40,11 @@ import { ChartModal } from "../ChartModal";
 import { DomModal } from "../DomModal";
 import { MetricsHelpPanel } from "../MetricsHelpPanel";
 import { SpreadChartModal } from "../SpreadChartModal";
+import { SpreadCapturePanel } from "../SpreadCapturePanel";
 import { apiUrl } from "../config";
 import { MiniSparkline } from "../MiniSparkline";
+import { OpenInMetaScalpButton } from "../components/OpenInMetaScalpButton";
+import { WelcomeBanner } from "../components/WelcomeBanner";
 import { InlineSpreadTrend } from "../InlineSpreadTrend";
 import { applyMarketFilters } from "../filters";
 import {
@@ -63,7 +67,7 @@ import type {
   SnapshotResponse,
   SnapshotRow,
 } from "../types";
-import { defaultQuoteForExchange } from "../types";
+import { defaultQuoteForExchange, EXCHANGE_LABELS } from "../types";
 import { ExchangeSwitcher, MULTI_MARKET_EXCHANGES } from "../ExchangeSwitcher";
 import { useVirtualRows } from "../useVirtualRows";
 import { useNavigationState } from "../hooks/useNavigationState";
@@ -71,20 +75,9 @@ import { SkeletonTableRows, SkeletonCard } from "../components/ui/Skeleton";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
-/** Human-readable exchange display names for error/status messages. */
-const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = {
-  mexc: "MEXC",
-  asterdex: "AsterDEX",
-  lighter: "Lighter",
-  binance: "Binance",
-  bybit: "Bybit",
-  okx: "OKX",
-  gateio: "Gate.io",
-  htx: "HTX",
-  bitget: "Bitget",
-  dydx: "dYdX",
-  hyperliquid: "Hyperliquid",
-};
+// Метки бирж берём из канонического реестра (types.ts) — без дублирования.
+/** @deprecated используйте EXCHANGE_LABELS из types.ts */
+const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = EXCHANGE_LABELS;
 
 const SORT_OPTIONS_SPOT_FUT: { value: string; label: string }[] = [
   { value: "spread_bps", label: "Спред (bps)" },
@@ -649,6 +642,18 @@ const MarketRowTr = memo(function MarketRowTr({
   hiddenCols: ReadonlySet<string>;
 }) {
   const h = hiddenCols;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: Event) => {
+      if (!menuRef.current?.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
   return (
     <tr
       className={`group cursor-default border-b border-line/60 transition hover:bg-accent/5 ${spreadHeatmapClass(r.net_spread_bps)}`}
@@ -682,80 +687,98 @@ const MarketRowTr = memo(function MarketRowTr({
               strokeWidth={2}
             />
           </button>
-          <div className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-0.5 opacity-0 shadow-md transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [&:has(:focus-visible)]:pointer-events-auto [&:has(:focus-visible)]:opacity-100">
-            <button
-              type="button"
-              className="rounded-md p-1 text-accent transition hover:bg-accent/15"
-              title="График свечей (MEXC)"
-              aria-label={`График ${r.symbol}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenChart(r.symbol);
-              }}
+          <button
+            type="button"
+            className="shrink-0 rounded-md p-1 text-ink-muted opacity-0 transition hover:bg-accent/15 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+            title="Действия"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+            }}
+          >
+            <MoreHorizontal className="h-4 w-4" strokeWidth={2} />
+          </button>
+          {menuOpen && (
+            <div
+              ref={menuRef}
+              className="absolute left-full top-1/2 z-50 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-1 py-1 shadow-lg"
             >
-              <ChartCandlestick className="h-4 w-4" strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-amber-500 dark:hover:text-amber-400"
-              title="График спреда (real-time)"
-              aria-label={`Спред ${r.symbol}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenSpreadChart(r.symbol);
-              }}
-            >
-              <Activity className="h-4 w-4" strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-violet-500 dark:hover:text-violet-400"
-              title="Рабочее место: график + стакан + плотности"
-              aria-label={`Рабочее место ${r.symbol}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenWorkspace({
-                  chartSymbol: r.symbol,
-                  domSymbol: r.symbol,
-                  domMarket: domBookMarket,
-                  crossFutSymbol: null,
-                });
-              }}
-            >
-              <Maximize2 className="h-4 w-4" strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-accent"
-              title="Стакан (DOM)"
-              aria-label={`Стакан ${r.symbol}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenDom(domBookMarket, r.symbol);
-              }}
-            >
-              <LayoutList className="h-4 w-4" strokeWidth={2} />
-            </button>
-            {r.net_spread_bps != null && r.net_spread_bps >= 3 && (
               <button
                 type="button"
-                className="rounded-md p-1 text-amber-500 transition hover:bg-amber-500/15"
-                title={`Быстрый захват: ${r.symbol}`}
-                aria-label={`Захват спреда ${r.symbol}`}
+                className="rounded-md p-1 text-accent transition hover:bg-accent/15"
+                title="График свечей (MEXC)"
+                aria-label={`График ${r.symbol}`}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onQuickCapture(r.symbol);
+                  onOpenChart(r.symbol);
                 }}
               >
-                <Zap className="h-4 w-4" strokeWidth={2} />
+                <ChartCandlestick className="h-4 w-4" strokeWidth={2} />
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-amber-500 dark:hover:text-amber-400"
+                title="График спреда (real-time)"
+                aria-label={`Спред ${r.symbol}`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenSpreadChart(r.symbol);
+                }}
+              >
+                <Activity className="h-4 w-4" strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-violet-500 dark:hover:text-violet-400"
+                title="Рабочее место: график + стакан + плотности"
+                aria-label={`Рабочее место ${r.symbol}`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenWorkspace({
+                    chartSymbol: r.symbol,
+                    domSymbol: r.symbol,
+                    domMarket: domBookMarket,
+                    crossFutSymbol: null,
+                  });
+                }}
+              >
+                <Maximize2 className="h-4 w-4" strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-accent"
+                title="Стакан (DOM)"
+                aria-label={`Стакан ${r.symbol}`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenDom(domBookMarket, r.symbol);
+                }}
+              >
+                <LayoutList className="h-4 w-4" strokeWidth={2} />
+              </button>
+              {r.net_spread_bps != null && r.net_spread_bps >= 3 && (
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-amber-500 transition hover:bg-amber-500/15"
+                  title={`Быстрый захват: ${r.symbol}`}
+                  aria-label={`Захват спреда ${r.symbol}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQuickCapture(r.symbol);
+                  }}
+                >
+                  <Zap className="h-4 w-4" strokeWidth={2} />
+                </button>
+              )}
+              <OpenInMetaScalpButton ticker={r.symbol} />
+            </div>
+          )}
         </div>
       </td>
       {!h.has("bid") && <td className="px-4 py-2.5">{fmt(r.bid, 8)}</td>}
@@ -827,6 +850,18 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
   hiddenCols: ReadonlySet<string>;
 }) {
   const h = hiddenCols;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: Event) => {
+      if (!menuRef.current?.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
   return (
     <tr
       className="group cursor-default border-b border-line/60 transition hover:bg-accent/5"
@@ -867,65 +902,82 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
                 strokeWidth={2}
               />
             </button>
-            <div className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-0.5 opacity-0 shadow-md transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [&:has(:focus-visible)]:pointer-events-auto [&:has(:focus-visible)]:opacity-100">
-              <button
-                type="button"
-                className="rounded-md p-1 text-accent transition hover:bg-accent/15"
-                title="График свечей спота (MEXC)"
-                aria-label={`График ${r.symbol_spot}`}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenChart(r.symbol_spot);
-                }}
+            <button
+              type="button"
+              className="shrink-0 rounded-md p-1 text-ink-muted opacity-0 transition hover:bg-accent/15 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+              title="Действия"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((v) => !v);
+              }}
+            >
+              <MoreHorizontal className="h-4 w-4" strokeWidth={2} />
+            </button>
+            {menuOpen && (
+              <div
+                ref={menuRef}
+                className="absolute left-full top-1/2 z-50 ml-1 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-line bg-surface-elevated px-1 py-1 shadow-lg"
               >
-                <ChartCandlestick className="h-4 w-4" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-amber-500 dark:hover:text-amber-400"
-                title="График спреда спота"
-                aria-label={`Спред ${r.symbol_spot}`}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenSpreadChart(r.symbol_spot);
-                }}
-              >
-                <Activity className="h-4 w-4" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-violet-500 dark:hover:text-violet-400"
-                title="Рабочее место: график спота + стакан + плотности"
-                aria-label={`Рабочее место ${r.symbol_spot}`}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenWorkspace({
-                    chartSymbol: r.symbol_spot,
-                    domSymbol: r.symbol_spot,
-                    domMarket: "spot",
-                    crossFutSymbol: r.symbol_futures,
-                  });
-                }}
-              >
-                <Maximize2 className="h-4 w-4" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-accent"
-                title="Стакан спота (DOM)"
-                aria-label={`Стакан спот ${r.symbol_spot}`}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenDom("spot", r.symbol_spot);
-                }}
-              >
-                <LayoutList className="h-4 w-4" strokeWidth={2} />
-              </button>
-            </div>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-accent transition hover:bg-accent/15"
+                  title="График свечей спота (MEXC)"
+                  aria-label={`График ${r.symbol_spot}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenChart(r.symbol_spot);
+                  }}
+                >
+                  <ChartCandlestick className="h-4 w-4" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-amber-500 dark:hover:text-amber-400"
+                  title="График спреда спота"
+                  aria-label={`Спред ${r.symbol_spot}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSpreadChart(r.symbol_spot);
+                  }}
+                >
+                  <Activity className="h-4 w-4" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-violet-500 dark:hover:text-violet-400"
+                  title="Рабочее место: график спота + стакан + плотности"
+                  aria-label={`Рабочее место ${r.symbol_spot}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenWorkspace({
+                      chartSymbol: r.symbol_spot,
+                      domSymbol: r.symbol_spot,
+                      domMarket: "spot",
+                      crossFutSymbol: r.symbol_futures,
+                    });
+                  }}
+                >
+                  <Maximize2 className="h-4 w-4" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-ink-muted transition hover:bg-accent/15 hover:text-accent"
+                  title="Стакан спота (DOM)"
+                  aria-label={`Стакан спот ${r.symbol_spot}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenDom("spot", r.symbol_spot);
+                  }}
+                >
+                  <LayoutList className="h-4 w-4" strokeWidth={2} />
+                </button>
+              </div>
+            )}
           </div>
           <div className="flex items-center justify-between gap-1 pl-0">
             <span className="truncate font-mono text-[11px] text-ink-muted">
@@ -1124,6 +1176,7 @@ const MarketTile = memo(function MarketTile({
           >
             <LayoutList className="h-4 w-4" strokeWidth={2} />
           </button>
+          <OpenInMetaScalpButton ticker={r.symbol} />
         </div>
       </div>
       {tilesVariant === "charts" && (
@@ -1137,27 +1190,27 @@ const MarketTile = memo(function MarketTile({
         }`}
       >
         <div className="col-span-2 flex justify-between gap-2 text-ink">
-          <span>Bid</span>
+          <span title="Лучшая цена покупки (самая высокая bid-цена в стакане)">Bid</span>
           <span>{fmt(r.bid, 8)}</span>
         </div>
         <div className="col-span-2 flex justify-between gap-2 text-ink">
-          <span>Ask</span>
+          <span title="Лучшая цена продажи (самая низкая ask-цена в стакане)">Ask</span>
           <span>{fmt(r.ask, 8)}</span>
         </div>
         <div className="flex justify-between gap-2">
-          <span>bps</span>
+          <span title="Спред (Ask − Bid), выраженный в базисных пунктах (1 bps = 0.01%)">bps</span>
           <span className="text-accent">
             {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
           </span>
         </div>
         <div className="flex justify-between gap-2">
-          <span>Net</span>
+          <span title="Чистый спред после вычета торговых комиссий (taker fees обеих сторон)">Net</span>
           <span className="text-emerald-600 dark:text-emerald-400">
             {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
           </span>
         </div>
         <div className="flex justify-between gap-2">
-          <span>Mid</span>
+          <span title="Средняя цена между Bid и Ask: (Bid + Ask) / 2">Mid</span>
           <span className="text-ink">{fmt(r.mid, 8)}</span>
         </div>
         <div className="col-span-2 border-t border-line/60 pt-1 text-[11px]">
@@ -1323,6 +1376,7 @@ const CrossMarketTile = memo(function CrossMarketTile({
           >
             <LayoutList className="h-3.5 w-3.5" strokeWidth={2} />
           </button>
+          <OpenInMetaScalpButton ticker={r.symbol_spot} />
         </div>
       </div>
       {tilesVariant === "charts" && (
@@ -1411,7 +1465,7 @@ export function SpreadMonitorPage() {
     cross: readHiddenCols("cross"),
   }));
   const [compactRows, setCompactRows] = useState(() =>
-    readStoredBool(COMPACT_ROWS_STORAGE_KEY),
+    readStoredBool(COMPACT_ROWS_STORAGE_KEY, true),
   );
   const [colsMenuOpen, setColsMenuOpen] = useState(false);
   /** 0.3: панель фильтров свёрнута по умолчанию — таблице достаётся вся ширина. */
@@ -1453,6 +1507,7 @@ export function SpreadMonitorPage() {
     null,
   );
   const [spreadChartSymbol, setSpreadChartSymbol] = useState<string | null>(null);
+  const [captureOpen, setCaptureOpen] = useState(false);
   const [favoritesTick, setFavoritesTick] = useState(0);
   const [favoritesScope, setFavoritesScopeState] = useState<FavoritesScope>(() =>
     readFavoritesScope(),
@@ -1972,6 +2027,11 @@ export function SpreadMonitorPage() {
         symbol={spreadChartSymbol}
         market={market === "futures" ? "futures" : "spot"}
         isDark={dark}
+      />
+      <SpreadCapturePanel
+        open={captureOpen}
+        onClose={() => setCaptureOpen(false)}
+        pageMode={false}
       />
 
       {/* Filters sidebar (page-local, not the navigation sidebar). 0.3: collapsible. */}
@@ -2537,6 +2597,7 @@ export function SpreadMonitorPage() {
 
       {/* Main content area */}
       <main className="flex min-w-0 flex-1 flex-col">
+        <WelcomeBanner />
         <header className="relative flex flex-wrap items-center justify-between gap-4 border-b border-line bg-surface-elevated px-6 py-4">
           {showStaleTable && (
             <div
@@ -3071,9 +3132,8 @@ export function SpreadMonitorPage() {
                             onOpenSpreadChart={openSpreadChart}
                             onOpenDom={openDom}
                             onOpenWorkspace={openWorkspace}
-                            onQuickCapture={(sym) => {
-                              localStorage.setItem("capture_symbol", sym);
-                              window.location.hash = "#/spread-capture";
+                            onQuickCapture={(_sym) => {
+                              setCaptureOpen(true);
                             }}
                             domBookMarket={domBookMarket}
                             isFavorite={favoriteSet.has(fk)}

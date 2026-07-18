@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "../config";
 
 interface BadgeMap {
   [path: string]: { count: number; level: "info" | "warning" | "critical" };
@@ -13,10 +14,10 @@ export function useNavBadges(): BadgeMap {
     const next: BadgeMap = {};
     try {
       const [cap, arb, fa, ll] = await Promise.allSettled([
-        fetch("/api/capture/status").then((r) => r.ok ? r.json() : null),
-        fetch("/api/arbitrage/status").then((r) => r.ok ? r.json() : null),
-        fetch("/api/futures-arb/status").then((r) => r.ok ? r.json() : null),
-        fetch("/api/lead-lag/signals?active=true&limit=100").then((r) => r.ok ? r.json() : null),
+        apiFetch("/api/capture/status").then((r) => r.ok ? r.json() : null),
+        apiFetch("/api/arbitrage/status").then((r) => r.ok ? r.json() : null),
+        apiFetch("/api/futures-arb/status").then((r) => r.ok ? r.json() : null),
+        apiFetch("/api/lead-lag/signals?active=true&limit=100").then((r) => r.ok ? r.json() : null),
       ]);
 
       if (cap.status === "fulfilled" && cap.value?.position) {
