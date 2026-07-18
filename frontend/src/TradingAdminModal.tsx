@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Play, Power, RefreshCw, Save, Shield, Square, X, Zap } from "lucide-react";
-import { apiUrl } from "./config";
+import { ADMIN_TOKEN_STORAGE_KEY, apiFetch } from "./config";
+import { SymbolPicker } from "./components/SymbolPicker";
+import { useNavigationState } from "./hooks/useNavigationState";
 import type { TradingEventsResponse, TradingStatusResponse } from "./types";
-
-const ADMIN_TOKEN_STORAGE_KEY = "mexc-admin-token";
 
 // ─── Task 8.1: Exchange and Market types ────────────────────────────────────────
 type SupportedExchange = "mexc" | "binance" | "bybit" | "okx" | "gateio" | "htx" | "bitget";
@@ -97,11 +97,25 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
   const [selectedMarket, setSelectedMarket] = useState<MarketType>("spot");
   const [exchanges, setExchanges] = useState<ExchangeAvailability[]>([]);
 
-  const headers = useMemo(() => {
-    const h: HeadersInit = { "Content-Type": "application/json" };
-    if (token.trim()) h["X-Admin-Token"] = token.trim();
-    return h;
-  }, [token]);
+  // Глобальный символ из контекста навигации — синхронизируется с form.symbol.
+  const { state: navState, setSymbol: setNavSymbol } = useNavigationState();
+  const syncingSymbol = useRef(false);
+
+  // form.symbol → глобальный символ (после загрузки статуса с бэкенда).
+  useEffect(() => {
+    if (syncingSymbol.current) return;
+    if (form.symbol && form.symbol !== navState.symbol) {
+      setNavSymbol(form.symbol);
+    }
+  }, [form.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Глобальный символ → form.symbol (выбор в шапке).
+  useEffect(() => {
+    if (syncingSymbol.current) return;
+    if (navState.symbol && navState.symbol !== form.symbol) {
+      setForm((s) => ({ ...s, symbol: navState.symbol }));
+    }
+  }, [navState.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const readJson = useCallback(async <T,>(r: Response): Promise<T> => {
     const text = await r.text();
@@ -130,7 +144,7 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
   }, [selectedExchange, selectedMarket]);
 
   const loadStatus = useCallback(async () => {
-    const r = await fetch(apiUrl(`/api/trading/status?${engineParams}`), { headers });
+    const r = await apiFetch(`/api/trading/status?${engineParams}`);
     const data = await readJson<TradingStatusResponse>(r);
     setStatus(data);
     setForm({
@@ -150,13 +164,13 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
       order_type: (data.settings.order_type as OrderType) || "LIMIT",
       order_side: (data.settings.order_side as OrderSide) || "BUY",
     });
-  }, [engineParams, headers, readJson]);
+  }, [engineParams, readJson]);
 
   const loadEvents = useCallback(async () => {
-    const r = await fetch(apiUrl(`/api/trading/events?${engineParams}&limit=120`), { headers });
+    const r = await apiFetch(`/api/trading/events?${engineParams}&limit=120`);
     const data = await readJson<TradingEventsResponse>(r);
     setEvents(Array.isArray(data.rows) ? data.rows : []);
-  }, [engineParams, headers, readJson]);
+  }, [engineParams, readJson]);
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
@@ -179,9 +193,9 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
         // Task 8.3: Append exchange/market params to all action calls
         const separator = path.includes("?") ? "&" : "?";
         const fullPath = `${path}${separator}${engineParams}`;
-        const r = await fetch(apiUrl(fullPath), {
+        const r = await apiFetch(fullPath, {
           method,
-          headers,
+          headers: body == null ? undefined : { "Content-Type": "application/json" },
           body: body == null ? undefined : JSON.stringify(body),
         });
         await readJson<unknown>(r);
@@ -193,13 +207,13 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
         setActionBusy(false);
       }
     },
-    [engineParams, headers, loadEvents, loadStatus, readJson],
+    [engineParams, loadEvents, loadStatus, readJson],
   );
 
   // ─── Task 8.1: Fetch exchange list on mount ─────────────────────────────────
   const loadExchanges = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl("/api/trading/exchanges"), { headers });
+      const r = await apiFetch("/api/trading/exchanges");
       const data = await readJson<{ ok: boolean; exchanges: ExchangeAvailability[] }>(r);
       if (Array.isArray(data.exchanges)) {
         setExchanges(data.exchanges);
@@ -207,7 +221,7 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
     } catch {
       // Non-critical: exchange list may not be available yet
     }
-  }, [headers, readJson]);
+  }, [readJson]);
 
   useEffect(() => {
     if (!open) return;
@@ -410,10 +424,12 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
                 </label>
                 <label className="col-span-1">
                   <span className="mb-1 block text-xs text-ink-muted">Symbol</span>
-                  <input
+                  <SymbolPicker
                     value={form.symbol}
-                    onChange={(e) => setForm((s) => ({ ...s, symbol: e.target.value.toUpperCase() }))}
-                    className="w-full rounded-lg border border-line bg-surface-elevated px-2 py-2 text-ink outline-none focus:ring-2 focus:ring-accent"
+                    onChange={(s) => setForm((prev) => ({ ...prev, symbol: s }))}
+                    exchange={selectedExchange}
+                    market={selectedMarket}
+                    className="w-full px-2 py-2"
                   />
                 </label>
 

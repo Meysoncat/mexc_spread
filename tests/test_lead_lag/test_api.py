@@ -157,10 +157,19 @@ class TestLeadLagStats:
 class TestLeadLagPrices:
     """Test GET /api/lead-lag/prices endpoint (Requirement 7.4)."""
 
-    def test_prices_unknown_symbol_404(self, client):
-        """Prices endpoint returns 404 for unknown symbol."""
+    def test_prices_unknown_symbol_returns_empty(self, client):
+        """Prices endpoint returns 200 with empty prices for unknown/unmonitored symbol.
+
+        We intentionally return 200 + `{"prices": {}}` rather than 404 for the
+        "no data yet" state (engine stopped, symbol not in config, cold start).
+        Surfacing this as 404 used to produce a red console error on the
+        /lead-lag page for what is really just "no data yet", not an error.
+        """
         resp = client.get("/api/lead-lag/prices", params={"symbol": "UNKNOWNXYZ"})
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["symbol"] == "UNKNOWNXYZ"
+        assert data["prices"] == {}
 
     def test_prices_requires_symbol(self, client):
         """Prices endpoint requires symbol parameter."""

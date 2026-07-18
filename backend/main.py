@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,7 +24,7 @@ from mexc_monitor.history_worker import start_history_worker, stop_history_worke
 from mexc_monitor.klines import fetch_klines_for_market
 from mexc_monitor.orderbook import fetch_orderbook_depth
 from mexc_monitor.pipeline import safe_load_snapshot
-from mexc_monitor.trading import TradingEngine, load_trading_settings
+from mexc_monitor.trading.engine import TradingEngine, load_trading_settings
 from mexc_monitor.trading.engine_registry import EngineRegistry
 from mexc_monitor.trading.exchange_config import EXCHANGE_CONFIGS
 from mexc_monitor.trading.exchanges import Exchange, Market
@@ -34,6 +35,18 @@ from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, sto
 logger = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+# ─── Environment & Auth ───────────────────────────────────────────────────────
+
+_ENV_FILE = _ROOT / ".env"
+if not _ENV_FILE.exists():
+    _generated_token = secrets.token_urlsafe(32)
+    _ENV_FILE.write_text(f"ADMIN_TOKEN={_generated_token}\n", encoding="utf-8")
+    print(f"[auth] Generated new ADMIN_TOKEN in .env")
+
+load_dotenv(_ENV_FILE)
+_ADMIN_TOKEN = str(os.environ.get("ADMIN_TOKEN", "")).strip()
+
 _METRICS_REF_PUBLIC = _ROOT / "frontend" / "public" / "metrics-reference.json"
 _METRICS_REF_SRC = _ROOT / "frontend" / "src" / "data" / "metrics-reference.json"
 
@@ -44,6 +57,18 @@ _trading_engine = _registry.get_or_create(Exchange.MEXC, Market.SPOT)
 
 from mexc_monitor.spread_capture import SpreadCaptureEngine
 _spread_capture_engine = SpreadCaptureEngine()
+
+from mexc_monitor.metascalp.client import MetaScalpClient
+from mexc_monitor.metascalp.cache import MetaScalpCache
+from mexc_monitor.metascalp.poller import MetaScalpPoller
+from mexc_monitor.metascalp.ws_bridge import MetaScalpWSBridge
+from mexc_monitor.metascalp.auto_trader import MetaScalpAutoTrader
+
+_metascalp_client = MetaScalpClient()
+_metascalp_cache = MetaScalpCache(default_ttl_sec=10.0)
+_metascalp_poller = MetaScalpPoller(cache=_metascalp_cache, client=_metascalp_client, interval_sec=5.0)
+_metascalp_ws_bridge = MetaScalpWSBridge(cache=_metascalp_cache)
+_metascalp_auto_trader = MetaScalpAutoTrader(client=_metascalp_client)
 
 # ─── Portfolio Risk Manager ───────────────────────────────────────────────────
 
@@ -110,6 +135,42 @@ class _FuturesArbAdapter:
         return _futures_arb_engine.get_status()
 
 
+class _MetaScalpAdapter:
+    """Adapter for MetaScalp → PortfolioRiskManager."""
+    @property
+    def engine_name(self) -> str:
+        return "metascalp"
+    def get_open_notional(self) -> float:
+        total = 0.0
+        for conn in _metascalp_client.connections():
+            for pos in _metascalp_client.positions(conn.id):
+                if pos.status in ("Open", "open"):
+                    total += pos.size * pos.avg_price
+        return total
+    def get_open_symbols(self) -> list[str]:
+        symbols: set[str] = set()
+        for conn in _metascalp_client.connections():
+            for pos in _metascalp_client.positions(conn.id):
+                if pos.status in ("Open", "open"):
+                    symbols.add(pos.ticker)
+        return list(symbols)
+    def trigger_kill_switch(self) -> None:
+        # Cancel all open orders on all connections
+        for conn in _metascalp_client.connections():
+            _metascalp_client.cancel_all_orders(conn.id)
+    def get_status(self) -> dict:
+        positions_count = 0
+        orders_count = 0
+        for conn in _metascalp_client.connections():
+            positions_count += len(_metascalp_client.positions(conn.id))
+            orders_count += len(_metascalp_client.orders(conn.id))
+        return {
+            "stats": {"net_pnl_usdt": 0.0},
+            "positions_count": positions_count,
+            "orders_count": orders_count,
+        }
+
+
 _portfolio_risk = PortfolioRiskManager(PortfolioRiskSettings())
 
 
@@ -137,6 +198,11 @@ def _startup_prefetch_futures_ws() -> None:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
     _portfolio_risk.start()
+    _metascalp_poller.start()
+    _metascalp_ws_bridge.start()
+    _metascalp_auto_trader.start()
+    # Start basis calculator for WS feeds + REST fallback
+    _futures_arb_basis_calc.start()
 
     # Auto-start engines for exchanges with {EXCHANGE}_TRADING_ENABLED=true
     for ex in Exchange:
@@ -158,6 +224,9 @@ def _shutdown_workers() -> None:
     _registry.shutdown_all()
     stop_history_worker()
     stop_spot_orderbook_ws()
+    _metascalp_poller.stop()
+    _metascalp_ws_bridge.stop()
+    _metascalp_auto_trader.stop()
 
 _SNAPSHOT_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_SEC", "3")))
 # Медленные биржи (DEX-индексеры) собираются секундами и лимитированы по rate limit —
@@ -259,7 +328,6 @@ def _shutdown_snapshot_prefetch() -> None:
 _DEPTH_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_DEPTH_CACHE_TTL_SEC", "1")))
 _depth_cache_lock = threading.Lock()
 _depth_cache: dict[tuple[str, str, int], tuple[float, dict]] = {}
-_ADMIN_TOKEN = str(os.environ.get("ADMIN_TOKEN", "")).strip()
 
 
 def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
@@ -425,6 +493,18 @@ def health() -> dict[str, Any]:
     from mexc_monitor.ws_bookticker import feeds_health
 
     return {"status": "ok", "ws_feeds": feeds_health()}
+
+
+@app.get("/api/admin-token")
+def get_admin_token(request: Request) -> dict:
+    """
+    Отдать ADMIN_TOKEN фронтенду.
+    Разрешено только для localhost, чтобы токен не утек вовне.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "localhost", "::1"):
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost only")
+    return {"ok": True, "token": _ADMIN_TOKEN}
 
 
 @app.get("/api/debug/mexc-connectivity")
@@ -1280,6 +1360,85 @@ def trading_exchanges() -> dict:
 def trading_engines(_: None = Depends(_require_admin_token)) -> dict:
     """Return all registered engine instances."""
     return {"ok": True, "engines": _registry.list_engines()}
+
+
+@app.get("/api/system/capabilities")
+def system_capabilities() -> dict:
+    """Report whether each trading engine is ready to place REAL live orders.
+
+    This endpoint exists so the UI can honestly tell the user, BEFORE they pick
+    "live" mode, whether that mode will actually trade or silently fall back to
+    a simulator. Today only TradingEngine places real orders; SpreadCapture and
+    Arbitrage engines have full live-order code paths but never get an
+    OrderExecutor injected in production, so "live" used to fake fills without
+    warning. FuturesArb has no live path at all by design.
+
+    Returns per-engine `live_ready: bool` plus a human-readable `reasons` list
+    explaining what's missing. This is a read-only status endpoint — it does
+    NOT require the admin token, because the user needs to see it before they
+    even have a token configured (otherwise they can't tell what's wrong).
+    """
+    # SpreadCapture / Arbitrage: gated on the engine having an OrderExecutor
+    # injected (set_order_executor). In production this is never called, so the
+    # attribute is None and "live" silently simulates. We expose that honestly.
+    capture_reasons: list[str] = []
+    capture_ready = False
+    capture_executor = getattr(_spread_capture_engine, "_order_executor", None)
+    if capture_executor is None:
+        capture_reasons.append("order_executor not injected (live mode will simulate fills)")
+    else:
+        capture_ready = True
+
+    arb_reasons: list[str] = []
+    arb_ready = False
+    arb_executor = getattr(_arbitrage_engine, "_order_executor", None)
+    if arb_executor is None:
+        arb_reasons.append("order_executor not injected (live mode will auto-mark fills)")
+    # Arbitrage also has an internal use_real_orders flag that defaults to False
+    # even when an executor is present — surface it so users know it's a second gate.
+    arb_settings = getattr(_arbitrage_engine, "_settings", None)
+    if arb_settings is not None and not getattr(arb_settings, "use_real_orders", False):
+        arb_reasons.append("use_real_orders=False (engine config)")
+    if arb_executor is not None and not arb_reasons:
+        arb_ready = True
+
+    # FuturesArb: the strategy engine has no order-placement path at all.
+    fa_reasons = ["engine has no live order executor (paper-only by design)"]
+    fa_ready = False
+
+    # TradingEngine (the one engine that actually trades live): check credentials
+    # per configured exchange using the same env-prefix pattern as /trading/exchanges.
+    trading_per_exchange: dict[str, list[str]] = {}
+    trading_any_ready = False
+    for ex in Exchange:
+        config = EXCHANGE_CONFIGS[ex]
+        has_creds = bool(
+            os.environ.get(f"{config.env_prefix}_API_KEY")
+            and os.environ.get(f"{config.env_prefix}_API_SECRET")
+        )
+        key = f"{ex.value}"
+        if has_creds:
+            trading_any_ready = True
+        else:
+            trading_per_exchange[key] = [
+                f"{config.env_prefix}_API_KEY / _API_SECRET not set"
+            ]
+
+    return {
+        "ok": True,
+        "live_ready": {
+            "capture": capture_ready,
+            "arbitrage": arb_ready,
+            "futures_arb": fa_ready,
+            "trading": trading_any_ready,
+        },
+        "reasons": {
+            "capture": capture_reasons,
+            "arbitrage": arb_reasons,
+            "futures_arb": fa_reasons,
+            "trading": trading_per_exchange,
+        },
+    }
 
 
 @app.get("/api/trading/status")
@@ -2281,6 +2440,7 @@ _futures_arb_engine = FuturesArbStrategyEngine(
 _portfolio_risk.register_engine(_CaptureAdapter())
 _portfolio_risk.register_engine(_ArbitrageAdapter())
 _portfolio_risk.register_engine(_FuturesArbAdapter())
+_portfolio_risk.register_engine(_MetaScalpAdapter())
 
 
 @app.get("/api/portfolio-risk/status")
@@ -2518,16 +2678,19 @@ def lead_lag_stats(
 def lead_lag_prices(
     symbol: str = Query(..., min_length=1, description="Символ (BTCUSDT)"),
 ) -> dict:
-    """Mid-цены по всем биржам для указанного символа."""
+    """Mid-цены по всем биржам для указанного символа.
+
+    Returns 200 with an empty `prices` dict when the symbol isn't currently
+    monitored (engine stopped, symbol not in config, or no snapshot yet).
+    Returning 404 here used to surface as a red console error on the /lead-lag
+    page even though "no data yet" is a perfectly normal state — not an error.
+    The frontend already treats `prices == {}` as "no data" and renders the
+    empty state, so this keeps the UX honest without a scary network error.
+    """
     engine = _get_lead_lag_engine()
     prices = engine.get_prices(symbol.strip().upper())
-
     if prices is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Symbol '{symbol}' not found in lead-lag monitoring",
-        )
-
+        prices = {}
     return {
         "symbol": symbol.strip().upper(),
         "prices": prices,
@@ -2559,6 +2722,391 @@ def lead_lag_stop(_: None = Depends(_require_admin_token)) -> dict:
     return engine.get_status_info()
 
 
+# ─── MetaScalp Integration ────────────────────────────────────────────────────
+
+@app.get("/api/metascalp/ping")
+def metascalp_ping() -> dict:
+    """Проверка доступности MetaScalp."""
+    return _metascalp_client.ping()
+
+
+@app.get("/api/metascalp/status")
+def metascalp_status() -> dict:
+    """Статус инфраструктуры MetaScalp (кэш, poller, bridge)."""
+    return {
+        "ok": True,
+        "poller": _metascalp_poller.status(),
+        "bridge_running": _metascalp_ws_bridge.is_running(),
+    }
+
+
+@app.get("/api/metascalp/connections")
+def metascalp_connections() -> list[dict]:
+    """Список активных подключений MetaScalp."""
+    conns = _metascalp_client.connections()
+    return [{"id": c.id, "name": c.name, "exchange": c.exchange, "status": c.status} for c in conns]
+
+
+@app.get("/api/metascalp/connections/{conn_id}/balance")
+def metascalp_balance(conn_id: str) -> dict:
+    """Баланс подключения (с кэшем)."""
+    cached = _metascalp_cache.get_balance(conn_id)
+    if cached is not None:
+        return {"ok": True, "connection_id": conn_id, "balances": cached, "cached": True}
+    balances = _metascalp_client.balance(conn_id)
+    data = [b.__dict__ for b in balances]
+    _metascalp_cache.set_balance(conn_id, data)
+    return {"ok": True, "connection_id": conn_id, "balances": data, "cached": False}
+
+
+@app.get("/api/metascalp/connections/{conn_id}/orders")
+def metascalp_orders(conn_id: str, ticker: str | None = None) -> dict:
+    """Активные ордера (с кэшем)."""
+    cached = _metascalp_cache.get_orders(conn_id)
+    if cached is not None:
+        orders = cached
+        if ticker:
+            orders = [o for o in orders if o.get("ticker") == ticker]
+        return {"ok": True, "connection_id": conn_id, "orders": orders, "cached": True}
+    orders = _metascalp_client.orders(conn_id, ticker)
+    data = [o.__dict__ for o in orders]
+    _metascalp_cache.set_orders(conn_id, data)
+    return {"ok": True, "connection_id": conn_id, "orders": data, "cached": False}
+
+
+@app.get("/api/metascalp/connections/{conn_id}/positions")
+def metascalp_positions(conn_id: str) -> dict:
+    """Открытые позиции (с кэшем)."""
+    cached = _metascalp_cache.get_positions(conn_id)
+    if cached is not None:
+        return {"ok": True, "connection_id": conn_id, "positions": cached, "cached": True}
+    positions = _metascalp_client.positions(conn_id)
+    data = [p.__dict__ for p in positions]
+    _metascalp_cache.set_positions(conn_id, data)
+    return {"ok": True, "connection_id": conn_id, "positions": data, "cached": False}
+
+
+@app.get("/api/metascalp/connections/{conn_id}/orderbook")
+def metascalp_orderbook(conn_id: str, ticker: str) -> dict:
+    """Снапшот стакана (короткий TTL кэш)."""
+    cached = _metascalp_cache.get_orderbook(conn_id, ticker)
+    if cached is not None:
+        return {"ok": True, **cached, "cached": True}
+    ob = _metascalp_client.orderbook_snapshot(conn_id, ticker)
+    if ob is None:
+        return {"ok": False, "error": "Failed to fetch orderbook"}
+    data = {
+        "ticker": ob.ticker,
+        "best_ask": ob.best_ask,
+        "best_bid": ob.best_bid,
+        "asks": [a.__dict__ for a in ob.asks],
+        "bids": [b.__dict__ for b in ob.bids],
+    }
+    _metascalp_cache.set_orderbook(conn_id, ticker, data)
+    return {"ok": True, **data, "cached": False}
+
+
+@app.get("/api/metascalp/connections/{conn_id}/cluster")
+def metascalp_cluster(conn_id: str, ticker: str) -> dict:
+    """Кластерный снапшот (volume profile)."""
+    cached = _metascalp_cache.get_cluster(conn_id, ticker)
+    if cached is not None:
+        return {"ok": True, **cached, "cached": True}
+    cluster = _metascalp_client.cluster_snapshot(conn_id, ticker)
+    if cluster is None:
+        return {"ok": False, "error": "Failed to fetch cluster snapshot"}
+    data = {"ticker": cluster.ticker, "rows": cluster.rows}
+    _metascalp_cache.set_cluster(conn_id, ticker, data)
+    return {"ok": True, **data, "cached": False}
+
+
+@app.get("/api/metascalp/connections/{conn_id}/signal-levels")
+def metascalp_signal_levels(conn_id: str, ticker: str) -> dict:
+    """Уровни сигналов (с кэшем)."""
+    cached = _metascalp_cache.get_signal_levels(conn_id, ticker)
+    if cached is not None:
+        return {"ok": True, "connection_id": conn_id, "ticker": ticker, "levels": cached, "cached": True}
+    levels = _metascalp_client.signal_levels(conn_id, ticker)
+    data = [l.__dict__ for l in levels]
+    _metascalp_cache.set_signal_levels(conn_id, ticker, data)
+    return {"ok": True, "connection_id": conn_id, "ticker": ticker, "levels": data, "cached": False}
+
+
+@app.post("/api/metascalp/connections/{conn_id}/orders")
+def metascalp_place_order(
+    conn_id: str,
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Размещение ордера через MetaScalp."""
+    ticker = str(payload.get("ticker", ""))
+    side = str(payload.get("side", ""))
+    order_type = str(payload.get("type", ""))
+    size = float(payload.get("size", 0))
+    price = payload.get("price")
+    if not ticker or not side or not order_type or size <= 0:
+        return {"ok": False, "error": "ticker, side, type, size are required"}
+    result = _metascalp_client.place_order(
+        conn_id, ticker, side, order_type, size,
+        float(price) if price is not None else None,
+    )
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "orders")
+    return result
+
+
+@app.post("/api/metascalp/connections/{conn_id}/orders/cancel")
+def metascalp_cancel_order(
+    conn_id: str,
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Отмена ордера."""
+    order_id = str(payload.get("order_id", ""))
+    if not order_id:
+        return {"ok": False, "error": "order_id is required"}
+    result = _metascalp_client.cancel_order(conn_id, order_id)
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "orders")
+    return result
+
+
+@app.post("/api/metascalp/connections/{conn_id}/orders/cancel-all")
+def metascalp_cancel_all(
+    conn_id: str,
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Отмена всех ордеров."""
+    ticker = payload.get("ticker")
+    result = _metascalp_client.cancel_all_orders(conn_id, ticker)
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "orders")
+    return result
+
+
+@app.post("/api/metascalp/connections/{conn_id}/signal-levels")
+def metascalp_place_signal_level(
+    conn_id: str,
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Установка уровня сигнала."""
+    ticker = str(payload.get("ticker", ""))
+    price = float(payload.get("price", 0))
+    rule = str(payload.get("rule", ""))
+    if not ticker or price <= 0:
+        return {"ok": False, "error": "ticker and price are required"}
+    result = _metascalp_client.place_signal_level(conn_id, ticker, price, rule)
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "signal_levels")
+    return result
+
+
+@app.delete("/api/metascalp/connections/{conn_id}/signal-levels/{level_id}")
+def metascalp_remove_signal_level(
+    conn_id: str,
+    level_id: str,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Удаление уровня сигнала по ID."""
+    result = _metascalp_client.remove_signal_level(conn_id, level_id)
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "signal_levels")
+    return result
+
+
+@app.delete("/api/metascalp/connections/{conn_id}/signal-levels")
+def metascalp_remove_all_signal_levels(
+    conn_id: str,
+    ticker: str,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Удаление всех уровней сигналов для тикера."""
+    result = _metascalp_client.remove_all_signal_levels(conn_id, ticker)
+    if result.get("ok"):
+        _metascalp_cache.invalidate(conn_id, "signal_levels")
+    return result
+
+
+@app.delete("/api/metascalp/signal-levels/triggered")
+def metascalp_remove_triggered(
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Удаление всех сработавших уровней сигналов."""
+    result = _metascalp_client.remove_triggered_signal_levels()
+    if result.get("ok"):
+        _metascalp_cache.invalidate(None, "signal_levels")
+    return result
+
+
+@app.get("/api/metascalp/risk")
+def metascalp_risk() -> dict:
+    """Риск-метрики MetaScalp из PortfolioRiskManager."""
+    adapter = _MetaScalpAdapter()
+    return {
+        "ok": True,
+        "engine": adapter.engine_name,
+        "open_notional": adapter.get_open_notional(),
+        "open_symbols": adapter.get_open_symbols(),
+        "positions_count": adapter.get_status().get("positions_count", 0),
+        "orders_count": adapter.get_status().get("orders_count", 0),
+    }
+
+
+@app.get("/api/metascalp/auto-trade/config")
+def metascalp_auto_trade_config() -> dict:
+    """Конфигурация авто-торговли signal levels."""
+    return {"ok": True, "config": _metascalp_auto_trader.get_config()}
+
+
+@app.post("/api/metascalp/auto-trade/config")
+def metascalp_auto_trade_config_set(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Обновить конфигурацию авто-торговли."""
+    _metascalp_auto_trader.set_config(payload)
+    return {"ok": True, "config": _metascalp_auto_trader.get_config()}
+
+
+@app.post("/api/metascalp/auto-trade/trigger")
+def metascalp_auto_trade_trigger(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Ручной триггер авто-торговли (для тестирования)."""
+    conn_id = str(payload.get("conn_id", ""))
+    ticker = str(payload.get("ticker", ""))
+    price = float(payload.get("price", 0))
+    rule = str(payload.get("rule", ""))
+    if not conn_id or not ticker or price <= 0:
+        return {"ok": False, "error": "conn_id, ticker, price are required"}
+    result = _metascalp_auto_trader.on_signal_triggered(conn_id, ticker, price, rule)
+    return result
+
+
+
+@app.get("/api/basis")
+def basis_all() -> dict:
+    """Return all current basis snapshots from the basis calculator."""
+    snapshots = _futures_arb_basis_calc.get_all_basis()
+    return {
+        "ok": True,
+        "count": len(snapshots),
+        "snapshots": [
+            {
+                "symbol": s.symbol,
+                "combo": s.exchange_combo,
+                "spot_mid": s.spot_mid,
+                "futures_mid": s.futures_mid,
+                "basis_bps": s.basis_bps,
+                "executable_cc_bps": s.executable_basis_cc_bps,
+                "executable_rcc_bps": s.executable_basis_rcc_bps,
+                "estimated_apy": s.estimated_apy,
+                "funding_rate": s.funding_rate or 0.0,
+                "status": s.status,
+                "timestamp_ms": s.timestamp_ms,
+            }
+            for s in snapshots
+        ],
+    }
+
+
+# --- MetaScalp Basis Monitor (Spread Sniper integration) ---
+
+@app.get("/api/metascalp/basis")
+def metascalp_basis(
+    ticker: str = Query("BTCUSDT", min_length=3, max_length=40),
+    combo: str = Query("mexc_spot+mexc_futures"),
+) -> dict:
+    symbol = ticker.strip().upper()
+    snapshot = _futures_arb_basis_calc.get_current_basis(symbol, combo)
+    if snapshot is None:
+        return {"ok": False, "error": f"No basis data for {symbol} {combo}"}
+
+    from mexc_monitor.futures_arb.strategy_engine import _futures_exchange_from_combo
+    futures_exchange = _futures_exchange_from_combo(combo)
+
+    funding_info = None
+    if futures_exchange:
+        funding_info = _futures_arb_funding.get_funding(symbol, futures_exchange)
+
+    return {
+        "ok": True,
+        "ticker": symbol,
+        "combo": combo,
+        "spot_mid": snapshot.spot_mid,
+        "futures_mid": snapshot.futures_mid,
+        "basis_bps": snapshot.basis_bps,
+        "executable_cc_bps": snapshot.executable_basis_cc_bps,
+        "executable_rcc_bps": snapshot.executable_basis_rcc_bps,
+        "funding_rate": funding_info.current_rate if funding_info else (snapshot.funding_rate or 0.0),
+        "estimated_apy": snapshot.estimated_apy,
+        "status": snapshot.status,
+        "timestamp_ms": snapshot.timestamp_ms,
+    }
+
+
+@app.post("/api/metascalp/spread")
+def metascalp_open_spread(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    conn_id = str(payload.get("conn_id", ""))
+    ticker = str(payload.get("ticker", "")).strip().upper()
+    side = str(payload.get("side", "")).strip()
+    notional = float(payload.get("notional", 0))
+    leverage = int(payload.get("leverage", 3))
+    combo = str(payload.get("combo", "mexc_spot+mexc_futures"))
+
+    if not conn_id or not ticker or not side or notional <= 0:
+        return {"ok": False, "error": "conn_id, ticker, side, notional are required"}
+    if side not in ("Buy", "Sell"):
+        return {"ok": False, "error": "side must be Buy or Sell"}
+
+    snapshot = _futures_arb_basis_calc.get_current_basis(ticker, combo)
+    if snapshot is None or snapshot.status == "stale" or snapshot.spot_mid <= 0:
+        return {"ok": False, "error": f"No fresh basis data for {ticker}"}
+
+    spot_price = snapshot.spot_mid
+    futures_price = snapshot.futures_mid
+
+    spot_side = side
+    futures_side = "Sell" if side == "Buy" else "Buy"
+
+    spot_size = round(notional / spot_price, 6) if spot_price > 0 else 0
+    futures_size = round(notional / futures_price, 6) if futures_price > 0 else 0
+
+    if spot_size <= 0 or futures_size <= 0:
+        return {"ok": False, "error": "Invalid price data for sizing"}
+
+    spot_result = _metascalp_client.place_order(
+        conn_id, ticker, spot_side, "Market", spot_size, None
+    )
+
+    futures_ticker = ticker.replace("USDT", "_USDT") if "mexc_futures" in combo else ticker
+
+    futures_result = _metascalp_client.place_order(
+        conn_id, futures_ticker, futures_side, "Market", futures_size, None
+    )
+
+    strategy_name = "cash_and_carry" if side == "Buy" else "reverse_cash_and_carry"
+
+    _metascalp_cache.invalidate(conn_id, "orders")
+    _metascalp_cache.invalidate(conn_id, "positions")
+
+    return {
+        "ok": True,
+        "strategy": strategy_name,
+        "spot_order": spot_result,
+        "futures_order": futures_result,
+        "basis_bps": snapshot.basis_bps,
+        "executable_cc_bps": snapshot.executable_basis_cc_bps,
+        "executable_rcc_bps": snapshot.executable_basis_rcc_bps,
+    }
+
+
 # ─── SPA Fallback (must be AFTER all /api/ routes) ──────────────────────────────
 
 from fastapi.staticfiles import StaticFiles
@@ -2570,6 +3118,63 @@ _FRONTEND_ASSETS = _FRONTEND_DIST / "assets"
 # Mount static assets (JS, CSS, fonts, images from Vite build)
 if _FRONTEND_ASSETS.is_dir():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_ASSETS)), name="static-assets")
+
+
+
+@app.post("/api/metascalp/open-ticker")
+def metascalp_open_ticker(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Create a signal level in MetaScalp to bring the ticker into focus.
+
+    MetaScalp shows a popup when a signal level is created; clicking it opens the ticker.
+    Also returns a metascalp:// URL the frontend can try as a custom protocol fallback.
+    """
+    conn_id = str(payload.get("conn_id", "")).strip()
+    ticker = str(payload.get("ticker", "")).strip().upper()
+    price = payload.get("price")
+
+    if not ticker:
+        return {"ok": False, "error": "ticker is required"}
+
+    # Auto-resolve connection if not provided
+    if not conn_id:
+        conns = _metascalp_client.connections()
+        if conns:
+            conn_id = conns[0].id
+        else:
+            return {"ok": False, "error": "No MetaScalp connections available"}
+
+    # Resolve price if not provided
+    if price is None:
+        from mexc_monitor.spread_buffer import get_latest
+        tick = get_latest(ticker)
+        if tick is None:
+            # Try futures format
+            fut = ticker.replace("USDT", "_USDT") if ticker.endswith("USDT") else None
+            if fut:
+                tick = get_latest(fut)
+        price = tick.mid if tick else 0.0
+
+    if price <= 0:
+        return {"ok": False, "error": "Cannot resolve current price for ticker"}
+
+    result = _metascalp_client.place_signal_level(
+        conn_id=conn_id,
+        ticker=ticker,
+        price=float(price),
+        rule="web_open",
+    )
+
+    return {
+        "ok": result.get("ok", False),
+        "connection_id": conn_id,
+        "ticker": ticker,
+        "price": price,
+        "metascalp_url": f"metascalp://open-ticker/{ticker}?connection={conn_id}",
+        "signal_level_result": result,
+    }
 
 
 @app.get("/{full_path:path}")

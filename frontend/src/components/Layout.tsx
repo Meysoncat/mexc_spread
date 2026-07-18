@@ -7,6 +7,8 @@ import { PortfolioRiskWidget } from "./PortfolioRiskWidget";
 import { PnlWidget } from "./PnlWidget";
 import { AlertToggle } from "./AlertToggle";
 import { FeedsStatusWidget } from "./FeedsStatusWidget";
+import { GlobalAssetBar } from "./GlobalAssetBar";
+import { KillSwitchButton } from "./KillSwitchButton";
 
 const NAV_COLLAPSED_STORAGE_KEY = "mexc-ui-nav-collapsed";
 
@@ -55,11 +57,10 @@ export function Layout() {
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Desktop top bar with feed status, PnL and risk widgets */}
-        <header className="hidden h-10 shrink-0 items-center justify-between border-b border-line px-4 md:flex">
-          <span className="text-xs font-semibold text-ink-muted">
-            MEXC Spread Monitor
-          </span>
+        <header className="hidden h-12 shrink-0 items-center justify-between gap-3 border-b border-line px-4 md:flex">
+          <GlobalAssetBar />
           <div className="flex items-center gap-2">
+            <KillSwitchButton />
             <FeedsStatusWidget />
             <PnlWidget />
             <PortfolioRiskWidget />
@@ -68,19 +69,26 @@ export function Layout() {
         </header>
 
         {/* Mobile header with hamburger */}
-        <header className="flex h-12 shrink-0 items-center border-b border-line px-4 md:hidden">
-          <button
-            onClick={() => setDrawerOpen(true)}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-accent/10 hover:text-accent"
-            aria-label="Открыть меню"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-          <span className="ml-3 text-sm font-semibold text-ink">
-            MEXC Monitor
-          </span>
-          <div className="ml-auto">
-            <PortfolioRiskWidget />
+        <header className="flex h-12 shrink-0 flex-col border-b border-line px-4 md:hidden">
+          <div className="flex h-12 items-center">
+            <button
+              onClick={() => setDrawerOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-ink-muted hover:bg-accent/10 hover:text-accent"
+              aria-label="Открыть меню"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <span className="ml-3 text-sm font-semibold text-ink">
+              MEXC Monitor
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <KillSwitchButton />
+              <PortfolioRiskWidget />
+            </div>
+          </div>
+          {/* Глобальный селектор актива под шапкой на мобильных */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-2">
+            <GlobalAssetBar />
           </div>
         </header>
 
