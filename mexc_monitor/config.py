@@ -342,10 +342,12 @@ def default_network_dns_config_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "network_dns_config.json"
 
 
-def load_network_dns_config(path: Path | None = None) -> NetworkSettings:
+def load_network_dns_config(path: Path | str | None = None) -> NetworkSettings:
     """Load network DNS configuration from JSON file."""
     if path is None:
         path = default_network_dns_config_path()
+    elif isinstance(path, str):
+        path = Path(path)
 
     if not path.exists():
         logger.warning(f"Network DNS config not found: {path}. Using default settings.")

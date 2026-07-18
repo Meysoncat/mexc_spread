@@ -5,9 +5,10 @@ import {
   Columns3,
   Bell,
   ChartCandlestick,
-  ChartLine,
   ChevronsLeft,
   ChevronsRight,
+  Cpu,
+  Crosshair,
   Download,
   Shield,
   TrendingUp,
@@ -41,7 +42,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
       { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
-      { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
+      { path: "/futures-arb", label: "Spread Sniper", icon: Crosshair },
       { path: "/asterdex", label: "AsterDEX", icon: Zap },
     ],
   },
@@ -50,6 +51,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: "/spread-capture", label: "Spread Capture", icon: Download },
       { path: "/trading", label: "Trading Admin", icon: Shield },
+      { path: "/metascalp", label: "MetaScalp", icon: Cpu },
       { path: "/alerts", label: "Алерты", icon: Bell },
     ],
   },

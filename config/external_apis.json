@@ -1,6 +1,5 @@
 {
   "_comment": "MEXC_MONITOR_EXTERNAL_APIS_CONFIG. Исполнение: MEXC_SPOT_TAKER_FEE_BPS, MEXC_FUTURES_TAKER_FEE_BPS, MEXC_EXEC_REFERENCE_QUOTE_NOTIONAL. WS стакан фьючерсов: MEXC_FUTURES_ORDERBOOK_WS_ENABLED, MEXC_FUTURES_ORDERBOOK_WS_SYMBOLS (через запятую), MEXC_FUTURES_ORDERBOOK_WS_STALE_AFTER_SEC. WS стакан спота: MEXC_SPOT_ORDERBOOK_WS_ENABLED, MEXC_SPOT_ORDERBOOK_WS_SYMBOLS (через запятую), MEXC_SPOT_ORDERBOOK_WS_STALE_AFTER_SEC.",
-
   "mexc": {
     "http_timeout_sec": 30,
     "http_max_retries": 3,
@@ -9,15 +8,20 @@
     "http_min_request_interval_sec": 0,
     "spot_ws_url": "wss://wbs.mexc.com/ws",
     "spot_orderbook_ws_enabled": true,
-    "spot_orderbook_ws_symbols": [],
+    "spot_orderbook_ws_symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
     "spot_orderbook_ws_stale_after_sec": 3,
     "futures_ticker_source": "rest",
     "futures_ws_url": "wss://contract.mexc.com/edge",
     "futures_ws_stale_after_sec": 12,
-    "futures_orderbook_ws_enabled": false,
-    "futures_orderbook_ws_symbols": [],
+    "futures_orderbook_ws_enabled": true,
+    "futures_orderbook_ws_symbols": [
+      "BTC_USDT",
+      "ETH_USDT"
+    ],
     "futures_orderbook_ws_stale_after_sec": 3,
-
     "spot": {
       "base_url": "https://api.mexc.com",
       "book_ticker_path": "/api/v3/ticker/bookTicker",
@@ -26,7 +30,6 @@
       "symbols_whitelist": [],
       "symbols_blacklist": []
     },
-
     "futures": {
       "base_url": "https://api.mexc.com",
       "contract_ticker_path": "/api/v1/contract/ticker",
@@ -35,28 +38,27 @@
       "symbols_blacklist": []
     }
   },
-
   "history": {
-    "enabled": false,
+    "enabled": true,
     "db_path": "data/spread_history.sqlite",
     "interval_sec": 60,
-    "markets": ["spot", "futures"]
+    "markets": [
+      "spot",
+      "futures"
+    ]
   },
-
   "execution": {
     "_comment": "Оценка чистого спреда: net = gross_bps − 2×taker(one-way). reference_quote_notional — порог в USDT: l1_covers_reference_notional на споте по L1.",
     "spot_taker_fee_bps": 0,
     "futures_taker_fee_bps": 0,
     "reference_quote_notional": 0
   },
-
   "charting": {
     "provider": "tradingview_lightweight_charts",
     "npm_package": "lightweight-charts",
     "documentation_url": "https://tradingview.github.io/lightweight-charts/",
     "note": "Библиотека подключается через npm во frontend; отдельного HTTP API TradingView в проекте нет."
   },
-
   "lighter": {
     "_comment": "Lighter — DEX перпетуальных фьючерсов на zkSync. Публичный API без аутентификации.",
     "base_url": "https://mainnet.zklighter.elliot.ai",
@@ -69,15 +71,14 @@
       "candles": "/api/v1/candles"
     }
   },
-
   "asterdex": {
     "_comment": "AsterDEX — DEX перпетуальных фьючерсов. API совместим с Binance Futures. Ключи: ASTER_API_KEY, ASTER_API_SECRET (env vars).",
     "base_url": "https://fapi.asterdex.com",
     "timeout_sec": 15,
     "ws": {
-      "enabled": false,
+      "enabled": true,
       "url": "wss://fstream.asterdex.com/ws",
-      "symbols": [],
+      "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"],
       "ping_interval_sec": 30
     },
     "endpoints": {
@@ -101,7 +102,6 @@
       "note": "Подпись идентична Binance Futures: timestamp + recvWindow + HMAC SHA256 от query string"
     }
   },
-
   "binance": {
     "spot_base_url": "https://api.binance.com",
     "futures_base_url": "https://fapi.binance.com",
@@ -115,7 +115,6 @@
       "futures_klines": "/fapi/v1/klines"
     }
   },
-
   "bybit": {
     "base_url": "https://api.bybit.com",
     "timeout_sec": 15,
@@ -124,7 +123,6 @@
       "klines": "/v5/market/kline"
     }
   },
-
   "okx": {
     "base_url": "https://www.okx.com",
     "timeout_sec": 15,
@@ -133,7 +131,6 @@
       "candles": "/api/v5/market/candles"
     }
   },
-
   "gateio": {
     "spot_base_url": "https://api.gateio.ws",
     "futures_base_url": "https://api.gateio.ws",
@@ -145,7 +142,6 @@
       "futures_klines": "/api/v4/futures/usdt/candlesticks"
     }
   },
-
   "htx": {
     "spot_base_url": "https://api.huobi.pro",
     "futures_base_url": "https://api.hbdm.com",
@@ -157,7 +153,6 @@
       "futures_klines": "/linear-swap-ex/market/history/kline"
     }
   },
-
   "bitget": {
     "base_url": "https://api.bitget.com",
     "timeout_sec": 15,
@@ -166,7 +161,6 @@
       "klines": "/api/v2/mix/market/candles"
     }
   },
-
   "dydx": {
     "base_url": "https://indexer.dydx.trade",
     "timeout_sec": 15,
@@ -177,7 +171,6 @@
       "candles": "/v4/candles/perpetualMarkets/{market}"
     }
   },
-
   "hyperliquid": {
     "base_url": "https://api.hyperliquid.xyz",
     "timeout_sec": 15,
@@ -185,12 +178,14 @@
       "info": "/info"
     }
   },
-
   "arbitrage": {
     "_comment": "Cross-exchange arbitrage MEXC ↔ AsterDEX. Env: ASTER_API_KEY, ASTER_API_SECRET, MEXC_API_KEY, MEXC_API_SECRET.",
     "enabled": false,
     "mode": "paper",
-    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
     "entry_threshold_bps": 15.0,
     "exit_threshold_bps": 3.0,
     "max_position_notional_usdt": 500.0,
@@ -201,19 +196,32 @@
     "mexc_taker_fee_bps": 1.0,
     "aster_taker_fee_bps": 2.0
   },
-
   "cross_spread_history": {
-    "enabled": false,
+    "enabled": true,
     "db_path": "data/cross_spread_history.sqlite",
     "interval_sec": 60,
     "retention_days": 30
   },
-
   "lead_lag": {
-    "enabled": false,
+    "enabled": true,
     "leader_exchange": "binance",
-    "lagger_exchanges": ["mexc", "bybit", "okx"],
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "MATICUSDT"],
+    "lagger_exchanges": [
+      "mexc",
+      "bybit",
+      "okx"
+    ],
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "DOGEUSDT",
+      "ADAUSDT",
+      "AVAXUSDT",
+      "LINKUSDT",
+      "DOTUSDT",
+      "MATICUSDT"
+    ],
     "market": "futures",
     "z_score_entry_threshold": 2.0,
     "z_score_exit_threshold": 0.5,
@@ -233,4 +241,4 @@
       "okx": "wss://ws.okx.com:8443/ws/v5/public"
     }
   }
-}
+}

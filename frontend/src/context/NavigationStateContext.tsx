@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Exchange, Market } from "../types";
+import { ALL_EXCHANGES, type Exchange, type Market } from "../types";
 
 // ─── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -20,6 +20,7 @@ export interface FilterState {
 export interface NavigationState {
   exchange: Exchange;
   market: Market;
+  symbol: string;
   filters: FilterState;
 }
 
@@ -27,6 +28,7 @@ export interface NavigationStateContextValue {
   state: NavigationState;
   setExchange: (exchange: Exchange) => void;
   setMarket: (market: Market) => void;
+  setSymbol: (symbol: string) => void;
   setFilters: (filters: Partial<FilterState>) => void;
   resetFilters: () => void;
 }
@@ -35,6 +37,7 @@ export interface NavigationStateContextValue {
 
 const LS_KEY_EXCHANGE = "mexc-nav-exchange";
 const LS_KEY_MARKET = "mexc-nav-market";
+const LS_KEY_SYMBOL = "mexc-nav-symbol";
 const LS_KEY_FILTERS = "mexc-nav-filters";
 
 const DEFAULT_FILTERS: FilterState = {
@@ -44,26 +47,17 @@ const DEFAULT_FILTERS: FilterState = {
   search: "",
 };
 
+const DEFAULT_SYMBOL = "BTCUSDT";
+
 const DEFAULT_STATE: NavigationState = {
   exchange: "mexc",
   market: "spot",
+  symbol: DEFAULT_SYMBOL,
   filters: { ...DEFAULT_FILTERS },
 };
 
-/** All valid exchange values for validation. */
-const VALID_EXCHANGES: ReadonlySet<string> = new Set<Exchange>([
-  "mexc",
-  "asterdex",
-  "lighter",
-  "binance",
-  "bybit",
-  "okx",
-  "gateio",
-  "htx",
-  "bitget",
-  "dydx",
-  "hyperliquid",
-]);
+/** All valid exchange values for validation (generated from canonical registry). */
+const VALID_EXCHANGES: ReadonlySet<string> = new Set<string>(ALL_EXCHANGES);
 
 /** All valid market values for validation. */
 const VALID_MARKETS: ReadonlySet<string> = new Set<Market>([
@@ -80,6 +74,14 @@ function isValidExchange(value: unknown): value is Exchange {
 
 function isValidMarket(value: unknown): value is Market {
   return typeof value === "string" && VALID_MARKETS.has(value);
+}
+
+/** Символ может быть любым непустым — не из фиксированного множества
+ *  (на случай пустого снимка ввод символа вручную должен работать). */
+function normalizeSymbol(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim().toUpperCase();
+  return s.length > 0 && s.length <= 40 ? s : null;
 }
 
 function safeGetItem(key: string): string | null {
@@ -132,10 +134,12 @@ function resolveInitialState(): NavigationState {
   const params = new URLSearchParams(window.location.search);
   const urlExchange = params.get("exchange");
   const urlMarket = params.get("market");
+  const urlSymbol = params.get("symbol");
 
   // 2. localStorage
   const lsExchange = safeGetItem(LS_KEY_EXCHANGE);
   const lsMarket = safeGetItem(LS_KEY_MARKET);
+  const lsSymbol = safeGetItem(LS_KEY_SYMBOL);
 
   // Resolve exchange: URL > localStorage > default
   let exchange: Exchange = DEFAULT_STATE.exchange;
@@ -153,10 +157,15 @@ function resolveInitialState(): NavigationState {
     market = lsMarket;
   }
 
+  // Resolve symbol: URL > localStorage > default
+  let symbol: string = DEFAULT_STATE.symbol;
+  const resolvedSymbol = normalizeSymbol(urlSymbol) ?? normalizeSymbol(lsSymbol);
+  if (resolvedSymbol) symbol = resolvedSymbol;
+
   // Filters: only from localStorage (not in URL)
   const filters = readFiltersFromStorage();
 
-  return { exchange, market, filters };
+  return { exchange, market, symbol, filters };
 }
 
 // ─── Context ───────────────────────────────────────────────────────────────────
@@ -178,6 +187,11 @@ export function NavigationStateProvider({ children }: { children: ReactNode }) {
     safeSetItem(LS_KEY_MARKET, state.market);
   }, [state.market]);
 
+  // Sync symbol to localStorage on change
+  useEffect(() => {
+    safeSetItem(LS_KEY_SYMBOL, state.symbol);
+  }, [state.symbol]);
+
   // Sync filters to localStorage on change
   useEffect(() => {
     safeSetItem(LS_KEY_FILTERS, JSON.stringify(state.filters));
@@ -189,6 +203,11 @@ export function NavigationStateProvider({ children }: { children: ReactNode }) {
 
   const setMarket = useCallback((market: Market) => {
     setState((prev) => (prev.market === market ? prev : { ...prev, market }));
+  }, []);
+
+  const setSymbol = useCallback((symbol: string) => {
+    const normalized = normalizeSymbol(symbol) ?? DEFAULT_SYMBOL;
+    setState((prev) => (prev.symbol === normalized ? prev : { ...prev, symbol: normalized }));
   }, []);
 
   const setFilters = useCallback((partial: Partial<FilterState>) => {
@@ -206,8 +225,8 @@ export function NavigationStateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<NavigationStateContextValue>(
-    () => ({ state, setExchange, setMarket, setFilters, resetFilters }),
-    [state, setExchange, setMarket, setFilters, resetFilters],
+    () => ({ state, setExchange, setMarket, setSymbol, setFilters, resetFilters }),
+    [state, setExchange, setMarket, setSymbol, setFilters, resetFilters],
   );
 
   return (

@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "bot_token": "",
+  "chat_id": "",
+  "spread_threshold_enabled": true,
+  "spread_threshold_bps": 50.0,
+  "arbitrage_enabled": true,
+  "arbitrage_threshold_bps": 10.0,
+  "trade_events_enabled": true,
+  "rate_limit_sec": 60
+}

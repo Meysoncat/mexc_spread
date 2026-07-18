@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { apiUrl } from "../config";
 import { SkeletonTableRows } from "../components/ui/Skeleton";
+import { SymbolPicker } from "../components/SymbolPicker";
+import { useNavigationState } from "../hooks/useNavigationState";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,6 +79,22 @@ export function AsterDexPage() {
   const [ascending, setAscending] = useState(false);
   const [crossSymbols, setCrossSymbols] = useState("BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,ADAUSDT");
   const [autoRefresh, setAutoRefresh] = useState(false);
+
+  // Глобальный символ — для быстрого добавления в список сравнения.
+  const { state: navState, setSymbol: setNavSymbol } = useNavigationState();
+
+  /** Добавить глобальный символ в comma-список (без дубликатов). */
+  const addGlobalSymbol = () => {
+    const sym = navState.symbol.toUpperCase();
+    const current = crossSymbols
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (!current.includes(sym)) {
+      current.push(sym);
+      setCrossSymbols(current.join(","));
+    }
+  };
 
   const pollRef = useRef<number>(0);
 
@@ -299,7 +317,7 @@ export function AsterDexPage() {
         {/* ─── Cross-exchange tab ─── */}
         {tab === "cross" && (
           <>
-            <div className="flex items-center gap-3 border-b border-line px-4 py-2">
+            <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-2">
               <label className="flex items-center gap-1.5 text-xs text-ink-muted">
                 Символы (через запятую):
                 <input
@@ -309,6 +327,23 @@ export function AsterDexPage() {
                   className="w-80 rounded-lg border border-line bg-surface px-2 py-1.5 text-sm font-mono text-ink outline-none focus:ring-2 focus:ring-purple-500"
                 />
               </label>
+              <span className="flex items-center gap-1.5 text-xs text-ink-muted">
+                добавить:
+                <SymbolPicker
+                  value={navState.symbol}
+                  onChange={setNavSymbol}
+                  exchange={navState.exchange}
+                  market={navState.market}
+                  className="w-28 px-2 py-1.5 text-sm"
+                />
+                <button
+                  onClick={addGlobalSymbol}
+                  title="Добавить символ в список сравнения"
+                  className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs font-medium text-ink hover:bg-purple-500/10 hover:text-purple-500"
+                >
+                  +
+                </button>
+              </span>
               <button
                 onClick={fetchCrossSpread}
                 className="flex items-center gap-1 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700"

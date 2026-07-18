@@ -28,7 +28,7 @@ const args = [
   "--host",
   "127.0.0.1",
   "--port",
-  "8000",
+  "8006",
 ];
 
 const child = spawn(py, args, {

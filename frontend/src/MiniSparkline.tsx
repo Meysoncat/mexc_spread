@@ -21,7 +21,7 @@ interface MiniSparklineProps {
  * Компактный свечной график (1h) — загрузка через batch-эндпоинт при появлении в viewport.
  * Все видимые тайлы собираются в один HTTP-запрос с кэшированием на 60s.
  */
-export function MiniSparkline({ market, symbol, isDark, exchange = "mexc" }: MiniSparklineProps) {
+export function MiniSparkline({ market, symbol, isDark, exchange = "binance" }: MiniSparklineProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(false);
 

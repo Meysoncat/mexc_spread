@@ -1,7 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  ColorType,
-  createChart,
   LineSeries,
   type IChartApi,
   type ISeriesApi,
@@ -10,6 +8,7 @@ import {
 import { X, Activity, TrendingUp, TrendingDown, BarChart3 } from "lucide-react";
 import { apiUrl } from "./config";
 import type { SpreadTick, SpreadStats } from "./types";
+import { ChartCore } from "./components/charts";
 
 interface SpreadChartModalProps {
   open: boolean;
@@ -48,7 +47,6 @@ export function SpreadChartModal({
   market: _market,
   isDark,
 }: SpreadChartModalProps) {
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -89,38 +87,8 @@ export function SpreadChartModal({
     }
   }, [symbol, timeRange, entryThresholdBps]);
 
-  // Load initial history and setup chart
-  useLayoutEffect(() => {
-    if (!open || !symbol) return;
-    const el = chartContainerRef.current;
-    if (!el) return;
-
-    const bg = isDark ? "#1e293b" : "#ffffff";
-    const fg = isDark ? "#e2e8f0" : "#0f172a";
-    const grid = isDark ? "#334155" : "#e2e8f0";
-
-    const chart = createChart(el, {
-      layout: {
-        background: { type: ColorType.Solid, color: bg },
-        textColor: fg,
-      },
-      grid: {
-        vertLines: { color: grid },
-        horzLines: { color: grid },
-      },
-      rightPriceScale: {
-        borderColor: grid,
-        autoScale: true,
-        scaleMargins: { top: 0.1, bottom: 0.1 },
-      },
-      timeScale: {
-        borderColor: grid,
-        timeVisible: true,
-        secondsVisible: true,
-      },
-      width: el.clientWidth,
-      height: el.clientHeight,
-    });
+  // Chart ready handler
+  const handleChartReady = useCallback((chart: IChartApi) => {
     chartRef.current = chart;
 
     const series = chart.addSeries(LineSeries, {
@@ -137,22 +105,13 @@ export function SpreadChartModal({
     });
     seriesRef.current = series;
 
-    const ro = new ResizeObserver(() => {
-      if (!chartContainerRef.current) return;
-      chart.applyOptions({
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight,
-      });
-    });
-    ro.observe(el);
-
     // Load history
     const range = TIME_RANGES.find((r) => r.value === timeRange);
     const sinceMs = Date.now() - (range?.seconds ?? 300) * 1000;
 
     fetch(
       apiUrl(
-        `/api/spread/history?symbol=${encodeURIComponent(symbol)}&since_ms=${sinceMs}&max_points=2000`,
+        `/api/spread/history?symbol=${encodeURIComponent(symbol!)}&since_ms=${sinceMs}&max_points=2000`,
       ),
     )
       .then((r) => r.json())
@@ -170,14 +129,14 @@ export function SpreadChartModal({
         }
       })
       .catch(() => {});
+  }, [symbol, timeRange]);
 
+  // Cleanup when chart is recreated
+  useEffect(() => {
     return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
       seriesRef.current = null;
     };
-  }, [open, symbol, isDark, timeRange]);
+  }, [symbol, timeRange]);
 
   // SSE connection for real-time updates
   useEffect(() => {
@@ -330,9 +289,19 @@ export function SpreadChartModal({
         <div className="flex flex-1 overflow-hidden">
           {/* Chart area */}
           <div className="flex-1 p-2">
-            <div
-              ref={chartContainerRef}
+            <ChartCore
+              mode={isDark ? "dark" : "light"}
+              onChartReady={handleChartReady}
               className="h-[min(50vh,450px)] w-full min-h-[280px]"
+              options={{
+                rightPriceScale: {
+                  scaleMargins: { top: 0.1, bottom: 0.1 },
+                },
+                timeScale: {
+                  timeVisible: true,
+                  secondsVisible: true,
+                },
+              }}
             />
           </div>
 

@@ -106,7 +106,7 @@ class DNSMetrics:
             self.total_queries += 1
             self.successful_resolutions += 1
             self.total_response_time_ms += response_time_ms
-            self.max_response_time_ms = max(self.max_response_ms, response_time_ms)
+            self.max_response_time_ms = max(self.max_response_time_ms, response_time_ms)
             self.min_response_time_ms = min(self.min_response_time_ms, response_time_ms)
 
             # Health score calculation
@@ -211,6 +211,37 @@ class CustomDNSResolver:
 
         return metrics
 
+    def _detect_exchange_from_host(self, hostname: str) -> Any:
+        exchange_str = None
+        if hostname.endswith("mexc.com"):
+            exchange_str = "mexc"
+        elif hostname.endswith("asterdex.com"):
+            exchange_str = "asterdex"
+        elif hostname.endswith("binance.com"):
+            exchange_str = "binance"
+        elif hostname.endswith("bybit.com"):
+            exchange_str = "bybit"
+        elif hostname.endswith("okx.com"):
+            exchange_str = "okx"
+        elif hostname.endswith("gateio.com"):
+            exchange_str = "gateio"
+        elif hostname.endswith("huobi.com") or hostname.endswith("hbdm.com"):
+            exchange_str = "htx"
+        elif hostname.endswith("bitget.com"):
+            exchange_str = "bitget"
+        elif hostname.endswith("dydx.trade"):
+            exchange_str = "dydx"
+        elif hostname.endswith("hyperliquid.xyz"):
+            exchange_str = "hyperliquid"
+
+        if exchange_str:
+            try:
+                from mexc_monitor.trading.exchanges import Exchange
+                return Exchange(exchange_str)
+            except (ImportError, ValueError):
+                return exchange_str
+        return None
+
     def get_resolved_url(self, url: str) -> str:
         """Get URL with resolved IP address."""
         with self._lock:
@@ -220,7 +251,8 @@ class CustomDNSResolver:
             # Try cache first
             cached = self._cache.get(hostname)
             if cached:
-                self._cache.hit(hostname)
+                exchange = self._detect_exchange_from_host(hostname)
+                self.get_metrics(exchange).record_cache_hit()
                 logger.debug(f"Using cached DNS for {hostname}: {cached}")
                 return f"https://{cached.ip_address}{parsed.path}"
 

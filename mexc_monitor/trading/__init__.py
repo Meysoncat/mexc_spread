@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from mexc_monitor.trading.engine import TradingEngine, TradingSettings, load_trading_settings
-
-__all__ = [
-    "TradingEngine",
-    "TradingSettings",
-    "load_trading_settings",
-]
+# Eager imports of TradingEngine and load_trading_settings removed
+# to prevent circular dependencies during package initialization.
+# Import them from mexc_monitor.trading.engine directly.

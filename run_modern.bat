@@ -44,7 +44,7 @@ if not exist "node_modules" (
 echo.
 echo [mexc_spread_monitor] API + Vite в одном окне. Остановка: Ctrl+C
 echo     UI:  http://localhost:5173
-echo     API: http://127.0.0.1:8000/api/health
+echo     API: http://127.0.0.1:8006/api/health
 echo.
 
 call npm run dev:modern

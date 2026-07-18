@@ -45,6 +45,57 @@ export function defaultQuoteForExchange(
   return EXCHANGE_DEFAULT_QUOTE[exchange] ?? "USDT";
 }
 
+// ─── Canonical exchange registry (single source of truth) ──────────────────────
+
+/** Exchanges that support both spot and futures markets (show market switcher). */
+export const MULTI_MARKET_EXCHANGES: Exchange[] = [
+  "mexc",
+  "binance",
+  "okx",
+  "gateio",
+  "htx",
+];
+
+export interface ExchangeGroup {
+  label: string;
+  exchanges: { value: Exchange; label: string }[];
+}
+
+/** Канонический список бирж по группам CEX/DEX — единый источник для всего UI. */
+export const EXCHANGE_GROUPS: ExchangeGroup[] = [
+  {
+    label: "CEX",
+    exchanges: [
+      { value: "mexc", label: "MEXC" },
+      { value: "binance", label: "Binance" },
+      { value: "bybit", label: "Bybit" },
+      { value: "okx", label: "OKX" },
+      { value: "gateio", label: "Gate.io" },
+      { value: "htx", label: "HTX" },
+      { value: "bitget", label: "Bitget" },
+    ],
+  },
+  {
+    label: "DEX",
+    exchanges: [
+      { value: "asterdex", label: "AsterDEX" },
+      { value: "lighter", label: "Lighter" },
+      { value: "dydx", label: "dYdX" },
+      { value: "hyperliquid", label: "Hyperliquid" },
+    ],
+  },
+];
+
+/** Плоский список всех значений бирж (для валидации/итерации). */
+export const ALL_EXCHANGES: Exchange[] = EXCHANGE_GROUPS.flatMap((g) =>
+  g.exchanges.map((e) => e.value),
+);
+
+/** Метка биржи по её значению (MEXC, Binance, …). */
+export const EXCHANGE_LABELS: Record<Exchange, string> = Object.fromEntries(
+  EXCHANGE_GROUPS.flatMap((g) => g.exchanges.map((e) => [e.value, e.label])),
+) as Record<Exchange, string>;
+
 /** Рынок для REST стакана (в режиме «Базис» выбирается нога). */
 export type DomMarket = "spot" | "futures";
 

@@ -112,14 +112,19 @@ class TestSigningDeterminism:
 
     def test_bybit_sign_deterministic(self, bybit_client):
         params = {"symbol": "BTCUSDT", "side": "Buy"}
-        result1 = bybit_client._sign(dict(params))
-        result2 = bybit_client._sign(dict(params))
+        with patch("mexc_monitor.trading.clients.bybit_client.time") as mock_time:
+            mock_time.time.return_value = 1700000000.0
+            result1 = bybit_client._sign(dict(params))
+            result2 = bybit_client._sign(dict(params))
         assert result1["__bybit_sign"] == result2["__bybit_sign"]
 
     def test_okx_sign_deterministic(self, okx_client):
         params = {"__method": "POST", "__path": "/api/v5/trade/order", "__body": '{"instId":"BTC-USDT"}'}
-        result1 = okx_client._sign(dict(params))
-        result2 = okx_client._sign(dict(params))
+        from datetime import datetime, timezone
+        with patch("mexc_monitor.trading.clients.okx_client.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2024, 1, 1, 12, 0, 0, 123000, tzinfo=timezone.utc)
+            result1 = okx_client._sign(dict(params))
+            result2 = okx_client._sign(dict(params))
         assert result1["__okx_sign"] == result2["__okx_sign"]
 
     def test_gateio_sign_deterministic(self, gateio_client):
@@ -129,20 +134,27 @@ class TestSigningDeterminism:
             "__query": "",
             "__body": '{"currency_pair":"BTC_USDT"}',
         }
-        result1 = gateio_client._sign(dict(params))
-        result2 = gateio_client._sign(dict(params))
+        with patch("mexc_monitor.trading.clients.gateio_client.time") as mock_time:
+            mock_time.time.return_value = 1700000000.0
+            result1 = gateio_client._sign(dict(params))
+            result2 = gateio_client._sign(dict(params))
         assert result1["__gateio_sign"] == result2["__gateio_sign"]
 
     def test_htx_sign_deterministic(self, htx_client):
         params = {"__method": "GET", "__path": "/v1/order/openOrders", "symbol": "btcusdt"}
-        result1 = htx_client._sign(dict(params))
-        result2 = htx_client._sign(dict(params))
+        from datetime import datetime, timezone
+        with patch("mexc_monitor.trading.clients.htx_client.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+            result1 = htx_client._sign(dict(params))
+            result2 = htx_client._sign(dict(params))
         assert result1["Signature"] == result2["Signature"]
 
     def test_bitget_sign_deterministic(self, bitget_client):
         params = {"__method": "POST", "__path": "/api/v2/spot/trade/place-order", "__body": '{"symbol":"BTCUSDT"}'}
-        result1 = bitget_client._sign(dict(params))
-        result2 = bitget_client._sign(dict(params))
+        with patch("mexc_monitor.trading.clients.bitget_client.time") as mock_time:
+            mock_time.time.return_value = 1700000000.0
+            result1 = bitget_client._sign(dict(params))
+            result2 = bitget_client._sign(dict(params))
         assert result1["__bitget_sign"] == result2["__bitget_sign"]
 
     def test_mexc_sign_deterministic(self, mexc_client):

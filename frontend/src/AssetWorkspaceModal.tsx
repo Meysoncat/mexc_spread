@@ -1,33 +1,24 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  CandlestickSeries,
-  ColorType,
-  LineSeries,
-  LineStyle,
-  createChart,
-} from "lightweight-charts";
-import type {
-  IChartApi,
-  IPriceLine,
-  ISeriesApi,
-  UTCTimestamp,
-} from "lightweight-charts";
+import { LineStyle } from "lightweight-charts";
+import type { IPriceLine, ISeriesApi } from "lightweight-charts";
 import { X } from "lucide-react";
 import { apiUrl } from "./config";
 import { readStoredVisual } from "./chartPreferences";
+import {
+  ChartWidget,
+  type ChartWidgetRef,
+} from "./components/ChartWidget";
 import type {
   ChartInterval,
   ChartVisualType,
   DepthResponse,
   DomMarket,
-  KlinesResponse,
   Market,
   OrderbookLevel,
 } from "./types";
@@ -42,18 +33,6 @@ const INTERVALS: { value: ChartInterval; label: string }[] = [
 
 const DEPTH_LIMITS = [100, 200, 500] as const;
 const MAX_PRICE_LINES_PER_SIDE = 10;
-
-function priceFormatFromSample(sample: number) {
-  const p = Math.abs(sample);
-  if (!Number.isFinite(p) || p === 0) {
-    return { type: "price" as const, precision: 4, minMove: 0.0001 };
-  }
-  if (p >= 10_000) return { type: "price" as const, precision: 2, minMove: 0.01 };
-  if (p >= 100) return { type: "price" as const, precision: 2, minMove: 0.01 };
-  if (p >= 1) return { type: "price" as const, precision: 4, minMove: 0.0001 };
-  if (p >= 0.01) return { type: "price" as const, precision: 6, minMove: 1e-6 };
-  return { type: "price" as const, precision: 8, minMove: 1e-8 };
-}
 
 function fmtNum(n: number, frac: number): string {
   if (!Number.isFinite(n)) return "—";
@@ -128,13 +107,8 @@ export function AssetWorkspaceModal({
   ctx,
   isDark,
 }: AssetWorkspaceModalProps) {
-  const chartWrapRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<
-    ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null
-  >(null);
+  const widgetRef = useRef<ChartWidgetRef>(null);
   const densityLinesRef = useRef<IPriceLine[]>([]);
-  const [chartReady, setChartReady] = useState(false);
 
   const [interval, setInterval] = useState<ChartInterval>("1h");
   const [visual, setVisual] = useState<ChartVisualType>(readStoredVisual);
@@ -143,14 +117,11 @@ export function AssetWorkspaceModal({
   const [showDensityLines, setShowDensityLines] = useState(true);
   const [domAutoRefresh, setDomAutoRefresh] = useState(true);
   const [domLeg, setDomLeg] = useState<DomMarket>("spot");
-  const [klinesLoading, setKlinesLoading] = useState(false);
-  const [klinesErr, setKlinesErr] = useState<string | null>(null);
   const [depthData, setDepthData] = useState<DepthResponse | null>(null);
   const [depthErr, setDepthErr] = useState<string | null>(null);
   const [depthLoading, setDepthLoading] = useState(false);
 
   const chartSymbol = ctx?.chartSymbol ?? "";
-  const klinesMarket = appMarket === "cross" ? "spot" : appMarket;
 
   const effDomMarket: DomMarket = useMemo(() => {
     if (!ctx) return "spot";
@@ -227,146 +198,26 @@ export function AssetWorkspaceModal({
     [showDensityLines],
   );
 
-  useLayoutEffect(() => {
-    if (!open || !chartSymbol || !ctx) return;
-    const el = chartWrapRef.current;
-    if (!el) return;
-
-    const bg = isDark ? "#1e293b" : "#ffffff";
-    const fg = isDark ? "#e2e8f0" : "#0f172a";
-    const grid = isDark ? "#334155" : "#e2e8f0";
-
-    const chart = createChart(el, {
-      layout: {
-        background: { type: ColorType.Solid, color: bg },
-        textColor: fg,
-      },
-      grid: {
-        vertLines: { color: grid },
-        horzLines: { color: grid },
-      },
-      rightPriceScale: {
-        borderColor: grid,
-        autoScale: true,
-        scaleMargins: { top: 0.08, bottom: 0.08 },
-        entireTextOnly: false,
-      },
-      timeScale: { borderColor: grid },
-      width: el.clientWidth,
-      height: el.clientHeight,
-    });
-    chartRef.current = chart;
-    seriesRef.current = null;
-    setChartReady(false);
-
-    const ro = new ResizeObserver(() => {
-      if (!chartWrapRef.current) return;
-      chart.applyOptions({
-        width: chartWrapRef.current.clientWidth,
-        height: chartWrapRef.current.clientHeight,
-      });
-    });
-    ro.observe(el);
-
-    let cancelled = false;
-    setKlinesLoading(true);
-    setKlinesErr(null);
-
-    const q = new URLSearchParams({
-      market: klinesMarket,
-      symbol: chartSymbol,
-      interval,
-    });
-
-    fetch(apiUrl(`/api/klines?${q}`))
-      .then((r) => r.json() as Promise<KlinesResponse>)
-      .then((data) => {
-        if (cancelled) return;
-        if (!data.ok) {
-          setKlinesErr(data.error ?? "Ошибка свечей");
-          return;
-        }
-        const raw = data.candles ?? [];
-        if (raw.length === 0) {
-          setKlinesErr("Нет свечей");
-          return;
-        }
-        const lastClose = raw[raw.length - 1]?.close ?? raw[0].close;
-        const priceFmt = priceFormatFromSample(lastClose);
-
-        let series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">;
-        if (visual === "line") {
-          series = chart.addSeries(LineSeries, {
-            color: "#26a69a",
-            lineWidth: 2,
-            priceFormat: priceFmt,
-            priceLineVisible: true,
-            lastValueVisible: true,
-          });
-          series.setData(
-            raw.map((c) => ({
-              time: c.time as UTCTimestamp,
-              value: c.close,
-            })),
-          );
-        } else {
-          series = chart.addSeries(CandlestickSeries, {
-            upColor: "#26a69a",
-            downColor: "#ef5350",
-            borderVisible: false,
-            wickUpColor: "#26a69a",
-            wickDownColor: "#ef5350",
-            priceFormat: priceFmt,
-          });
-          series.setData(
-            raw.map((c) => ({
-              time: c.time as UTCTimestamp,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-            })),
-          );
-        }
-        seriesRef.current = series;
-        chart.timeScale().fitContent();
-        chart.priceScale("right").applyOptions({
-          autoScale: true,
-          scaleMargins: { top: 0.08, bottom: 0.08 },
-        });
-        setChartReady(true);
-      })
-      .catch((e) => {
-        if (!cancelled) setKlinesErr(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setKlinesLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-      ro.disconnect();
-      clearPriceLines(seriesRef.current, densityLinesRef.current);
-      densityLinesRef.current = [];
-      seriesRef.current = null;
-      chartRef.current = null;
-      chart.remove();
-      setChartReady(false);
-    };
-  }, [
-    open,
-    chartSymbol,
-    ctx,
-    interval,
-    isDark,
-    klinesMarket,
-    visual,
-  ]);
+  const chartSeriesRef = useRef<
+    ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null
+  >(null);
 
   useEffect(() => {
-    if (!chartReady || !seriesRef.current) return;
-    applyLinesToSeries(seriesRef.current, densityList);
-  }, [chartReady, densityList, applyLinesToSeries]);
+    if (chartSeriesRef.current) {
+      applyLinesToSeries(chartSeriesRef.current, densityList);
+    }
+  }, [densityList, applyLinesToSeries]);
+
+  const handleChartReady = useCallback(
+    (
+      _chart: any,
+      series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
+    ) => {
+      chartSeriesRef.current = series;
+      applyLinesToSeries(series, densityList);
+    },
+    [densityList, applyLinesToSeries],
+  );
 
   const fetchDepth = useCallback(
     async (nocache: boolean) => {
@@ -533,17 +384,16 @@ export function AssetWorkspaceModal({
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <div className="relative min-h-[42vh] flex-1 border-b border-line lg:min-h-0 lg:border-b-0 lg:border-r">
-          {klinesErr && (
-            <p className="absolute left-3 top-3 z-10 max-w-[90%] rounded bg-surface-elevated/95 px-2 py-1 text-sm text-red-600 dark:text-red-400">
-              {klinesErr}
-            </p>
-          )}
-          {klinesLoading && (
-            <p className="absolute left-3 top-3 z-10 text-sm text-ink-muted">
-              Загрузка графика…
-            </p>
-          )}
-          <div ref={chartWrapRef} className="absolute inset-0" />
+          <ChartWidget
+            ref={widgetRef}
+            symbol={chartSymbol}
+            market={appMarket}
+            interval={interval}
+            visual={visual}
+            isDark={isDark}
+            onChartReady={handleChartReady}
+            className="absolute inset-0"
+          />
         </div>
 
         <aside className="flex max-h-[50vh] w-full shrink-0 flex-col overflow-hidden bg-surface lg:max-h-none lg:w-[460px] lg:shrink-0">

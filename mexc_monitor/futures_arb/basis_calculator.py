@@ -58,18 +58,33 @@ def _spread_buffer_key(exchange: str, symbol: str) -> str:
     if exchange == "mexc_spot":
         return sym
     elif exchange == "mexc_futures":
-        # Convert BTCUSDT -> BTC_USDT
-        # Find the quote currency (USDT, USDC, etc.) and insert underscore
         for quote in ("USDT", "USDC", "BUSD", "BTC", "ETH"):
             if sym.endswith(quote):
                 base = sym[: -len(quote)]
                 return f"{base}_{quote}"
-        # Fallback: just return as-is with underscore before last 4 chars
         return f"{sym[:-4]}_{sym[-4:]}"
     elif exchange == "asterdex_perp":
         return f"ASTER:{sym}"
     else:
         raise ValueError(f"Unknown exchange: {exchange}")
+
+
+def _norm_futures_symbol(s: str) -> str:
+    x = s.strip().upper()
+    if "_" not in x:
+        return x
+    return "_".join(p for p in x.split("_") if p)
+
+
+def spot_to_futures_symbol(spot_symbol: str) -> str | None:
+    """BTCUSDT → BTC_USDT. Только *USDT спот-пары (как на MEXC)."""
+    s = spot_symbol.strip().upper()
+    if not s.endswith("USDT"):
+        return None
+    base = s[:-4]
+    if not base:
+        return None
+    return f"{base}_USDT"
 
 
 class BasisCalculator:
@@ -78,6 +93,9 @@ class BasisCalculator:
 
     Подписывается на Spread Buffer для получения bid/ask обоих ног.
     Пересчитывает базис при каждом обновлении любой ноги.
+
+    REST fallback: если WS-данных нет rest_stale_threshold_sec секунд,
+    автоматически опрашивает REST API MEXC и обновляет ноги.
     """
 
     def __init__(
@@ -85,9 +103,15 @@ class BasisCalculator:
         settings: FuturesArbSettings,
         *,
         stale_after_sec: float = 30.0,
+        rest_fallback_enabled: bool = True,
+        rest_poll_interval_sec: float = 5.0,
+        rest_stale_threshold_sec: float = 5.0,
     ) -> None:
         self._settings = settings
         self._stale_after_sec = stale_after_sec
+        self._rest_fallback_enabled = rest_fallback_enabled
+        self._rest_poll_interval_sec = max(1.0, rest_poll_interval_sec)
+        self._rest_stale_threshold_sec = max(1.0, rest_stale_threshold_sec)
         self._running = False
         self._lock = threading.Lock()
 
@@ -99,6 +123,10 @@ class BasisCalculator:
 
         # Track subscriptions for cleanup
         self._subscriptions: list[tuple[str, Any]] = []
+
+        # REST fallback thread
+        self._rest_thread: threading.Thread | None = None
+        self._rest_stop = threading.Event()
 
     @property
     def stale_after_sec(self) -> float:
@@ -115,11 +143,14 @@ class BasisCalculator:
 
         self._running = True
         self._subscribe_all()
+        if self._rest_fallback_enabled:
+            self._start_rest_fallback()
         logger.info(
-            "BasisCalculator started: symbols=%s, combos=%s, stale_after_sec=%.1f",
+            "BasisCalculator started: symbols=%s, combos=%s, stale_after_sec=%.1f, rest_fallback=%s",
             self._settings.symbols,
             self._settings.exchange_combos,
             self._stale_after_sec,
+            self._rest_fallback_enabled,
         )
 
     def stop(self) -> None:
@@ -129,6 +160,7 @@ class BasisCalculator:
 
         self._running = False
         self._unsubscribe_all()
+        self._stop_rest_fallback()
         logger.info("BasisCalculator stopped")
 
     def get_current_basis(self, symbol: str, exchange_combo: str) -> BasisSnapshot | None:
@@ -159,7 +191,6 @@ class BasisCalculator:
         status = self._compute_status(legs, now_ms)
 
         if status != snapshot.status:
-            # Return a new snapshot with updated status
             return BasisSnapshot(
                 symbol=snapshot.symbol,
                 exchange_combo=snapshot.exchange_combo,
@@ -190,7 +221,6 @@ class BasisCalculator:
                 spot_key = _spread_buffer_key(spot_exchange, symbol)
                 futures_key = _spread_buffer_key(futures_exchange, symbol)
 
-                # Initialize leg data
                 key = (symbol, combo)
                 with self._lock:
                     if key not in self._legs:
@@ -199,7 +229,6 @@ class BasisCalculator:
                             "futures": _LegData(),
                         }
 
-                # Create callbacks that capture the pair context
                 spot_cb = self._make_callback(symbol, combo, "spot")
                 futures_cb = self._make_callback(symbol, combo, "futures")
 
@@ -223,17 +252,13 @@ class BasisCalculator:
         self._subscriptions.clear()
 
     def _make_callback(self, symbol: str, combo: str, leg: str) -> Any:
-        """Create a callback for Spread Buffer subscription."""
-
         def _on_tick(_sym: str, tick: Any) -> None:
             if not self._running:
                 return
             self._on_leg_update(symbol, combo, leg, tick)
-
         return _on_tick
 
     def _on_leg_update(self, symbol: str, combo: str, leg: str, tick: Any) -> None:
-        """Handle a new tick from Spread Buffer for one leg of a pair."""
         if not self._running:
             return
 
@@ -250,7 +275,6 @@ class BasisCalculator:
             leg_data.mid = tick.mid
             leg_data.last_update_ms = tick.timestamp_ms
 
-            # Recompute basis
             self._recompute_basis(symbol, combo, legs)
 
     def _recompute_basis(
@@ -259,14 +283,12 @@ class BasisCalculator:
         combo: str,
         legs: dict[str, _LegData],
     ) -> None:
-        """Recompute basis snapshot for a pair. Must be called under self._lock."""
         spot = legs["spot"]
         futures = legs["futures"]
 
         now_ms = int(time.time() * 1000)
         status = self._compute_status(legs, now_ms)
 
-        # If either leg has no data yet, we can't compute basis
         if spot.mid <= 0 or futures.mid <= 0:
             return
 
@@ -288,17 +310,14 @@ class BasisCalculator:
         self._snapshots[key] = snapshot
 
     def _compute_status(self, legs: dict[str, _LegData], now_ms: int) -> str:
-        """Determine if the pair is active or stale based on leg data freshness."""
         spot = legs["spot"]
         futures = legs["futures"]
 
         stale_threshold_ms = int(self._stale_after_sec * 1000)
 
-        # No data at all → stale
         if spot.last_update_ms == 0 or futures.last_update_ms == 0:
             return "stale"
 
-        # Check if either leg is too old
         spot_age_ms = now_ms - spot.last_update_ms
         futures_age_ms = now_ms - futures.last_update_ms
 
@@ -306,6 +325,106 @@ class BasisCalculator:
             return "stale"
 
         return "active"
+
+    # --- REST Fallback ---
+
+    def _start_rest_fallback(self) -> None:
+        if self._rest_thread is not None and self._rest_thread.is_alive():
+            return
+        self._rest_stop.clear()
+        self._rest_thread = threading.Thread(
+            target=self._rest_poll_loop,
+            daemon=True,
+            name="basis-rest-fallback",
+        )
+        self._rest_thread.start()
+        logger.info(
+            "BasisCalculator REST fallback started (interval=%.1fs, stale_threshold=%.1fs)",
+            self._rest_poll_interval_sec, self._rest_stale_threshold_sec,
+        )
+
+    def _stop_rest_fallback(self) -> None:
+        self._rest_stop.set()
+        if self._rest_thread is not None:
+            self._rest_thread.join(timeout=2.0)
+            self._rest_thread = None
+
+    def _rest_poll_loop(self) -> None:
+        while not self._rest_stop.wait(self._rest_poll_interval_sec):
+            if not self._running:
+                continue
+            try:
+                self._poll_rest_once()
+            except Exception:
+                logger.exception("REST fallback poll failed")
+
+    def _poll_rest_once(self) -> None:
+        now_ms = int(time.time() * 1000)
+        stale_threshold_ms = int(self._rest_stale_threshold_sec * 1000)
+
+        stale_pairs: list[tuple[str, str]] = []
+        with self._lock:
+            for (symbol, combo), legs in self._legs.items():
+                spot_age = now_ms - legs["spot"].last_update_ms
+                fut_age = now_ms - legs["futures"].last_update_ms
+                if spot_age > stale_threshold_ms or fut_age > stale_threshold_ms:
+                    stale_pairs.append((symbol, combo))
+
+        if not stale_pairs:
+            return
+
+        for symbol, combo in stale_pairs:
+            if combo != "mexc_spot+mexc_futures":
+                continue
+            try:
+                self._fetch_rest_mexc_pair(symbol, combo)
+            except Exception as e:
+                logger.debug("REST fallback for %s/%s failed: %s", symbol, combo, e)
+
+    def _fetch_rest_mexc_pair(self, symbol: str, combo: str) -> None:
+        from mexc_monitor.client import fetch_futures_snapshot_rows, fetch_merged_snapshot_rows
+        from mexc_monitor.config import DEFAULT_SETTINGS
+
+        cfg = DEFAULT_SETTINGS
+        spot_sym = symbol.upper()
+        fut_sym = _norm_futures_symbol(spot_to_futures_symbol(spot_sym) or "")
+
+        if not fut_sym:
+            return
+
+        spot_rows = fetch_merged_snapshot_rows(cfg)
+        spot_row = next((r for r in spot_rows if r.symbol == spot_sym), None)
+
+        fut_rows = fetch_futures_snapshot_rows(cfg)
+        fut_row = next((r for r in fut_rows if r.symbol == fut_sym), None)
+
+        if spot_row is None or fut_row is None:
+            return
+
+        now_ms = int(time.time() * 1000)
+        key = (symbol, combo)
+
+        with self._lock:
+            legs = self._legs.get(key)
+            if legs is None:
+                return
+
+            legs["spot"].bid = spot_row.bid
+            legs["spot"].ask = spot_row.ask
+            legs["spot"].mid = spot_row.mid
+            legs["spot"].last_update_ms = now_ms
+
+            legs["futures"].bid = fut_row.bid
+            legs["futures"].ask = fut_row.ask
+            legs["futures"].mid = fut_row.mid
+            legs["futures"].last_update_ms = now_ms
+
+            self._recompute_basis(symbol, combo, legs)
+
+        logger.debug(
+            "REST fallback updated %s/%s: spot_mid=%.4f fut_mid=%.4f",
+            symbol, combo, spot_row.mid, fut_row.mid,
+        )
 
 
 def compute_basis_snapshot(
@@ -342,23 +461,18 @@ def compute_basis_snapshot(
     basis_abs = futures_mid - spot_mid
     basis_bps = 10000.0 * basis_abs / spot_mid if spot_mid > 0 else 0.0
 
-    # Executable basis for cash-and-carry: sell futures (at bid) + buy spot (at ask)
     executable_cc_bps = (
         (futures_bid - spot_ask) / spot_mid * 10000.0 - (spot_fee_bps + futures_fee_bps)
         if spot_mid > 0
         else 0.0
     )
 
-    # Executable basis for reverse cash-and-carry: sell spot (at bid) + buy futures (at ask)
     executable_rcc_bps = (
         (spot_bid - futures_ask) / spot_mid * 10000.0 - (spot_fee_bps + futures_fee_bps)
         if spot_mid > 0
         else 0.0
     )
 
-    # Estimated APY from basis — uses executable basis (after fees) minus
-    # exit fees, not raw mid-mid basis, to avoid overstating returns.
-    # Full round-trip: entry fees (in executable) + exit fees = 2 × (spot+fut).
     best_exec_bps = max(executable_cc_bps, executable_rcc_bps)
     exit_fees_bps = spot_fee_bps + futures_fee_bps
     realistic_pnl_bps = best_exec_bps - exit_fees_bps

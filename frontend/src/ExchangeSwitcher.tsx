@@ -1,41 +1,25 @@
-import type { Exchange } from "./types";
+import {
+  EXCHANGE_GROUPS,
+  type Exchange,
+  type ExchangeGroup,
+} from "./types";
 
-/** Exchanges that support both spot and futures markets (show market switcher). */
-export const MULTI_MARKET_EXCHANGES: Exchange[] = ["mexc", "binance", "okx", "gateio", "htx"];
-
-export interface ExchangeGroup {
-  label: string;
-  exchanges: { value: Exchange; label: string }[];
-}
-
-export const EXCHANGE_GROUPS: ExchangeGroup[] = [
-  {
-    label: "CEX",
-    exchanges: [
-      { value: "mexc", label: "MEXC" },
-      { value: "binance", label: "Binance" },
-      { value: "bybit", label: "Bybit" },
-      { value: "okx", label: "OKX" },
-      { value: "gateio", label: "Gate.io" },
-      { value: "htx", label: "HTX" },
-      { value: "bitget", label: "Bitget" },
-    ],
-  },
-  {
-    label: "DEX",
-    exchanges: [
-      { value: "asterdex", label: "AsterDEX" },
-      { value: "lighter", label: "Lighter" },
-      { value: "dydx", label: "dYdX" },
-      { value: "hyperliquid", label: "Hyperliquid" },
-    ],
-  },
-];
+// Канонический реестр бирж живёт в types.ts (единый источник).
+// Реэкспортируем сюда для обратной совместимости с существующими импортами.
+export {
+  MULTI_MARKET_EXCHANGES,
+  EXCHANGE_GROUPS,
+  ALL_EXCHANGES,
+  EXCHANGE_LABELS,
+} from "./types";
+export type { ExchangeGroup };
 
 interface ExchangeSwitcherProps {
   active: Exchange;
   onChange: (exchange: Exchange) => void;
   disabled?: boolean;
+  /** Компактный режим: без групповых лейблов, один ряд (для шапки Layout). */
+  compact?: boolean;
   /** Последнее известное число пар в снимке по бирже (бейдж на плитке). */
   pairCounts?: Partial<Record<Exchange, number>>;
 }
@@ -44,8 +28,38 @@ export function ExchangeSwitcher({
   active,
   onChange,
   disabled = false,
+  compact = false,
   pairCounts,
 }: ExchangeSwitcherProps) {
+  if (compact) {
+    // Компактный режим: плоский список бирж одним рядом, без заголовков групп.
+    return (
+      <div className="flex flex-wrap items-center gap-0.5 rounded-lg bg-surface p-0.5 ring-1 ring-line">
+        {EXCHANGE_GROUPS.flatMap((g) => g.exchanges).map(
+          ({ value, label }) => {
+            const isActive = active === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(value)}
+                title={label}
+                className={`rounded px-1.5 py-0.5 text-[11px] font-medium transition ${
+                  isActive
+                    ? "bg-accent text-white"
+                    : "text-ink-muted hover:text-ink"
+                } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                {label}
+              </button>
+            );
+          },
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-1 rounded-xl bg-surface p-1 ring-1 ring-line">
       {EXCHANGE_GROUPS.map((group) => (

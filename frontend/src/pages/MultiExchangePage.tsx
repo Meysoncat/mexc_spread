@@ -2,15 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { apiUrl } from "../config";
 import { EXCHANGE_GROUPS } from "../ExchangeSwitcher";
-import type { Exchange, MarketRow, SnapshotResponse } from "../types";
+import {
+  EXCHANGE_LABELS,
+  type Exchange,
+  type MarketRow,
+  type SnapshotResponse,
+} from "../types";
 
 /** Все биржи из переключателя (CEX + DEX). */
 const ALL_EXCHANGES: { value: Exchange; label: string }[] =
   EXCHANGE_GROUPS.flatMap((g) => g.exchanges);
 
-const EXCHANGE_LABELS: Record<string, string> = Object.fromEntries(
-  ALL_EXCHANGES.map((e) => [e.value, e.label]),
-);
+/** Метка биржи по строковому ключу (безопасно для произвольных строк). */
+function label(ex: string): string {
+  return EXCHANGE_LABELS[ex as Exchange] ?? ex;
+}
 
 /** BTCUSDT / BTC_USDT / BTCUSD → BTC (общий ключ сопоставления между биржами). */
 function baseFromSymbol(symbol: string): string | null {
@@ -259,7 +265,7 @@ export function MultiExchangePage() {
               .filter(([ex, msg]) => msg && selected.includes(ex as Exchange))
               .map(([ex, msg]) => (
                 <li key={ex}>
-                  <span className="font-medium">{EXCHANGE_LABELS[ex] ?? ex}</span>
+                  <span className="font-medium">{label(ex)}</span>
                   : {humanizeError(String(msg))}
                 </li>
               ))}
@@ -353,13 +359,13 @@ function MultiExchangeRow({
         <td className="px-3 py-2 font-mono">
           {fmt(row.bestBid.bid)}{" "}
           <span className="text-xs text-ink-muted">
-            {EXCHANGE_LABELS[row.bestBid.exchange]}
+            {label(row.bestBid.exchange)}
           </span>
         </td>
         <td className="px-3 py-2 font-mono">
           {fmt(row.bestAsk.ask)}{" "}
           <span className="text-xs text-ink-muted">
-            {EXCHANGE_LABELS[row.bestAsk.exchange]}
+            {label(row.bestAsk.exchange)}
           </span>
         </td>
         <td
@@ -393,7 +399,7 @@ function MultiExchangeRow({
                   .map((q) => (
                     <tr key={q.exchange} className="border-t border-line/40">
                       <td className="px-2 py-1 font-medium text-ink">
-                        {EXCHANGE_LABELS[q.exchange]}
+                        {label(q.exchange)}
                         {q.exchange === row.bestBid.exchange && (
                           <span className="ml-1 text-emerald-600 dark:text-emerald-400">
                             bid★
