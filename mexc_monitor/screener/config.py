@@ -52,7 +52,7 @@ class ScreenerConfig:
 
     # ── Engine cadence / output ──────────────────────────────────────────────
     scan_interval_sec: float = 2.0
-    top_limit: int = 50
+    top_limit: int = 10  # genuine spread opportunities are rare (~a few at a time)
     rolling_window: int = 40  # recent spread samples kept per symbol
 
     # ── Scorer weights ───────────────────────────────────────────────────────
@@ -62,9 +62,26 @@ class ScreenerConfig:
     w_stab: float = 0.5
     w_vol: float = 0.4
     w_stale: float = 0.05
+    w_zscore: float = 0.3
     # Scorer normalizers
     spread_cap_bps: float = 50.0  # cap on spread reward
     liq_ref_usdt: float = 1000.0  # log1p(l1_notional / liq_ref)
+    zscore_cap: float = 4.0  # cap on z-score reward
+
+    # ── Adaptive thresholds ──────────────────────────────────────────────────
+    # When on, the spread-size decision is made relative to the live universe
+    # (percentile gate) and per-symbol (z-score gate) — so the screener
+    # self-scales to market regime without manual threshold tuning.
+    adaptive_mode: bool = True
+    spread_percentile: float = 95.0  # gate: net_spread in top (100-pct)% of universe
+    spread_percentile_min: float = 80.0  # calibration clamp
+    spread_percentile_max: float = 99.0  # calibration clamp
+    calibration_interval_sec: float = 120.0
+    target_opportunity_min: int = 2
+    target_opportunity_max: int = 5
+    calibration_step: float = 1.0  # percentile nudge per calibration tick
+    use_spread_zscore: bool = True
+    min_spread_zscore: float = 1.0
 
 
 DEFAULT_CONFIG = ScreenerConfig()
@@ -143,6 +160,13 @@ def _apply_env_overrides(cfg: ScreenerConfig) -> ScreenerConfig:
 
 def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
     """Return a new config with a validated patch applied (used by PATCH endpoint)."""
+    bool_fields = {"adaptive_mode", "use_spread_zscore"}
+    int_fields = {
+        "top_limit",
+        "rolling_window",
+        "target_opportunity_min",
+        "target_opportunity_max",
+    }
     fields_k = set(cfg.__dataclass_fields__)
     kw: dict = {}
     for k, v in patch.items():
@@ -154,8 +178,12 @@ def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
             else:
                 items = list(v)
             kw[k] = tuple(str(s).upper() for s in items)
-        elif k in {"top_limit", "rolling_window"}:
-            kw[k] = max(1, int(v))
+        elif k in bool_fields:
+            kw[k] = (
+                v if isinstance(v, bool) else str(v).strip().lower() in ("true", "1", "yes")
+            )
+        elif k in int_fields:
+            kw[k] = int(v)
         else:
             try:
                 kw[k] = float(v)

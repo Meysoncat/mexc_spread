@@ -6,6 +6,13 @@ Cadence is bounded by the snapshot cache (~3 s); the engine polls every
 arrives (so the rolling window reflects real data cadence, not poll cadence).
 Lifetime still advances with wall-clock on every poll, since it is
 ``now − first_above_ms``.
+
+When ``adaptive_mode`` is on, the spread-size decision is regime-relative:
+a percentile cutoff of the live universe (``compute_percentile_cutoff``) and a
+per-symbol z-score gate replace manual threshold tuning. A slow controller
+(``_calibrate`` / ``_calibrate_step``) nudges the percentile so the opportunity
+count stays within a target band (genuine opportunities are rare — a few at a
+time).
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ import math
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -25,7 +33,11 @@ from mexc_monitor.screener.config import (
     config_to_dict,
     load_screener_config,
 )
-from mexc_monitor.screener.filters import passes_gates, score_candidate
+from mexc_monitor.screener.filters import (
+    compute_percentile_cutoff,
+    passes_gates,
+    score_candidate,
+)
 from mexc_monitor.screener.models import Candidate, candidate_to_opportunity
 from mexc_monitor.screener.state import ScreenerState
 
@@ -74,6 +86,37 @@ def _parse_iso_ms(iso: str | None) -> float | None:
         return None
 
 
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 == 1 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _calibrate_step(
+    current_percentile: float,
+    median_count: float,
+    cfg: ScreenerConfig,
+) -> float:
+    """Pure controller: nudge the spread percentile so the opportunity count
+    stays within ``[target_opportunity_min, target_opportunity_max]``.
+
+    Too many opportunities → raise the percentile (stricter cutoff → fewer
+    pass); too few → lower it; in-band → unchanged. Clamps to the configured
+    ``[spread_percentile_min, spread_percentile_max]`` range.
+    """
+    if median_count > cfg.target_opportunity_max:
+        nxt = current_percentile + cfg.calibration_step
+    elif median_count < cfg.target_opportunity_min:
+        nxt = current_percentile - cfg.calibration_step
+    else:
+        nxt = current_percentile
+    return max(
+        cfg.spread_percentile_min, min(cfg.spread_percentile_max, nxt)
+    )
+
+
 class ScreenerEngine:
     def __init__(self, config: ScreenerConfig | None = None) -> None:
         self._cfg = config or load_screener_config()
@@ -83,9 +126,15 @@ class ScreenerEngine:
         self._scanned_at_iso: str | None = None
         self._total_universe = 0
         self._last_loaded_at: str | None = None
+        self._percentile_cutoff: float | None = None
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+
+        # Calibration state
+        self._count_history: deque[int] = deque(maxlen=120)
+        self._last_calibrate_ms: float = 0.0
+        self._calibrated_at_iso: str | None = None
 
         # SSE fan-out
         self._subs: list[queue.Queue] = []
@@ -133,12 +182,20 @@ class ScreenerEngine:
 
     def get_status(self) -> dict:
         with self._lock:
+            with self._cfg_lock:
+                cfg = self._cfg
             return {
                 "running": self._thread is not None and self._thread.is_alive(),
                 "opportunities": list(self._opps),
                 "opportunity_count": len(self._opps),
                 "scanned_at": self._scanned_at_iso,
                 "total_universe": self._total_universe,
+                "adaptive_mode": cfg.adaptive_mode,
+                "spread_percentile": cfg.spread_percentile,
+                "percentile_cutoff": self._percentile_cutoff,
+                "calibrated_at": self._calibrated_at_iso,
+                "target_opportunity_min": cfg.target_opportunity_min,
+                "target_opportunity_max": cfg.target_opportunity_max,
             }
 
     # ── SSE pub/sub ──────────────────────────────────────────────────────────
@@ -175,6 +232,13 @@ class ScreenerEngine:
         while not self._stop_event.is_set():
             try:
                 self._scan_once()
+                with self._cfg_lock:
+                    cal_interval_ms = self._cfg.calibration_interval_sec * 1000.0
+                if (time.time() * 1000.0 - self._last_calibrate_ms) >= cal_interval_ms:
+                    try:
+                        self._calibrate()
+                    except Exception:
+                        logger.exception("Screener calibration error")
             except Exception:
                 logger.exception("Screener scan error")
             with self._cfg_lock:
@@ -192,7 +256,6 @@ class ScreenerEngine:
         if len(df) == 0:
             return
 
-        # observed_at is uniform across rows (set at load time).
         observed_at = str(getattr(df.iloc[0], "observed_at", "") or "")
         now_ms = time.time() * 1000.0
         observed_ms = _parse_iso_ms(observed_at)
@@ -206,8 +269,11 @@ class ScreenerEngine:
 
         threshold = cfg.min_net_spread_bps
         active: set[str] = set()
-        scored: list[tuple[float, Candidate]] = []
 
+        # Phase A — build candidates with state metrics; update rolling state
+        # only on genuinely new snapshots.
+        candidates: list[Candidate] = []
+        all_nets: list[float] = []
         for row in df.itertuples(index=False):
             symbol = getattr(row, "symbol", None)
             if not symbol or not isinstance(symbol, str):
@@ -233,6 +299,7 @@ class ScreenerEngine:
 
             lifetime = self._state.get_lifetime(sym, now_ms)
             pct_above, spread_std = self._state.get_rolling(sym, threshold)
+            zscore = self._state.get_zscore(sym, spread_bps)
 
             c = Candidate(
                 symbol=sym,
@@ -248,18 +315,35 @@ class ScreenerEngine:
                 lifetime_sec=lifetime,
                 pct_time_above=pct_above,
                 spread_std=spread_std,
+                spread_zscore=zscore,
             )
-
-            passed, _reasons = passes_gates(c, cfg)
-            if not passed:
-                continue
-            score, breakdown = score_candidate(c, cfg)
-            scored.append((score, replace(c, score=score, score_breakdown=breakdown)))
+            candidates.append(c)
+            if net is not None:
+                all_nets.append(net)
 
         if is_new_snapshot:
             self._state.prune(active)
             with self._lock:
                 self._last_loaded_at = observed_at
+
+        # Phase B — adaptive percentile cutoff over the live universe.
+        if cfg.adaptive_mode:
+            percentile_cutoff = compute_percentile_cutoff(
+                all_nets, cfg.spread_percentile
+            )
+            adaptive_ctx: dict | None = {"percentile_cutoff": percentile_cutoff}
+        else:
+            percentile_cutoff = None
+            adaptive_ctx = None
+
+        # Phase C — gate + score.
+        scored: list[tuple[float, Candidate]] = []
+        for c in candidates:
+            passed, _reasons = passes_gates(c, cfg, adaptive_ctx)
+            if not passed:
+                continue
+            score, breakdown = score_candidate(c, cfg)
+            scored.append((score, replace(c, score=score, score_breakdown=breakdown)))
 
         scored.sort(key=lambda t: t[0], reverse=True)
         top = scored[: cfg.top_limit]
@@ -274,12 +358,46 @@ class ScreenerEngine:
             self._opps = opportunities
             self._scanned_at_iso = scanned_at
             self._total_universe = len(active)
+            self._percentile_cutoff = percentile_cutoff
+            self._count_history.append(len(opportunities))
 
         self._notify_subs(
             {
                 "scanned_at": scanned_at,
                 "total_universe": len(active),
                 "opportunity_count": len(opportunities),
+                "spread_percentile": cfg.spread_percentile,
+                "percentile_cutoff": percentile_cutoff,
                 "opportunities": opportunities,
             }
         )
+
+    # ── calibration ──────────────────────────────────────────────────────────
+
+    def _calibrate(self) -> None:
+        with self._cfg_lock:
+            cfg = self._cfg
+        if not cfg.adaptive_mode:
+            self._last_calibrate_ms = time.time() * 1000.0
+            return
+        with self._lock:
+            counts = [float(x) for x in self._count_history]
+        if not counts:
+            self._last_calibrate_ms = time.time() * 1000.0
+            return
+        med = _median(counts)
+        with self._cfg_lock:
+            cur = self._cfg.spread_percentile
+            new_pct = _calibrate_step(cur, med, self._cfg)
+            if new_pct != cur:
+                self._cfg = replace(self._cfg, spread_percentile=new_pct)
+                logger.info(
+                    "Screener calibration: percentile %.1f -> %.1f (median count %.1f, target %d-%d)",
+                    cur,
+                    new_pct,
+                    med,
+                    self._cfg.target_opportunity_min,
+                    self._cfg.target_opportunity_max,
+                )
+        self._last_calibrate_ms = time.time() * 1000.0
+        self._calibrated_at_iso = datetime.now(timezone.utc).isoformat()

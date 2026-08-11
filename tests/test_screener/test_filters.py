@@ -1,11 +1,18 @@
-"""Unit tests for the screener gate predicates and scorer (pure functions)."""
+"""Unit tests for the screener gate predicates, adaptive gates, scorer and
+percentile helper (pure functions)."""
 
 from __future__ import annotations
+
+import math
 
 import pytest
 
 from mexc_monitor.screener.config import ScreenerConfig
-from mexc_monitor.screener.filters import passes_gates, score_candidate
+from mexc_monitor.screener.filters import (
+    compute_percentile_cutoff,
+    passes_gates,
+    score_candidate,
+)
 from mexc_monitor.screener.models import Candidate
 
 
@@ -24,6 +31,7 @@ def _candidate(**overrides) -> Candidate:
         lifetime_sec=30.0,
         pct_time_above=90.0,
         spread_std=2.0,
+        spread_zscore=2.0,
     )
     base.update(overrides)
     return Candidate(**base)
@@ -33,7 +41,7 @@ def _cfg(**overrides) -> ScreenerConfig:
     return ScreenerConfig(**overrides)
 
 
-# ── passes_gates ────────────────────────────────────────────────────────────
+# ── absolute gates (unchanged behaviour) ────────────────────────────────────
 
 
 def test_clean_candidate_passes():
@@ -106,7 +114,101 @@ def test_multiple_failures_all_reported():
     assert len(reasons) == 3
 
 
-# ── score_candidate ─────────────────────────────────────────────────────────
+# ── adaptive percentile gate ────────────────────────────────────────────────
+
+
+def test_adaptive_percentile_gate_passes_above_cutoff():
+    c = _candidate(net_spread_bps=50.0)
+    passed, _ = passes_gates(c, _cfg(adaptive_mode=True), {"percentile_cutoff": 30.0})
+    assert passed
+
+
+def test_adaptive_percentile_gate_fails_below_cutoff():
+    c = _candidate(net_spread_bps=10.0)
+    passed, reasons = passes_gates(
+        c, _cfg(adaptive_mode=True), {"percentile_cutoff": 30.0}
+    )
+    assert not passed
+    assert any("percentile cutoff" in r for r in reasons)
+
+
+def test_adaptive_gate_skipped_when_ctx_missing():
+    # adaptive_mode on but no ctx → percentile gate must NOT block.
+    c = _candidate(net_spread_bps=3.0)
+    passed, reasons = passes_gates(c, _cfg(adaptive_mode=True), None)
+    assert passed
+    assert not any("percentile" in r for r in reasons)
+
+
+def test_adaptive_disabled_ignores_ctx():
+    # adaptive_mode off → even a huge cutoff must not block.
+    c = _candidate(net_spread_bps=3.0)
+    passed, _ = passes_gates(c, _cfg(adaptive_mode=False), {"percentile_cutoff": 999.0})
+    assert passed
+
+
+# ── z-score gate ────────────────────────────────────────────────────────────
+
+
+def test_zscore_gate_passes_when_high():
+    c = _candidate(spread_zscore=2.5)
+    passed, _ = passes_gates(c, _cfg(use_spread_zscore=True, min_spread_zscore=1.0))
+    assert passed
+
+
+def test_zscore_gate_fails_when_low():
+    c = _candidate(spread_zscore=0.2)
+    passed, reasons = passes_gates(c, _cfg(use_spread_zscore=True, min_spread_zscore=1.0))
+    assert not passed
+    assert any("z-score" in r for r in reasons)
+
+
+def test_zscore_gate_fails_when_none():
+    c = _candidate(spread_zscore=None)
+    passed, reasons = passes_gates(c, _cfg(use_spread_zscore=True, min_spread_zscore=1.0))
+    assert not passed
+    assert any("z-score" in r for r in reasons)
+
+
+def test_zscore_gate_disabled():
+    c = _candidate(spread_zscore=None)
+    passed, _ = passes_gates(c, _cfg(use_spread_zscore=False))
+    assert passed
+
+
+# ── compute_percentile_cutoff ───────────────────────────────────────────────
+
+
+def test_percentile_empty_returns_zero():
+    assert compute_percentile_cutoff([], 95.0) == 0.0
+
+
+def test_percentile_single_returns_that_value():
+    assert compute_percentile_cutoff([7.5], 95.0) == 7.5
+
+
+def test_percentile_median_interpolation():
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    assert compute_percentile_cutoff(vals, 50.0) == pytest.approx(5.5)
+
+
+def test_percentile_95_high_end():
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    # rank = 0.95 * 9 = 8.55 → between index 8 (9.0) and 9 (10.0) → 9.55
+    assert compute_percentile_cutoff(vals, 95.0) == pytest.approx(9.55)
+
+
+def test_percentile_filters_none_and_nan():
+    assert compute_percentile_cutoff([1.0, None, float("nan"), 3.0], 50.0) == pytest.approx(2.0)
+
+
+def test_percentile_clamps_out_of_range_pct():
+    vals = [1.0, 2.0, 3.0]
+    assert compute_percentile_cutoff(vals, 200.0) == 3.0  # max
+    assert compute_percentile_cutoff(vals, -5.0) == 1.0  # min
+
+
+# ── scorer ───────────────────────────────────────────────────────────────────
 
 
 def test_score_breakdown_has_all_terms():
@@ -118,8 +220,8 @@ def test_score_breakdown_has_all_terms():
         "stability",
         "volatility",
         "staleness",
+        "zscore",
     }
-    # Volatility and staleness are penalties (non-positive for non-negative inputs).
     assert breakdown["volatility"] <= 0
     assert breakdown["staleness"] <= 0
 
@@ -127,14 +229,11 @@ def test_score_breakdown_has_all_terms():
 def test_higher_net_spread_scores_higher():
     low = _candidate(net_spread_bps=5.0)
     high = _candidate(net_spread_bps=40.0)
-    s_low, _ = score_candidate(low, _cfg())
-    s_high, _ = score_candidate(high, _cfg())
-    assert s_high > s_low
+    assert score_candidate(high, _cfg())[0] > score_candidate(low, _cfg())[0]
 
 
 def test_spread_reward_capped():
     cfg = _cfg(spread_cap_bps=20.0, w_spread=1.0)
-    # Beyond the cap, the spread term must not grow.
     _, b1 = score_candidate(_candidate(net_spread_bps=20.0), cfg)
     _, b2 = score_candidate(_candidate(net_spread_bps=200.0), cfg)
     assert b1["spread"] == pytest.approx(b2["spread"])
@@ -143,30 +242,35 @@ def test_spread_reward_capped():
 def test_higher_lifetime_scores_higher():
     short = _candidate(lifetime_sec=8.0)
     long_ = _candidate(lifetime_sec=120.0)
-    s_short, _ = score_candidate(short, _cfg())
-    s_long, _ = score_candidate(long_, _cfg())
-    assert s_long > s_short
+    assert score_candidate(long_, _cfg())[0] > score_candidate(short, _cfg())[0]
 
 
 def test_more_liquid_scores_higher():
     thin = _candidate(l1_notional=100.0)
     deep = _candidate(l1_notional=20_000.0)
-    s_thin, _ = score_candidate(thin, _cfg())
-    s_deep, _ = score_candidate(deep, _cfg())
-    assert s_deep > s_thin
+    assert score_candidate(deep, _cfg())[0] > score_candidate(thin, _cfg())[0]
 
 
 def test_volatility_penalizes():
     calm = _candidate(spread_std=1.0)
     jumpy = _candidate(spread_std=20.0)
-    s_calm, _ = score_candidate(calm, _cfg())
-    s_jumpy, _ = score_candidate(jumpy, _cfg())
-    assert s_calm > s_jumpy
+    assert score_candidate(calm, _cfg())[0] > score_candidate(jumpy, _cfg())[0]
 
 
 def test_staleness_penalizes():
     fresh = _candidate(tick_age_ms=500.0)
     stale = _candidate(tick_age_ms=9_000.0)
-    s_fresh, _ = score_candidate(fresh, _cfg())
-    s_stale, _ = score_candidate(stale, _cfg())
-    assert s_fresh > s_stale
+    assert score_candidate(fresh, _cfg())[0] > score_candidate(stale, _cfg())[0]
+
+
+def test_higher_zscore_scores_higher():
+    low = _candidate(spread_zscore=0.5)
+    high = _candidate(spread_zscore=3.5)
+    assert score_candidate(high, _cfg())[0] > score_candidate(low, _cfg())[0]
+
+
+def test_zscore_reward_capped():
+    cfg = _cfg(w_zscore=1.0, zscore_cap=2.0)
+    _, b1 = score_candidate(_candidate(spread_zscore=2.0), cfg)
+    _, b2 = score_candidate(_candidate(spread_zscore=10.0), cfg)
+    assert b1["zscore"] == pytest.approx(b2["zscore"])

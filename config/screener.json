@@ -1,5 +1,5 @@
 {
-  "_comment": "Spread Screener defaults. Override per-field via SCREENER_* env vars or PATCH /api/screener/config. Market: MEXC spot, maker fee round-trip = 0.",
+  "_comment": "Spread Screener defaults. Market: MEXC spot, maker round-trip = 0. Adaptive mode auto-scales the spread gate to the live universe (percentile + per-symbol z-score) and a controller nudges the percentile to keep opportunity count in [target_opportunity_min, target_opportunity_max] (genuine opportunities are rare). Override via SCREENER_* env or PATCH /api/screener/config.",
   "min_net_spread_bps": 3.0,
   "max_spread_bps": 200.0,
   "min_l1_notional_usdt": 100.0,
@@ -20,7 +20,7 @@
   ],
   "maker_fee_round_trip_bps": 0.0,
   "scan_interval_sec": 2.0,
-  "top_limit": 50,
+  "top_limit": 10,
   "rolling_window": 40,
   "w_spread": 1.0,
   "w_liq": 0.6,
@@ -28,6 +28,18 @@
   "w_stab": 0.5,
   "w_vol": 0.4,
   "w_stale": 0.05,
+  "w_zscore": 0.3,
   "spread_cap_bps": 50.0,
-  "liq_ref_usdt": 1000.0
+  "liq_ref_usdt": 1000.0,
+  "zscore_cap": 4.0,
+  "adaptive_mode": true,
+  "spread_percentile": 95.0,
+  "spread_percentile_min": 80.0,
+  "spread_percentile_max": 99.0,
+  "calibration_interval_sec": 120.0,
+  "target_opportunity_min": 2,
+  "target_opportunity_max": 5,
+  "calibration_step": 1.0,
+  "use_spread_zscore": true,
+  "min_spread_zscore": 1.0
 }

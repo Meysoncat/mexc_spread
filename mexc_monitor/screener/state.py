@@ -87,6 +87,32 @@ class ScreenerState:
         )
         return (pct, math.sqrt(var))
 
+    def get_zscore(
+        self, symbol: str, current_spread: float | None
+    ) -> float | None:
+        """Per-symbol z-score of the current spread vs its recent rolling window.
+
+        ``z = (current - mean) / std``. Returns None when there is no history or
+        the spread has been flat (std == 0). Used by the adaptive z-score gate
+        to flag spreads that are unusually wide *for this specific coin*.
+        """
+        if current_spread is None:
+            return None
+        sym = symbol.upper()
+        with self._lock:
+            dq = self._recent.get(sym)
+            if not dq:
+                return None
+            spreads = [s for _, s in dq]
+        if len(spreads) < 2:
+            return None
+        mean = sum(spreads) / len(spreads)
+        var = sum((s - mean) ** 2 for s in spreads) / (len(spreads) - 1)
+        std = math.sqrt(var)
+        if std <= 0:
+            return None
+        return (float(current_spread) - mean) / std
+
     def prune(self, active_symbols: set[str]) -> None:
         """Drop state for symbols no longer present in the snapshot."""
         active = {s.upper() for s in active_symbols}
