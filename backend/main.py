@@ -146,7 +146,17 @@ class _FuturesArbAdapter:
     def trigger_kill_switch(self) -> None:
         _futures_arb_risk.activate_kill_switch()
     def get_status(self) -> dict:
-        return _futures_arb_engine.get_status()
+        base = _futures_arb_engine.get_status()
+        # Feed realized PnL into the portfolio drawdown calc
+        # (_aggregate_pnl reads stats.net_pnl_usdt from each registered engine).
+        try:
+            pnl = _futures_arb_position_mgr.get_stats().total_net_pnl_usdt
+        except Exception:
+            pnl = 0.0
+        stats = base.get("stats") or {}
+        stats["net_pnl_usdt"] = pnl
+        base["stats"] = stats
+        return base
 
 
 class _MetaScalpAdapter:
@@ -183,6 +193,42 @@ class _MetaScalpAdapter:
             "positions_count": positions_count,
             "orders_count": orders_count,
         }
+
+
+class _TradingAdapter:
+    """Adapter for TradingEngine (default MEXC/spot) → PortfolioRiskManager.
+
+    TradingEngine tracks only a count of open orders, not per-position notional,
+    so exposure is estimated as open_orders * order_quote_notional (conservative:
+    every open limit order counts as full notional exposure). Realized PnL is not
+    tracked by this engine, so it does not contribute to the drawdown calc.
+    """
+    @property
+    def engine_name(self) -> str:
+        return "trading"
+
+    def _snapshot(self) -> tuple[int, float, str]:
+        st = _trading_engine.status()
+        state = st.get("state", {}) or {}
+        settings = st.get("settings", {}) or {}
+        open_orders = int(state.get("open_orders", 0) or 0)
+        notional_per = float(settings.get("order_quote_notional", 0.0) or 0.0)
+        symbol = str(settings.get("symbol", "") or "")
+        return open_orders, notional_per, symbol
+
+    def get_open_notional(self) -> float:
+        open_orders, notional_per, _ = self._snapshot()
+        return open_orders * notional_per
+
+    def get_open_symbols(self) -> list[str]:
+        open_orders, _, symbol = self._snapshot()
+        return [symbol] if open_orders > 0 and symbol else []
+
+    def trigger_kill_switch(self) -> None:
+        _trading_engine.set_kill_switch(True)
+
+    def get_status(self) -> dict:
+        return _trading_engine.status()
 
 
 _portfolio_risk = PortfolioRiskManager(PortfolioRiskSettings())
@@ -3298,6 +3344,7 @@ _portfolio_risk.register_engine(_CaptureAdapter())
 _portfolio_risk.register_engine(_ArbitrageAdapter())
 _portfolio_risk.register_engine(_FuturesArbAdapter())
 _portfolio_risk.register_engine(_MetaScalpAdapter())
+_portfolio_risk.register_engine(_TradingAdapter())
 
 # DensityWatcher — фоновый мониторинг плотности стакана
 from mexc_monitor.density_watcher import DensityWatcher
