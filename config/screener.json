@@ -1,0 +1,33 @@
+{
+  "_comment": "Spread Screener defaults. Override per-field via SCREENER_* env vars or PATCH /api/screener/config. Market: MEXC spot, maker fee round-trip = 0.",
+  "min_net_spread_bps": 3.0,
+  "max_spread_bps": 200.0,
+  "min_l1_notional_usdt": 100.0,
+  "min_volume_24h_usdt": 100000.0,
+  "min_lifetime_sec": 8.0,
+  "max_tick_age_ms": 10000.0,
+  "symbol_blacklist": [
+    "USDCUSDT",
+    "FDUSDUSDT",
+    "TUSDUSDT",
+    "BUSDUSDT",
+    "USDPUSDT",
+    "PAXGUSDT",
+    "XAUTUSDT",
+    "EURUSDT",
+    "GBPUSDT",
+    "WBTCUSDT"
+  ],
+  "maker_fee_round_trip_bps": 0.0,
+  "scan_interval_sec": 2.0,
+  "top_limit": 50,
+  "rolling_window": 40,
+  "w_spread": 1.0,
+  "w_liq": 0.6,
+  "w_life": 0.8,
+  "w_stab": 0.5,
+  "w_vol": 0.4,
+  "w_stale": 0.05,
+  "spread_cap_bps": 50.0,
+  "liq_ref_usdt": 1000.0
+}

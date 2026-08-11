@@ -1,0 +1,164 @@
+"""Screener configuration — all tunable thresholds and scorer weights.
+
+Loaded from ``config/screener.json`` with ``SCREENER_*`` env overrides, and
+hot-reloadable at runtime via :func:`apply_config_patch` (PATCH endpoint).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _default_blacklist() -> tuple[str, ...]:
+    # Stablecoins / FX-like pairs whose wide "spread" is noise, not opportunity.
+    return (
+        "USDCUSDT",
+        "FDUSDUSDT",
+        "TUSDUSDT",
+        "BUSDUSDT",
+        "USDPUSDT",
+        "PAXGUSDT",
+        "XAUTUSDT",
+        "EURUSDT",
+        "GBPUSDT",
+        "WBTCUSDT",
+    )
+
+
+@dataclass
+class ScreenerConfig:
+    # ── Gate thresholds (hard cuts) ──────────────────────────────────────────
+    min_net_spread_bps: float = 3.0
+    max_spread_bps: float = 200.0  # sanity ceiling — wider = illiquid junk
+    min_l1_notional_usdt: float = 100.0
+    min_volume_24h_usdt: float = 100_000.0
+    min_lifetime_sec: float = 8.0  # spread must persist above threshold
+    max_tick_age_ms: float = 10_000.0
+    symbol_blacklist: tuple[str, ...] = field(default_factory=_default_blacklist)
+
+    # ── Economics ────────────────────────────────────────────────────────────
+    # Round-trip maker fee in bps (MEXC spot = 0). net_spread = spread - this.
+    maker_fee_round_trip_bps: float = 0.0
+
+    # ── Engine cadence / output ──────────────────────────────────────────────
+    scan_interval_sec: float = 2.0
+    top_limit: int = 50
+    rolling_window: int = 40  # recent spread samples kept per symbol
+
+    # ── Scorer weights ───────────────────────────────────────────────────────
+    w_spread: float = 1.0
+    w_liq: float = 0.6
+    w_life: float = 0.8
+    w_stab: float = 0.5
+    w_vol: float = 0.4
+    w_stale: float = 0.05
+    # Scorer normalizers
+    spread_cap_bps: float = 50.0  # cap on spread reward
+    liq_ref_usdt: float = 1000.0  # log1p(l1_notional / liq_ref)
+
+
+DEFAULT_CONFIG = ScreenerConfig()
+
+
+def _default_config_path() -> Path:
+    return _repo_root() / "config" / "screener.json"
+
+
+def config_to_dict(cfg: ScreenerConfig) -> dict:
+    d = asdict(cfg)
+    d["symbol_blacklist"] = list(d["symbol_blacklist"])
+    return d
+
+
+def load_screener_config(path: str | Path | None = None) -> ScreenerConfig:
+    """Load config from JSON (if present) with env overrides applied."""
+    cfg = ScreenerConfig()
+    p = Path(path) if path else _default_config_path()
+    if p.is_file():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            cfg = _config_from_dict(raw, cfg)
+        except Exception:
+            logger.exception("Failed to load screener config %s; using defaults", p)
+            cfg = ScreenerConfig()
+    return _apply_env_overrides(cfg)
+
+
+def _config_from_dict(raw: dict, base: ScreenerConfig) -> ScreenerConfig:
+    """Build a ScreenerConfig from a JSON dict, ignoring unknown keys."""
+    fields_k = {f for f in base.__dataclass_fields__}
+    kw: dict = {}
+    for k, v in raw.items():
+        if k not in fields_k:
+            continue
+        if k == "symbol_blacklist":
+            kw[k] = tuple(str(s).strip().upper() for s in v if str(s).strip())
+        else:
+            kw[k] = v
+    return replace(base, **kw)
+
+
+def _apply_env_overrides(cfg: ScreenerConfig) -> ScreenerConfig:
+    """Apply SCREENER_* env vars on top of the file-loaded config."""
+    overrides: dict = {}
+
+    def _num(key: str, attr: str) -> None:
+        val = os.environ.get(key)
+        if val is None or val.strip() == "":
+            return
+        try:
+            overrides[attr] = float(val)
+        except ValueError:
+            logger.warning("SCREENER env %s=%r is not a number", key, val)
+
+    _num("SCREENER_MIN_NET_SPREAD_BPS", "min_net_spread_bps")
+    _num("SCREENER_MAX_SPREAD_BPS", "max_spread_bps")
+    _num("SCREENER_MIN_L1_NOTIONAL_USDT", "min_l1_notional_usdt")
+    _num("SCREENER_MIN_VOLUME_24H_USDT", "min_volume_24h_usdt")
+    _num("SCREENER_MIN_LIFETIME_SEC", "min_lifetime_sec")
+    _num("SCREENER_MAKER_FEE_ROUND_TRIP_BPS", "maker_fee_round_trip_bps")
+    _num("SCREENER_SCAN_INTERVAL_SEC", "scan_interval_sec")
+    _num("SCREENER_TOP_LIMIT", "top_limit")  # type: ignore[arg-type]
+
+    bl = os.environ.get("SCREENER_SYMBOL_BLACKLIST")
+    if bl and bl.strip():
+        overrides["symbol_blacklist"] = tuple(
+            s.strip().upper() for s in bl.split(",") if s.strip()
+        )
+
+    if not overrides:
+        return cfg
+    return replace(cfg, **overrides)
+
+
+def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
+    """Return a new config with a validated patch applied (used by PATCH endpoint)."""
+    fields_k = set(cfg.__dataclass_fields__)
+    kw: dict = {}
+    for k, v in patch.items():
+        if k not in fields_k:
+            continue
+        if k == "symbol_blacklist":
+            if isinstance(v, str):
+                items = [s.strip() for s in v.split(",") if s.strip()]
+            else:
+                items = list(v)
+            kw[k] = tuple(str(s).upper() for s in items)
+        elif k in {"top_limit", "rolling_window"}:
+            kw[k] = max(1, int(v))
+        else:
+            try:
+                kw[k] = float(v)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"invalid value for {k}: {v!r}") from e
+    return replace(cfg, **kw)

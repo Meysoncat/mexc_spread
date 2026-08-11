@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
@@ -233,6 +233,9 @@ class _TradingAdapter:
 
 _portfolio_risk = PortfolioRiskManager(PortfolioRiskSettings())
 
+from mexc_monitor.screener import ScreenerEngine
+_screener_engine = ScreenerEngine()
+
 
 def _resolve_engine(
     exchange: str | None = None, market: str | None = None
@@ -258,6 +261,7 @@ def _startup_prefetch_futures_ws() -> None:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
     _portfolio_risk.start()
+    _screener_engine.start()
     _metascalp_poller.start()
     _metascalp_ws_bridge.start()
     _metascalp_auto_trader.start()
@@ -285,6 +289,7 @@ def _shutdown_workers() -> None:
 
     stop_ws_booktickers()
     _portfolio_risk.stop()
+    _screener_engine.stop()
     _registry.shutdown_all()
     stop_history_worker()
     stop_spot_orderbook_ws()
@@ -2581,6 +2586,89 @@ def spread_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ─── Spread Screener endpoints ────────────────────────────────────────────────
+
+
+@app.get("/api/screener/opportunities")
+def screener_opportunities(
+    limit: int = Query(50, ge=1, le=500, description="Max opportunities to return"),
+) -> dict:
+    """Current ranked tradeable-spread opportunities (MEXC spot)."""
+    opps = _screener_engine.get_opportunities(limit=limit)
+    status = _screener_engine.get_status()
+    return {
+        "ok": True,
+        "opportunities": opps,
+        "opportunity_count": len(opps),
+        "scanned_at": status["scanned_at"],
+        "total_universe": status["total_universe"],
+        "config": _screener_engine.get_config(),
+    }
+
+
+@app.get("/api/screener/stream")
+def screener_stream() -> StreamingResponse:
+    """SSE: push the ranked opportunities on every scan."""
+    import queue as _queue
+
+    q = _screener_engine.subscribe()
+
+    async def event_generator():
+        try:
+            # Initial snapshot so the client doesn't wait for the next scan.
+            status = _screener_engine.get_status()
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "scanned_at": status["scanned_at"],
+                        "total_universe": status["total_universe"],
+                        "opportunity_count": len(status["opportunities"]),
+                        "opportunities": status["opportunities"],
+                    }
+                )
+                + "\n\n"
+            )
+
+            while True:
+                try:
+                    payload = q.get(timeout=15.0)
+                    yield "data: " + json.dumps(payload) + "\n\n"
+                except _queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            _screener_engine.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/screener/config")
+def screener_config_get() -> dict:
+    """Current screener thresholds and scorer weights."""
+    return {"ok": True, "config": _screener_engine.get_config()}
+
+
+@app.patch("/api/screener/config")
+def screener_config_update(
+    patch: dict = Body(...),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Hot-update screener thresholds/weights (admin only)."""
+    try:
+        new_cfg = _screener_engine.update_config(patch)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "config": new_cfg}
 
 
 
