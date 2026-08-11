@@ -31,6 +31,7 @@ from mexc_monitor.trading.exchanges import Exchange, Market
 from mexc_monitor.ws_futures import ensure_started_from_settings
 from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_started
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
+from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,7 @@ def _startup_prefetch_futures_ws() -> None:
     ensure_started_from_settings(DEFAULT_SETTINGS)
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_orderbook_ws_started(DEFAULT_SETTINGS)
+    ensure_spot_deals_ws_started(DEFAULT_SETTINGS)
     if DEFAULT_SETTINGS.history_enabled:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
@@ -293,6 +295,7 @@ def _shutdown_workers() -> None:
     _registry.shutdown_all()
     stop_history_worker()
     stop_spot_orderbook_ws()
+    stop_spot_deals_ws()
     _metascalp_poller.stop()
     _metascalp_ws_bridge.stop()
     _metascalp_auto_trader.stop()
@@ -2458,6 +2461,49 @@ def spread_tracked_symbols() -> dict:
     """Список символов с данными в spread buffer."""
     symbols = sb_get_tracked_symbols()
     return {"ok": True, "symbols": symbols, "count": len(symbols)}
+
+
+# ─── Trade stats (spot deals WS → trade_buffer) ──────────────────────────────
+
+
+@app.get("/api/trades/symbols")
+def trades_tracked_symbols() -> dict:
+    """Символы с данными сделок в trade_buffer (плотность/имбаланс/VWAP)."""
+    from mexc_monitor import trade_buffer as tb
+
+    symbols = tb.get_tracked_symbols()
+    return {"ok": True, "symbols": symbols, "count": len(symbols)}
+
+
+@app.get("/api/trades/stats")
+def trades_stats(
+    symbol: str = Query(..., min_length=2, max_length=40),
+    period_sec: float = Query(60.0, ge=1.0, le=600.0),
+) -> dict:
+    """Агрегаты сделок за период: count, buy/sell split, объёмы, VWAP, имбаланс."""
+    from mexc_monitor import trade_buffer as tb
+
+    st = tb.get_stats(symbol.strip(), period_sec=period_sec)
+    if st is None:
+        return {"ok": True, "symbol": symbol.strip().upper(), "stats": None}
+    return {
+        "ok": True,
+        "symbol": st.symbol,
+        "stats": {
+            "period_sec": st.period_sec,
+            "count": st.count,
+            "buy_count": st.buy_count,
+            "sell_count": st.sell_count,
+            "volume_base": st.volume_base,
+            "volume_quote": st.volume_quote,
+            "buy_volume_quote": st.buy_volume_quote,
+            "sell_volume_quote": st.sell_volume_quote,
+            "vwap": st.vwap,
+            "buy_sell_ratio": st.buy_sell_ratio,
+            "trades_per_min": st.trades_per_min,
+            "latest_ms": st.latest_ms,
+        },
+    }
 
 
 @app.get("/api/spread/history")

@@ -42,6 +42,10 @@ class Settings:
     spot_orderbook_ws_symbols: tuple[str, ...] = ()
     spot_orderbook_ws_stale_after_sec: float = 3.0
 
+    # Spot deals (trades) WS — feeds trade_buffer (density, imbalance, VWAP).
+    spot_deals_ws_enabled: bool = False
+    spot_deals_ws_symbols: tuple[str, ...] = ()
+
     futures_ws_url: str = "wss://contract.mexc.com/edge"
     futures_ticker_source: FuturesTickerSource = "rest"
     futures_ws_stale_after_sec: float = 12.0
@@ -577,6 +581,14 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
     except (TypeError, ValueError):
         spot_orderbook_ws_stale_after_sec = d.spot_orderbook_ws_stale_after_sec
 
+    spot_deals_ws_enabled = bool(
+        mexc.get("spot_deals_ws_enabled", d.spot_deals_ws_enabled),
+    )
+    sd_syms = tuple(
+        _norm_spot_symbol(x)
+        for x in _parse_str_tuple(mexc.get("spot_deals_ws_symbols"))
+    )
+
     futures_orderbook_ws_enabled = bool(
         mexc.get("futures_orderbook_ws_enabled", d.futures_orderbook_ws_enabled),
     )
@@ -675,6 +687,8 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         spot_orderbook_ws_enabled=spot_orderbook_ws_enabled,
         spot_orderbook_ws_symbols=so_syms,
         spot_orderbook_ws_stale_after_sec=max(0.5, spot_orderbook_ws_stale_after_sec),
+        spot_deals_ws_enabled=spot_deals_ws_enabled,
+        spot_deals_ws_symbols=sd_syms,
         futures_ws_stale_after_sec=max(2.0, futures_ws_stale_after_sec),
         futures_ws_bootstrap_wait_sec=futures_ws_bootstrap_wait_sec,
         futures_orderbook_ws_enabled=futures_orderbook_ws_enabled,
@@ -762,6 +776,16 @@ def _apply_env_overrides(s: Settings) -> Settings:
         url = os.environ["MEXC_SPOT_WS_URL"].strip()
         if url:
             kw["spot_ws_url"] = url
+
+    # Spot deals (trades) WS
+    if os.environ.get("MEXC_SPOT_DEALS_WS_ENABLED") is not None:
+        kw["spot_deals_ws_enabled"] = _bool_env(
+            "MEXC_SPOT_DEALS_WS_ENABLED",
+            s.spot_deals_ws_enabled,
+        )
+    ct_deals = _comma_tuple_from_env("MEXC_SPOT_DEALS_WS_SYMBOLS")
+    if ct_deals is not None:
+        kw["spot_deals_ws_symbols"] = tuple(_norm_spot_symbol(x) for x in ct_deals)
     if os.environ.get("MEXC_FUTURES_ORDERBOOK_WS_ENABLED") is not None:
         kw["futures_orderbook_ws_enabled"] = _bool_env(
             "MEXC_FUTURES_ORDERBOOK_WS_ENABLED",
