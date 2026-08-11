@@ -120,8 +120,32 @@ class MexcSpotAdapter:
         quantity: float,
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        # MEXC spot doesn't have a separate market order in our client — use limit at market price
-        raise NotImplementedError("MEXC spot market orders not implemented in adapter")
+        from mexc_monitor.config import DEFAULT_SETTINGS
+        from mexc_monitor.trading.exchanges import OrderSide, OrderType
+        from mexc_monitor.trading.private_client import MexcPrivateClient
+        from mexc_monitor.trading.private_client_base import OrderRequest
+
+        # MEXC spot has no dedicated market-order endpoint in the legacy client,
+        # but the generic place_order() sends a correct MARKET request (no price,
+        # no timeInForce). Returns the raw exchange dict, same shape as
+        # place_limit_order above.
+        cid = client_order_id or f"sc-mkt-{int(time.time()*1000)}"
+        req = OrderRequest(
+            symbol=symbol,
+            side=OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=quantity,
+            price=None,
+            client_order_id=cid,
+        )
+        with MexcPrivateClient(
+            api_key=self._api_key,
+            api_secret=self._api_secret,
+            base_url=DEFAULT_SETTINGS.base_url,
+            timeout_sec=DEFAULT_SETTINGS.timeout_sec,
+        ) as client:
+            resp = client.place_order(req)
+            return resp.raw
 
     def cancel_order(
         self,
