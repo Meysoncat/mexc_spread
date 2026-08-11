@@ -438,7 +438,7 @@ class CDPSession:
             # bfcache restore, etc.) — cap at 4s, then proceed to idle polling.
             frame_deadline = time.time() + min(4.0, timeout)
             while time.time() < frame_deadline and not self._frame_stopped:
-                self.drain(settle if wait_until == "settle" else 0.2)
+                self.drain(0.2)
 
         if wait_until == "idle":
             # Then, wait for SPA to stop issuing NEW requests. We poll the

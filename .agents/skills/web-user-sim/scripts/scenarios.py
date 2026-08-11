@@ -48,6 +48,9 @@ ROUTES = {
     "alerts": "/alerts",
     "lead-lag": "/lead-lag",
     "metascalp": "/metascalp",
+    "density": "/density",
+    "funding": "/funding",
+    "backtest": "/backtest",
 }
 
 
@@ -137,6 +140,37 @@ SCENARIOS: dict[str, list[dict]] = {
         {"goto": _u("/futures-arb")},
         {"screenshot": "tr-03-futures-arb.png"},
         {"expect": "Позиции и история видны или понятно почему пусто?"},
+    ],
+
+    "density-page": [
+        # Navigate to Density Monitor and take screenshots.
+        {"goto": _u("/density")},
+        {"wait_for": "document.body.innerText.length > 200", "name": "density render"},
+        {"screenshot": "density-01-page.png"},
+        {"expect": "Видна ли тепловая карта и таблица плотностей?"},
+        {"scroll": 400},
+        {"screenshot": "density-02-scrolled.png"},
+        {"expect": "Видна ли таблица с символами и стенами?"},
+    ],
+
+    "density-heatmap": [
+        # Navigate to Density Monitor, click Старт on heatmap, wait for data, screenshot.
+        {"goto": _u("/density")},
+        {"wait_for": "document.body.innerText.length > 200", "name": "density render"},
+        {"screenshot": "heatmap-01-before.png"},
+        {"click": "button:has-text('Старт')", "name": "click Start"},
+        {"wait_for": "true"},
+        {"screenshot": "heatmap-02-after-start.png"},
+        {"scroll": 200},
+        {"screenshot": "heatmap-03-scrolled.png"},
+        {"expect": "Видны ли данные тепловой карты?"},
+    ],
+
+    "spread-monitor-updated": [
+        # Spread Monitor page — quick screenshot
+        {"goto": _u("/")},
+        {"wait_for": "document.body.innerText.length > 1000", "name": "page loaded"},
+        {"screenshot": "sm-01-list-view.png"},
     ],
 }
 
