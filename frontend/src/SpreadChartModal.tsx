@@ -8,7 +8,7 @@ import {
 import { X, Activity, TrendingUp, TrendingDown, BarChart3 } from "lucide-react";
 import { apiUrl } from "./config";
 import type { SpreadTick, SpreadStats } from "./types";
-import { ChartCore } from "./components/charts";
+import { ChartCore, chartColors } from "./components/charts";
 
 interface SpreadChartModalProps {
   open: boolean;
@@ -92,7 +92,7 @@ export function SpreadChartModal({
     chartRef.current = chart;
 
     const series = chart.addSeries(LineSeries, {
-      color: "#f59e0b",
+      color: chartColors.spread,
       lineWidth: 2,
       priceFormat: {
         type: "price",

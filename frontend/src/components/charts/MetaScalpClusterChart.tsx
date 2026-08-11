@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { HistogramSeries } from "lightweight-charts";
 import type { IChartApi, ISeriesApi } from "lightweight-charts";
 import { ChartCore } from "./ChartCore";
+import { chartColors } from "./chartTheme";
 
 export interface ClusterRow {
   Price?: number;
@@ -56,7 +57,7 @@ export function MetaScalpClusterChart({
 
     // Create series
     const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: "#3b82f6",
+      color: chartColors.volume,
       priceFormat: { type: "volume", precision: 2 },
       priceLineVisible: false,
       lastValueVisible: false,
@@ -64,7 +65,7 @@ export function MetaScalpClusterChart({
     volumeSeriesRef.current = volumeSeries;
 
     const deltaSeries = chart.addSeries(HistogramSeries, {
-      color: "#f59e0b",
+      color: chartColors.spread,
       priceFormat: { type: "volume", precision: 2 },
       priceLineVisible: false,
       lastValueVisible: false,
@@ -75,12 +76,12 @@ export function MetaScalpClusterChart({
     const volData = sorted.map((r, i) => ({
       time: (i + 1) as any,
       value: r.Volume ?? r.volume ?? 0,
-      color: "#3b82f6",
+      color: chartColors.volume,
     }));
     const deltaData = sorted.map((r, i) => ({
       time: (i + 1) as any,
       value: Math.abs(r.Delta ?? r.delta ?? 0),
-      color: (r.Delta ?? r.delta ?? 0) >= 0 ? "#26a69a" : "#ef5350",
+      color: (r.Delta ?? r.delta ?? 0) >= 0 ? chartColors.up : chartColors.down,
     }));
 
     volumeSeries.setData(volData);

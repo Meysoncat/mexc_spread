@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LineSeries, type IChartApi, type UTCTimestamp } from "lightweight-charts";
 import { BarChart3, RefreshCw } from "lucide-react";
 import { apiUrl } from "./config";
-import { ChartCore } from "./components/charts";
+import { ChartCore, chartColors } from "./components/charts";
 import { SymbolPicker } from "./components/SymbolPicker";
 import { useNavigationState } from "./hooks/useNavigationState";
 
@@ -24,7 +24,7 @@ export function CrossSpreadHistoryChart({ open, onClose, isDark }: { open: boole
 
   const handleChartReady = useCallback((chart: IChartApi) => {
     const series = chart.addSeries(LineSeries, {
-      color: "#8b5cf6",
+      color: chartColors.cross,
       lineWidth: 2,
       priceFormat: { type: "price", precision: 2, minMove: 0.01 },
       title: "Basis (bps)",

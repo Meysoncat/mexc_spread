@@ -80,6 +80,7 @@ export const chartColors = {
   spread: "#f59e0b",
   basis: "#4fc3f7",
   volume: "#3b82f6",
+  cross: "#8b5cf6",
   get accent(): string {
     return tokenOr("--accent", "#0ea5e9");
   },

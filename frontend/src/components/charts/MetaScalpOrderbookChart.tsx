@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { HistogramSeries } from "lightweight-charts";
 import type { IChartApi, ISeriesApi } from "lightweight-charts";
 import { ChartCore } from "./ChartCore";
+import { chartColors } from "./chartTheme";
 
 export interface MetaScalpOrderbookLevel {
   price: number;
@@ -56,7 +57,7 @@ export function MetaScalpOrderbookChart({
 
     // Create histogram series
     const askSeries = chart.addSeries(HistogramSeries, {
-      color: "#ef5350",
+      color: chartColors.ask,
       priceFormat: { type: "volume", precision: 4 },
       priceLineVisible: false,
       lastValueVisible: false,
@@ -64,7 +65,7 @@ export function MetaScalpOrderbookChart({
     askSeriesRef.current = askSeries;
 
     const bidSeries = chart.addSeries(HistogramSeries, {
-      color: "#26a69a",
+      color: chartColors.bid,
       priceFormat: { type: "volume", precision: 4 },
       priceLineVisible: false,
       lastValueVisible: false,
@@ -76,12 +77,12 @@ export function MetaScalpOrderbookChart({
     const askData = displayAsks.map((a, i) => ({
       time: (100000 + i) as any, // workaround: use index as time
       value: a.size,
-      color: "#ef5350",
+      color: chartColors.ask,
     }));
     const bidData = displayBids.map((b, i) => ({
       time: (100000 + i) as any,
       value: b.size,
-      color: "#26a69a",
+      color: chartColors.bid,
     }));
 
     askSeries.setData(askData);

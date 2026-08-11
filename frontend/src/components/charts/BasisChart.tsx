@@ -3,6 +3,7 @@ import { LineSeries } from "lightweight-charts";
 import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { apiUrl } from "../../config";
 import { ChartCore } from "./ChartCore";
+import { chartColors } from "./chartTheme";
 
 export interface BasisChartProps {
   symbol: string;
@@ -100,7 +101,7 @@ export function BasisChart({
             );
 
           const series = chart.addSeries(LineSeries, {
-            color: "#4fc3f7",
+            color: chartColors.basis,
             lineWidth: 2,
             priceFormat: {
               type: "custom",
