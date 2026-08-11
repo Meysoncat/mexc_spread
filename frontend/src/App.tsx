@@ -46,6 +46,26 @@ const MetaScalpPage = lazy(() =>
     default: m.MetaScalpPage,
   })),
 );
+const FundingHeatmapPage = lazy(() =>
+  import("./pages/FundingHeatmapPage").then((m) => ({
+    default: m.FundingHeatmapPage,
+  })),
+);
+const BacktestPage = lazy(() =>
+  import("./pages/BacktestPage").then((m) => ({
+    default: m.BacktestPage,
+  })),
+);
+const DensityMonitorPage = lazy(() =>
+  import("./pages/DensityMonitorPage").then((m) => ({
+    default: m.DensityMonitorPage,
+  })),
+);
+const VSPage = lazy(() =>
+  import("./pages/VSPage").then((m) => ({
+    default: m.VSPage,
+  })),
+);
 
 function PageFallback() {
   return (
@@ -78,6 +98,10 @@ function App() {
             <Route path="alerts" element={<AlertsPage />} />
             <Route path="lead-lag" element={<LeadLagPage />} />
             <Route path="metascalp" element={<MetaScalpPage />} />
+            <Route path="funding" element={<FundingHeatmapPage />} />
+            <Route path="backtest" element={<BacktestPage />} />
+            <Route path="density" element={<DensityMonitorPage />} />
+            <Route path="vs" element={<VSPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

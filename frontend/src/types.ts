@@ -184,6 +184,12 @@ export interface MarketRow {
   executable_buy_notional?: number;
   executable_sell_notional?: number;
   depth_levels?: number;
+  /** Spread lifetime: seconds the spread has been above threshold (client-tracked) */
+  spread_lifetime_sec?: number | null;
+  /** Wall Bid: largest bid level notional in USDT (from density analysis) */
+  wall_bid_notional?: number | null;
+  /** Wall Ask: largest ask level notional in USDT (from density analysis) */
+  wall_ask_notional?: number | null;
 }
 
 /** Спот ↔ USDT-M perp: базис по mid (fut − spot). */
