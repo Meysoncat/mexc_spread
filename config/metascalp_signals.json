@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "conn_id": "",
+  "watchlist": [
+    "LYN_USDT",
+    "GUA_USDT"
+  ],
+  "interval_sec": 10.0,
+  "min_notional_usdt": 1000.0,
+  "multiplier": 5.0,
+  "min_spread_bps": 5.0,
+  "alert_min_walls": 1,
+  "alert_min_participant_vol": 1000.0,
+  "spike_threshold_usdt": 1000.0,
+  "spike_window_sec": 60.0,
+  "cluster_threshold_usdt": 5000.0,
+  "cluster_window_sec": 900.0,
+  "domination_ratio": 0.65,
+  "_comment": "Конфиг SignalWorker для стратегии ProBoyScalp. См. docs/PROBOYSCALP_METHOD.md и docs/METASCALP_AUDIT.md. Включай только когда MetaScalp запущен и watchlist заполнен.",
+  "_watchlist_comment": "Список тикеров для периодического сканирования. Например: ['LYN_USDT', 'GUA_USDT', 'VIM_USDT']. Бери из топов роста/падения на MEXC (см. docs/COIN_SELECTION_CRITERIA.md).",
+  "_thresholds_comment": "Пороги под low-cap MEXC-альты. Меняй осторожно — после калибровки на аудите своих сделок."
+}

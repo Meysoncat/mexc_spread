@@ -1,0 +1,63 @@
+{
+  "_comment": "Комиссии на вывод токенов по сетям. Обновляйте вручную или через API бирж с ключами. Значения в USDT.",
+  "_updated": "2026-07-18",
+  "tokens": {
+    "USDT": {
+      "networks": {
+        "ERC20":  { "fee": 3.5,  "min_withdrawal": 10,  "eta_min": 5 },
+        "TRC20":  { "fee": 1.0,  "min_withdrawal": 10,  "eta_min": 3 },
+        "BEP20":  { "fee": 0.3,  "min_withdrawal": 10,  "eta_min": 1 },
+        "Polygon":{ "fee": 0.1,  "min_withdrawal": 10,  "eta_min": 1 },
+        "Arbitrum":{ "fee": 0.1, "min_withdrawal": 10,  "eta_min": 1 },
+        "Optimism":{ "fee": 0.1, "min_withdrawal": 10,  "eta_min": 1 },
+        "Solana": { "fee": 0.5,  "min_withdrawal": 10,  "eta_min": 1 },
+        "TON":    { "fee": 0.3,  "min_withdrawal": 10,  "eta_min": 1 }
+      }
+    },
+    "BTC": {
+      "networks": {
+        "BTC":    { "fee": 0.00005, "min_withdrawal": 0.0001, "eta_min": 30 },
+        "BEP20":  { "fee": 0.00001, "min_withdrawal": 0.0001, "eta_min": 1 },
+        "Lightning":{ "fee": 0.000001, "min_withdrawal": 0.00001, "eta_min": 1 }
+      }
+    },
+    "ETH": {
+      "networks": {
+        "ERC20":  { "fee": 0.0005, "min_withdrawal": 0.01, "eta_min": 5 },
+        "BEP20":  { "fee": 0.0001, "min_withdrawal": 0.01, "eta_min": 1 },
+        "Arbitrum":{ "fee": 0.00005, "min_withdrawal": 0.01, "eta_min": 1 },
+        "Optimism":{ "fee": 0.00005, "min_withdrawal": 0.01, "eta_min": 1 }
+      }
+    },
+    "SOL": {
+      "networks": {
+        "SOL":    { "fee": 0.01,  "min_withdrawal": 0.1, "eta_min": 1 },
+        "BEP20":  { "fee": 0.001, "min_withdrawal": 0.1, "eta_min": 1 }
+      }
+    },
+    "XRP": {
+      "networks": {
+        "XRP":    { "fee": 0.02,  "min_withdrawal": 1, "eta_min": 1 },
+        "BEP20":  { "fee": 0.001, "min_withdrawal": 1, "eta_min": 1 }
+      }
+    }
+  },
+  "exchange_overrides": {
+    "_comment": "Переопределения комиссий по биржам (если отличаются от общих). Формат: exchange → token → network → fee",
+    "binance": {
+      "USDT": { "TRC20": 1.0, "BEP20": 0.3, "Polygon": 0.1, "Arbitrum": 0.1 }
+    },
+    "mexc": {
+      "USDT": { "TRC20": 0.8, "BEP20": 0.2, "ERC20": 3.0 }
+    },
+    "bybit": {
+      "USDT": { "TRC20": 1.0, "BEP20": 0.3, "Arbitrum": 0.1 }
+    },
+    "okx": {
+      "USDT": { "TRC20": 0.8, "BEP20": 0.2, "Polygon": 0.08 }
+    },
+    "gateio": {
+      "USDT": { "TRC20": 1.0, "BEP20": 0.3 }
+    }
+  }
+}

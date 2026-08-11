@@ -63,12 +63,26 @@ from mexc_monitor.metascalp.cache import MetaScalpCache
 from mexc_monitor.metascalp.poller import MetaScalpPoller
 from mexc_monitor.metascalp.ws_bridge import MetaScalpWSBridge
 from mexc_monitor.metascalp.auto_trader import MetaScalpAutoTrader
+from mexc_monitor.metascalp.density_scanner import MetaScalpDensityScanner
+from mexc_monitor.metascalp.participant_detector import ParticipantDetector
+from mexc_monitor.metascalp.signal_worker import SignalWorker
 
 _metascalp_client = MetaScalpClient()
 _metascalp_cache = MetaScalpCache(default_ttl_sec=10.0)
 _metascalp_poller = MetaScalpPoller(cache=_metascalp_cache, client=_metascalp_client, interval_sec=5.0)
-_metascalp_ws_bridge = MetaScalpWSBridge(cache=_metascalp_cache)
+# ParticipantDetector — shared между WS bridge (принимает trades) и SignalWorker (читает сигналы)
+_metascalp_participant_detector = ParticipantDetector()
+_metascalp_ws_bridge = MetaScalpWSBridge(
+    cache=_metascalp_cache,
+    participant_detector=_metascalp_participant_detector,
+)
 _metascalp_auto_trader = MetaScalpAutoTrader(client=_metascalp_client)
+_metascalp_density_scanner = MetaScalpDensityScanner(_metascalp_client)
+_metascalp_signal_worker = SignalWorker(
+    client=_metascalp_client,
+    alert_service=None,  # Lazy: подключается после старта AlertService (см. startup)
+    participant_detector=_metascalp_participant_detector,
+)
 
 # ─── Portfolio Risk Manager ───────────────────────────────────────────────────
 
@@ -201,6 +215,10 @@ def _startup_prefetch_futures_ws() -> None:
     _metascalp_poller.start()
     _metascalp_ws_bridge.start()
     _metascalp_auto_trader.start()
+    # SignalWorker для стратегии ProBoyScalp (density + participant детекторы).
+    # AlertService ещё не создан на моменте импорта, подключаем здесь.
+    _metascalp_signal_worker._alert_service = _alert_service
+    _metascalp_signal_worker.start()
     # Start basis calculator for WS feeds + REST fallback
     _futures_arb_basis_calc.start()
 
@@ -227,6 +245,7 @@ def _shutdown_workers() -> None:
     _metascalp_poller.stop()
     _metascalp_ws_bridge.stop()
     _metascalp_auto_trader.stop()
+    _metascalp_signal_worker.stop()
 
 _SNAPSHOT_CACHE_TTL_SEC = max(0.0, float(os.environ.get("MEXC_SNAPSHOT_CACHE_TTL_SEC", "3")))
 # Медленные биржи (DEX-индексеры) собираются секундами и лимитированы по rate limit —
@@ -247,6 +266,43 @@ _snapshot_build_locks: dict[str, threading.Lock] = {}
 
 def _snapshot_ttl_for(exchange: str) -> float:
     return _SNAPSHOT_CACHE_TTL_OVERRIDES.get(exchange, _SNAPSHOT_CACHE_TTL_SEC)
+
+
+def _fetch_binance_depth(market: str, symbol: str, *, limit: int = 100) -> dict:
+    """Fallback: получить стакан с Binance Spot API."""
+    import httpx
+    sym = symbol.strip().upper().replace("_USDT", "USDT").replace("/", "")
+    url = "https://api.binance.com/api/v3/depth"
+    params = {"symbol": sym, "limit": min(limit, 1000)}
+    r = httpx.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    bids_raw = data.get("bids", [])
+    asks_raw = data.get("asks", [])
+    bids = [{"price": float(b[0]), "qty": float(b[1])} for b in bids_raw if len(b) >= 2]
+    asks = [{"price": float(a[0]), "qty": float(a[1])} for a in asks_raw if len(a) >= 2]
+    best_bid = bids[0]["price"] if bids else 0
+    best_ask = asks[0]["price"] if asks else 0
+    mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0
+    return {
+        "market": market,
+        "symbol": sym,
+        "limit": limit,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "mid": mid,
+        "bids": bids,
+        "asks": asks,
+        "source": "binance_fallback",
+    }
+
+
+def _run_with_timeout(fn, *, timeout_sec: float):
+    """Выполнить fn() в отдельном потоке с таймаутом."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        return future.result(timeout=timeout_sec)
 
 
 # Фоновый префетч: ключи, запрошенные недавно, обновляются до истечения TTL,
@@ -461,7 +517,12 @@ def _get_snapshot_payload(
         hit = _fresh_cached()
         if hit is not None:
             return hit
-        payload = builder()
+        # Timeout для сборки снимка: 15 секунд
+        try:
+            payload = _run_with_timeout(builder, timeout_sec=15.0)
+        except TimeoutError:
+            logger.warning("snapshot build timeout for %s", cache_key)
+            return {"ok": False, "error": "Snapshot build timeout", "rows": [], "count": 0}
         # Пустой снимок (например, все запросы уперлись в 429) не кэшируем,
         # чтобы не залипать на TTL без данных.
         if payload.get("ok") and payload.get("count"):
@@ -495,6 +556,203 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "ws_feeds": feeds_health()}
 
 
+_WITHDRAWAL_FEES_PATH = _ROOT / "config" / "withdrawal_fees.json"
+
+
+@app.get("/api/withdrawal-fees")
+def withdrawal_fees() -> dict:
+    """Комиссии на вывод токенов по сетям из конфига."""
+    if not _WITHDRAWAL_FEES_PATH.exists():
+        return {"ok": False, "error": "withdrawal_fees.json not found", "tokens": {}}
+    try:
+        data = json.loads(_WITHDRAWAL_FEES_PATH.read_text(encoding="utf-8"))
+        return {"ok": True, **data}
+    except (json.JSONDecodeError, OSError) as e:
+        return {"ok": False, "error": str(e), "tokens": {}}
+
+
+@app.get("/api/withdrawal-fees/calculate")
+def calculate_withdrawal_cost(
+    token: str = Query("USDT", description="Токен: USDT, BTC, ETH, SOL, XRP"),
+    src_exchange: str = Query("mexc", description="Биржа отправления"),
+    dst_exchange: str = Query("binance", description="Биржа назначения"),
+    network: str = Query("", description="Сеть (TRC20, BEP20, ERC20, ...)"),
+    spread_bps: float = Query(0, description="Текущий спред в bps"),
+    notional_usdt: float = Query(1000, description="Размер сделки в USDT"),
+) -> dict:
+    """Расчёт чистой прибыли после withdrawal fees."""
+    if not _WITHDRAWAL_FEES_PATH.exists():
+        return {"ok": False, "error": "withdrawal_fees.json not found"}
+    try:
+        cfg = json.loads(_WITHDRAWAL_FEES_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+    token = token.upper()
+    src = src_exchange.lower()
+    dst = dst_exchange.lower()
+    net = network.upper() if network else ""
+
+    # Базовые комиссии из конфига
+    token_data = cfg.get("tokens", {}).get(token, {})
+    networks = token_data.get("networks", {})
+    overrides = cfg.get("exchange_overrides", {})
+
+    def _fee(exchange: str, net_name: str) -> float | None:
+        # Override для биржи
+        ex_override = overrides.get(exchange, {}).get(token, {}).get(net_name)
+        if ex_override is not None:
+            return float(ex_override)
+        # Базовая комиссия
+        net_data = networks.get(net_name, {})
+        return float(net_data.get("fee", 0)) if net_data else None
+
+    # Если сеть не указана — найти лучшую
+    if not net:
+        results = []
+        for net_name in networks:
+            src_fee = _fee(src, net_name)
+            dst_fee = _fee(dst, net_name)
+            if src_fee is not None and dst_fee is not None:
+                total_fee = src_fee + dst_fee
+                net_profit_bps = spread_bps - (total_fee / notional_usdt * 10000) if notional_usdt > 0 else 0
+                results.append({
+                    "network": net_name,
+                    "src_fee_usdt": src_fee,
+                    "dst_fee_usdt": dst_fee,
+                    "total_fee_usdt": total_fee,
+                    "net_profit_bps": round(net_profit_bps, 2),
+                    "net_profit_usdt": round(spread_bps / 10000 * notional_usdt - total_fee, 4),
+                    "eta_min": networks[net_name].get("eta_min", 0),
+                })
+        results.sort(key=lambda x: x["total_fee_usdt"])
+        return {
+            "ok": True,
+            "token": token,
+            "src_exchange": src_exchange,
+            "dst_exchange": dst_exchange,
+            "spread_bps": spread_bps,
+            "notional_usdt": notional_usdt,
+            "networks": results,
+            "best_network": results[0] if results else None,
+        }
+
+    # Конкретная сеть
+    src_fee = _fee(src, net)
+    dst_fee = _fee(dst, net)
+    if src_fee is None or dst_fee is None:
+        return {"ok": False, "error": f"Network {net} not found for {token}"}
+    total_fee = src_fee + dst_fee
+    net_profit_bps = spread_bps - (total_fee / notional_usdt * 10000) if notional_usdt > 0 else 0
+    return {
+        "ok": True,
+        "token": token,
+        "src_exchange": src_exchange,
+        "dst_exchange": dst_exchange,
+        "network": net,
+        "src_fee_usdt": src_fee,
+        "dst_fee_usdt": dst_fee,
+        "total_fee_usdt": total_fee,
+        "spread_bps": spread_bps,
+        "notional_usdt": notional_usdt,
+        "net_profit_bps": round(net_profit_bps, 2),
+        "net_profit_usdt": round(spread_bps / 10000 * notional_usdt - total_fee, 4),
+        "eta_min": networks.get(net, {}).get("eta_min", 0),
+    }
+
+
+@app.get("/api/slippage-estimate")
+def slippage_estimate(
+    symbol: str = Query("BTCUSDT", description="Символ (BTCUSDT, ETH_USDT, ...)"),
+    market: str = Query("spot", description="spot или futures"),
+    exchange: str = Query("mexc", description="Биржа"),
+    notional_usdt: float = Query(1000, description="Размер ордера в USDT"),
+    side: str = Query("buy", description="buy или sell"),
+) -> dict:
+    """On-demand оценка проскальзывания по L2 стакану."""
+    from mexc_monitor.orderbook import fetch_orderbook_depth
+
+    try:
+        depth = fetch_orderbook_depth(market, symbol, limit=50)
+    except Exception as e:
+        # Fallback: Binance
+        try:
+            depth = _fetch_binance_depth(market, symbol, limit=50)
+        except Exception:
+            return {"ok": False, "error": f"MEXC: {e}. Binance fallback failed.", "symbol": symbol}
+
+    levels = depth.get("asks" if side == "buy" else "bids", [])
+    if not levels:
+        return {"ok": False, "error": "No depth data", "symbol": symbol}
+
+    # Найти best price и mid
+    bids = depth.get("bids", [])
+    asks = depth.get("asks", [])
+    if not bids or not asks:
+        return {"ok": False, "error": "Incomplete depth", "symbol": symbol}
+
+    best_bid = float(bids[0][0]) if isinstance(bids[0], (list, tuple)) else float(bids[0].get("price", 0))
+    best_ask = float(asks[0][0]) if isinstance(asks[0], (list, tuple)) else float(asks[0].get("price", 0))
+    mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0
+
+    # Конвертировать USDT в qty
+    if side == "buy":
+        # Для buy: notional / best_ask = qty
+        qty = notional_usdt / best_ask if best_ask > 0 else 0
+        levels_normalized = [(float(l[0]) if isinstance(l, (list, tuple)) else float(l.get("price", 0)),
+                              float(l[1]) if isinstance(l, (list, tuple)) else float(l.get("qty", 0)))
+                             for l in asks]
+    else:
+        qty = notional_usdt / best_bid if best_bid > 0 else 0
+        levels_normalized = [(float(l[0]) if isinstance(l, (list, tuple)) else float(l.get("price", 0)),
+                              float(l[1]) if isinstance(l, (list, tuple)) else float(l.get("qty", 0)))
+                             for l in bids]
+
+    # Walk the book
+    remaining = qty
+    total_cost = 0.0
+    total_filled = 0.0
+    levels_consumed = 0
+
+    for price, level_qty in levels_normalized:
+        if remaining <= 0 or price <= 0:
+            break
+        fill = min(level_qty, remaining)
+        total_cost += price * fill
+        total_filled += fill
+        remaining -= fill
+        levels_consumed += 1
+
+    if total_filled == 0:
+        return {"ok": False, "error": "No fill possible", "symbol": symbol}
+
+    vwap_price = total_cost / total_filled
+    if side == "buy":
+        slippage_bps = (vwap_price - best_ask) / mid * 10000 if mid > 0 else 0
+    else:
+        slippage_bps = (best_bid - vwap_price) / mid * 10000 if mid > 0 else 0
+
+    filled_notional = total_cost
+    unfilled_notional = remaining * (best_ask if side == "buy" else best_bid)
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "market": market,
+        "exchange": exchange,
+        "side": side,
+        "notional_usdt": notional_usdt,
+        "best_price": best_ask if side == "buy" else best_bid,
+        "vwap_price": round(vwap_price, 8),
+        "slippage_bps": round(slippage_bps, 2),
+        "filled_notional_usdt": round(filled_notional, 2),
+        "unfilled_notional_usdt": round(unfilled_notional, 2),
+        "fully_filled": remaining <= 0,
+        "levels_consumed": levels_consumed,
+        "mid": round(mid, 8),
+    }
+
+
 @app.get("/api/admin-token")
 def get_admin_token(request: Request) -> dict:
     """
@@ -505,6 +763,52 @@ def get_admin_token(request: Request) -> dict:
     if client_host not in ("127.0.0.1", "localhost", "::1"):
         raise HTTPException(status_code=403, detail="Forbidden: Localhost only")
     return {"ok": True, "token": _ADMIN_TOKEN}
+
+
+@app.get("/api/open-interest")
+def open_interest(
+    symbol: str = Query("BTCUSDT", description="Символ (BTCUSDT, ETHUSDT, ...)"),
+) -> dict:
+    """Open Interest для фьючерсного контракта. MEXC с fallback на Binance."""
+    import httpx
+    sym = symbol.strip().upper().replace("/", "_").replace("-", "_")
+    if "_" not in sym:
+        sym_usdt = sym + "_USDT"
+    else:
+        sym_usdt = sym
+
+    # Попробовать MEXC
+    mexc_url = f"https://api.mexc.com/api/v1/contract/open_interest/{sym_usdt}"
+    try:
+        r = httpx.get(mexc_url, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "ok": True,
+            "symbol": symbol.strip().upper(),
+            "open_interest": data.get("openInterest", data.get("holdVol", 0)),
+            "currency": data.get("currency", "USDT"),
+            "source": "mexc",
+        }
+    except Exception:
+        pass
+
+    # Fallback: Binance Futures
+    binance_sym = sym.replace("_USDT", "USDT").replace("_", "")
+    binance_url = "https://fapi.binance.com/fapi/v1/openInterest"
+    try:
+        r = httpx.get(binance_url, params={"symbol": binance_sym}, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "ok": True,
+            "symbol": symbol.strip().upper(),
+            "open_interest": float(data.get("openInterest", 0)),
+            "currency": "USDT",
+            "source": "binance_fallback",
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"MEXC + Binance failed: {e}", "symbol": symbol.strip().upper()}
 
 
 @app.get("/api/debug/mexc-connectivity")
@@ -1019,17 +1323,35 @@ def orderbook_depth(
                     return out
     try:
         data = fetch_orderbook_depth(m, sym, limit=lim)
-    except MexcApiError as e:
-        return {
-            "ok": False,
-            "error": str(e),
-            "market": m,
-            "symbol": sym,
-            "limit": lim,
-            "bids": [],
-            "asks": [],
-            "cache_hit": False,
-        }
+    except (MexcApiError, Exception) as e:
+        # Fallback: если MEXC вернул 403, попробовать Binance
+        err_str = str(e)
+        if "403" in err_str or "Forbidden" in err_str or isinstance(e, MexcApiError):
+            try:
+                data = _fetch_binance_depth(m, sym, limit=lim)
+            except Exception as e2:
+                return {
+                    "ok": False,
+                    "error": f"MEXC: {err_str}. Binance: {e2}",
+                    "market": m,
+                    "symbol": sym,
+                    "limit": lim,
+                    "bids": [],
+                    "asks": [],
+                    "cache_hit": False,
+                }
+        else:
+            logger.exception("depth market=%s symbol=%s", m, sym)
+            return {
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "market": m,
+                "symbol": sym,
+                "limit": lim,
+                "bids": [],
+                "asks": [],
+                "cache_hit": False,
+            }
     except Exception as e:
         logger.exception("depth market=%s symbol=%s", m, sym)
         return {
@@ -1065,6 +1387,421 @@ def orderbook_depth(
         with _depth_cache_lock:
             _depth_cache[key] = (now + _DEPTH_CACHE_TTL_SEC, dict(out))
     return out
+
+
+@app.get("/api/density/walls")
+def density_walls(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    market: str = Query("spot", description="spot или futures"),
+    multiplier: float = Query(5.0, ge=1.5, le=50.0, description="Порог в разах от медианы"),
+    min_notional: float = Query(10000, ge=0, description="Мин. нотация в USDT"),
+) -> dict:
+    """Поиск стен в стакане — уровни с аномально крупными ордерами."""
+    from mexc_monitor.density import detect_walls, wall_to_dict
+    try:
+        data = fetch_orderbook_depth(market, symbol, limit=100)
+    except Exception:
+        try:
+            data = _fetch_binance_depth(market, symbol, limit=100)
+        except Exception as e:
+            return {"ok": False, "error": str(e), "walls": []}
+
+    walls = detect_walls(
+        data.get("bids", []),
+        data.get("asks", []),
+        multiplier=multiplier,
+        min_notional_usdt=min_notional,
+    )
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "market": market,
+        "multiplier": multiplier,
+        "walls": [wall_to_dict(w) for w in walls],
+        "count": len(walls),
+    }
+
+
+@app.get("/api/density/stats")
+def density_stats(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    market: str = Query("spot", description="spot или futures"),
+) -> dict:
+    """Статистика плотности стакана."""
+    from mexc_monitor.density import compute_density_stats, stats_to_dict
+    try:
+        data = fetch_orderbook_depth(market, symbol, limit=100)
+    except Exception:
+        try:
+            data = _fetch_binance_depth(market, symbol, limit=100)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    stats = compute_density_stats(data.get("bids", []), data.get("asks", []))
+    return {"ok": True, "symbol": symbol.strip().upper(), "market": market, **stats_to_dict(stats)}
+
+
+@app.get("/api/density/compare")
+def density_compare(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    exchanges: str = Query("mexc,binance,bybit", description="Через запятую"),
+) -> dict:
+    """Сравнение ликвидности стакана между биржами."""
+    import concurrent.futures
+    from mexc_monitor.density import compute_density_stats, stats_to_dict
+
+    ex_list = [e.strip().lower() for e in exchanges.split(",") if e.strip()]
+    if not ex_list:
+        return {"ok": False, "error": "No exchanges", "results": {}}
+
+    def _fetch_one(ex: str) -> tuple[str, dict]:
+        try:
+            if ex == "mexc":
+                data = fetch_orderbook_depth("spot", symbol, limit=50)
+            else:
+                data = _fetch_binance_depth("spot", symbol, limit=50)
+            stats = compute_density_stats(data.get("bids", []), data.get("asks", []))
+            return ex, {"ok": True, **stats_to_dict(stats)}
+        except Exception as e:
+            return ex, {"ok": False, "error": str(e)}
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ex_list)) as pool:
+        futures = {pool.submit(_fetch_one, ex): ex for ex in ex_list}
+        for future in concurrent.futures.as_completed(futures, timeout=15):
+            try:
+                ex, payload = future.result(timeout=12)
+                results[ex] = payload
+            except Exception as e:
+                ex = futures[future]
+                results[ex] = {"ok": False, "error": str(e)}
+
+    return {"ok": True, "symbol": symbol.strip().upper(), "results": results, "exchanges": ex_list}
+
+
+@app.get("/api/density/history")
+def density_history(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    since_ms: int | None = Query(None, description="Unix ms нижняя граница"),
+    max_points: int = Query(500, ge=10, le=5000),
+) -> dict:
+    """История плотности стакана из in-memory буфера."""
+    from mexc_monitor.density_buffer import get_history, snapshot_to_dict
+    snapshots = get_history(symbol.strip().upper(), since_ms=since_ms, max_points=max_points)
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "count": len(snapshots),
+        "snapshots": [snapshot_to_dict(s) for s in snapshots],
+    }
+
+
+@app.get("/api/density/changes")
+def density_changes(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    since_ms: int | None = Query(None, description="Unix ms нижняя граница"),
+    limit: int = Query(100, ge=1, le=1000),
+) -> dict:
+    """История изменений стен (появление/исчезновение/рост/уменьшение)."""
+    from mexc_monitor.density_buffer import get_wall_changes, wall_change_to_dict
+    changes = get_wall_changes(symbol.strip().upper(), since_ms=since_ms, limit=limit)
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "count": len(changes),
+        "changes": [wall_change_to_dict(c) for c in changes],
+    }
+
+
+@app.get("/api/density/overview")
+def density_overview(
+    exchange: str = Query("mexc", description="Биржа"),
+    market: str = Query("futures", description="spot или futures"),
+    limit: int = Query(50, ge=5, le=200, description="Количество символов"),
+    min_volume: float = Query(0, description="Мин. объём 24h (USDT)"),
+) -> dict:
+    """Обзор плотности по топ символам — таблица для Density Monitor."""
+    import concurrent.futures
+    from mexc_monitor.density import detect_walls, compute_density_stats, wall_to_dict, stats_to_dict
+
+    # Получить список символов из snapshot
+    if exchange == "mexc":
+        raw = _get_snapshot_payload(
+            f"mexc:{market}",
+            bypass_cache=False,
+            builder=lambda: _build_snapshot_payload(market),
+        )
+    else:
+        raw = _get_snapshot_payload(
+            f"{exchange}:{market}",
+            bypass_cache=False,
+            builder=lambda: _build_exchange_snapshot_payload(exchange, market),
+            ttl=_snapshot_ttl_for(exchange),
+        )
+
+    if not raw.get("ok") or not raw.get("rows"):
+        return {"ok": False, "error": raw.get("error", "No data"), "symbols": []}
+
+    rows = raw["rows"]
+    # Фильтр по объёму и сортировка
+    if min_volume > 0:
+        rows = [r for r in rows if (r.get("volume_24h_quote") or 0) >= min_volume]
+    rows = rows[:limit]
+
+    def _fetch_density(row: dict) -> dict:
+        sym = row.get("symbol", "")
+        try:
+            depth = _fetch_binance_depth(market, sym, limit=50)
+            bids = depth.get("bids", [])
+            asks = depth.get("asks", [])
+            stats = compute_density_stats(bids, asks)
+            walls = detect_walls(bids, asks, multiplier=5, min_notional_usdt=50000)
+            wall_dicts = [wall_to_dict(w) for w in walls]
+            return {
+                "symbol": sym,
+                "mid": row.get("mid", 0),
+                "spread_bps": row.get("spread_bps"),
+                "volume_24h_quote": row.get("volume_24h_quote", 0),
+                "density": stats_to_dict(stats),
+                "walls": wall_dicts[:5],  # top 5 стен
+                "wall_count": len(wall_dicts),
+                "largest_wall": wall_dicts[0] if wall_dicts else None,
+            }
+        except Exception:
+            return {
+                "symbol": sym,
+                "mid": row.get("mid", 0),
+                "spread_bps": row.get("spread_bps"),
+                "volume_24h_quote": row.get("volume_24h_quote", 0),
+                "density": None,
+                "walls": [],
+                "wall_count": 0,
+                "largest_wall": None,
+            }
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_density, r): r for r in rows}
+        for future in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                results.append(future.result(timeout=25))
+            except Exception:
+                pass
+
+    results.sort(key=lambda r: (r.get("largest_wall") or {}).get("notional_usdt", 0), reverse=True)
+
+    return {
+        "ok": True,
+        "exchange": exchange,
+        "market": market,
+        "count": len(results),
+        "symbols": results,
+    }
+
+
+@app.get("/api/density/heatmap")
+def density_heatmap(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    market: str = Query("spot", description="spot или futures"),
+    levels: int = Query(50, ge=10, le=200, description="Количество уровней с каждой стороны"),
+) -> dict:
+    """Данные стакана для тепловой карты плотности.
+
+    Возвращает ценовые уровни с нотацией — фронтенд накапливает
+    снимки во времени и рендерит heatmap (X=время, Y=цена, цвет=нотация).
+    """
+    try:
+        data = fetch_orderbook_depth(market, symbol, limit=levels)
+    except Exception:
+        try:
+            data = _fetch_binance_depth(market, symbol, limit=levels)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    bids_raw = data.get("bids", [])
+    asks_raw = data.get("asks", [])
+
+    def _parse(levels_raw):
+        out = []
+        for lv in levels_raw:
+            if isinstance(lv, (list, tuple)) and len(lv) >= 2:
+                try:
+                    p, q = float(lv[0]), float(lv[1])
+                    if p > 0 and q >= 0:
+                        out.append({"price": p, "qty": q, "notional": round(p * q, 2)})
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(lv, dict):
+                try:
+                    p = float(lv.get("price", 0))
+                    q = float(lv.get("qty", 0))
+                    if p > 0 and q >= 0:
+                        out.append({"price": p, "qty": q, "notional": round(p * q, 2)})
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    bids = _parse(bids_raw)
+    asks = _parse(asks_raw)
+
+    best_bid = bids[0]["price"] if bids else 0
+    best_ask = asks[0]["price"] if asks else 0
+    mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0
+
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "market": market,
+        "timestamp_ms": int(time.time() * 1000),
+        "mid": mid,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "bids": bids,
+        "asks": asks,
+    }
+
+
+@app.get("/api/density/watcher/status")
+def density_watcher_status() -> dict:
+    """Статус DensityWatcher."""
+    return {
+        "ok": True,
+        "running": _density_watcher._running,
+        "symbols": _density_watcher._symbols,
+        "poll_interval_sec": _density_watcher._poll_interval,
+    }
+
+
+@app.post("/api/density/watcher/start")
+def density_watcher_start(
+    symbols: str = Query("BTCUSDT,ETHUSDT", description="Символы через запятую"),
+) -> dict:
+    """Запустить DensityWatcher с указанными символами."""
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    _density_watcher.update_symbols(sym_list)
+    _density_watcher.start()
+    return {"ok": True, "symbols": sym_list, "message": "DensityWatcher started"}
+
+
+@app.post("/api/density/watcher/stop")
+def density_watcher_stop() -> dict:
+    """Остановить DensityWatcher."""
+    _density_watcher.stop()
+    return {"ok": True, "message": "DensityWatcher stopped"}
+
+
+# ─── AI Agent ─────────────────────────────────────────────────────────────────
+
+_ai_config_path = _ROOT / "config" / "ai_config.json"
+
+
+def _load_ai_config() -> dict:
+    if _ai_config_path.exists():
+        try:
+            return json.loads(_ai_config_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"provider": "openai", "model": "gpt-4o-mini", "autonomy": "confirm"}
+
+
+@app.post("/api/ai/chat")
+async def ai_chat(request: Request) -> dict:
+    """AI Trading Agent chat endpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid JSON"}
+
+    message = body.get("message", "").strip()
+    if not message:
+        return {"ok": False, "error": "Empty message"}
+
+    autonomy = body.get("autonomy", "confirm")
+
+    try:
+        from mexc_monitor.ai import TradingAgent, AgentConfig, AutonomyLevel, OpenAIProvider, MARKET_TOOLS
+
+        cfg = _load_ai_config()
+        api_key = os.environ.get(cfg.get("api_key_env", "OPENAI_API_KEY"), "")
+
+        if not api_key:
+            return {
+                "ok": False,
+                "error": f"API key not set. Set {cfg.get('api_key_env', 'OPENAI_API_KEY')} environment variable.",
+            }
+
+        provider = OpenAIProvider(
+            api_key=api_key,
+            model=cfg.get("model", "gpt-4o-mini"),
+        )
+
+        agent_config = AgentConfig(
+            system_prompt=cfg.get("system_prompt", ""),
+            autonomy=AutonomyLevel(autonomy),
+            temperature=cfg.get("temperature", 0.3),
+            max_tokens=cfg.get("max_tokens", 4096),
+        )
+
+        agent = TradingAgent(provider=provider, config=agent_config)
+
+        # Register tools
+        for tool_def in MARKET_TOOLS:
+            agent.register_tool(
+                name=tool_def["name"],
+                description=tool_def["description"],
+                parameters=tool_def["parameters"],
+                handler=tool_def["handler"],
+            )
+
+        turn = await agent.chat(message)
+
+        return {
+            "ok": True,
+            "response": turn.assistant_response,
+            "tool_calls": turn.tool_calls,
+            "tool_results": turn.tool_results,
+        }
+
+    except Exception as e:
+        logger.exception("AI chat error")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/ai/config")
+def ai_config() -> dict:
+    """Get AI agent configuration."""
+    cfg = _load_ai_config()
+    # Mask API key
+    env_key = cfg.get("api_key_env", "OPENAI_API_KEY")
+    has_key = bool(os.environ.get(env_key, "").strip())
+    return {
+        "ok": True,
+        "provider": cfg.get("provider", "openai"),
+        "model": cfg.get("model", "gpt-4o-mini"),
+        "autonomy": cfg.get("autonomy", "confirm"),
+        "has_api_key": has_key,
+        "telegram_enabled": cfg.get("telegram_enabled", False),
+    }
+
+
+@app.get("/api/ai/telegram/status")
+def telegram_status() -> dict:
+    """Get Telegram bot status."""
+    cfg = _load_ai_config()
+    token_env = cfg.get("telegram_bot_token_env", "TELEGRAM_BOT_TOKEN")
+    chat_env = cfg.get("telegram_chat_id_env", "TELEGRAM_CHAT_ID")
+    has_token = bool(os.environ.get(token_env, "").strip())
+    has_chat = bool(os.environ.get(chat_env, "").strip())
+    enabled = cfg.get("telegram_enabled", False)
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "has_token": has_token,
+        "has_chat_id": has_chat,
+        "token_env": token_env,
+        "chat_env": chat_env,
+        "running": enabled and has_token,
+    }
 
 
 _SUPPORTED_EXCHANGES = [
@@ -1245,6 +1982,48 @@ def snapshot(
     )
 
 
+@app.get("/api/snapshot/multi")
+def snapshot_multi(
+    exchanges: str = Query("mexc,binance,bybit,okx,gateio,bitget", description="Через запятую"),
+    market: str = Query("futures", description="spot или futures"),
+) -> dict:
+    """Параллельная загрузка снимков с нескольких бирж."""
+    import concurrent.futures
+    ex_list = [e.strip().lower() for e in exchanges.split(",") if e.strip()]
+    ex_list = [e for e in ex_list if e in _SUPPORTED_EXCHANGES]
+    if not ex_list:
+        return {"ok": False, "error": "No valid exchanges", "results": {}}
+
+    def _fetch_one(ex: str) -> tuple[str, dict]:
+        if ex == "mexc":
+            m = market if market in ("spot", "futures") else "futures"
+            return ex, _get_snapshot_payload(
+                f"mexc:{m}",
+                bypass_cache=False,
+                builder=lambda: _build_snapshot_payload(m),
+            )
+        m = market if market in ("spot", "futures") else None
+        return ex, _get_snapshot_payload(
+            f"{ex}:{m or 'default'}",
+            bypass_cache=False,
+            builder=lambda: _build_exchange_snapshot_payload(ex, m),
+            ttl=_snapshot_ttl_for(ex),
+        )
+
+    results: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ex_list)) as pool:
+        futures = {pool.submit(_fetch_one, ex): ex for ex in ex_list}
+        for future in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                ex, payload = future.result(timeout=25)
+                results[ex] = payload
+            except Exception as e:
+                ex = futures[future]
+                results[ex] = {"ok": False, "error": str(e), "rows": [], "count": 0}
+
+    return {"ok": True, "results": results, "exchanges": ex_list}
+
+
 @app.get("/api/snapshot/stream")
 def snapshot_stream(
     request: Request,
@@ -1360,6 +2139,62 @@ def trading_exchanges() -> dict:
 def trading_engines(_: None = Depends(_require_admin_token)) -> dict:
     """Return all registered engine instances."""
     return {"ok": True, "engines": _registry.list_engines()}
+
+
+_ACCOUNTS_PATH = _ROOT / "config" / "trading_accounts.json"
+
+
+@app.get("/api/trading/accounts")
+def trading_accounts() -> dict:
+    """List configured trading accounts."""
+    if not _ACCOUNTS_PATH.exists():
+        return {"ok": True, "accounts": [], "message": "config/trading_accounts.json not found"}
+    try:
+        data = json.loads(_ACCOUNTS_PATH.read_text(encoding="utf-8"))
+        accounts = data.get("accounts", [])
+        # Check which accounts have API keys configured
+        for acc in accounts:
+            env_key = acc.get("api_key_env", "")
+            env_secret = acc.get("api_secret_env", "")
+            acc["has_credentials"] = bool(
+                os.environ.get(env_key, "").strip() and os.environ.get(env_secret, "").strip()
+            )
+        return {"ok": True, "accounts": accounts}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "accounts": []}
+
+
+@app.get("/api/backtest")
+def backtest(
+    symbol: str = Query("BTCUSDT", description="Символ"),
+    market: str = Query("futures", description="spot или futures"),
+    entry_bps: float = Query(30.0, description="Порог входа (bps)"),
+    exit_bps: float = Query(5.0, description="Порог выхода (bps)"),
+    notional: float = Query(1000.0, description="Размер ордера (USDT)"),
+    max_hold_sec: int = Query(300, description="Макс. удержание (сек)"),
+) -> dict:
+    """Бэктест стратегии захвата спреда на исторических данных."""
+    from mexc_monitor.backtest import BacktestSettings, run_backtest
+    from mexc_monitor.history_store import resolve_history_db_path
+
+    db_path = resolve_history_db_path(DEFAULT_SETTINGS)
+    if not db_path.is_file():
+        return {"ok": False, "error": f"History DB not found: {db_path}"}
+
+    settings = BacktestSettings(
+        symbol=symbol.strip().upper(),
+        market=market if market in ("spot", "futures") else "futures",
+        entry_threshold_bps=entry_bps,
+        exit_threshold_bps=exit_bps,
+        order_notional_usdt=notional,
+        max_hold_sec=max_hold_sec,
+    )
+
+    try:
+        result = run_backtest(db_path, settings)
+        return {"ok": True, **result.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/api/system/capabilities")
@@ -2212,6 +3047,28 @@ def _startup_with_aster_ws() -> None:
     _start_aster_ws_from_config()
 
 
+@app.on_event("startup")
+def _startup_telegram_bot() -> None:
+    """Start Telegram bot if configured."""
+    try:
+        from mexc_monitor.telegram_bot.bot import load_telegram_bot
+        from mexc_monitor.telegram_bot.alerts import AlertManager
+        bot = load_telegram_bot()
+        if bot:
+            bot.start()
+            # Start alert manager
+            alerts = AlertManager(
+                bot_send_fn=bot.send_alert,
+                api_base_url="http://127.0.0.1:8006",
+            )
+            alerts.start()
+            logger.info("Telegram bot started")
+        else:
+            logger.info("Telegram bot not configured (set TELEGRAM_BOT_TOKEN)")
+    except Exception as e:
+        logger.warning("Failed to start Telegram bot: %s", e)
+
+
 @app.on_event("shutdown")
 def _shutdown_aster_ws() -> None:
     stop_aster_ws()
@@ -2441,6 +3298,15 @@ _portfolio_risk.register_engine(_CaptureAdapter())
 _portfolio_risk.register_engine(_ArbitrageAdapter())
 _portfolio_risk.register_engine(_FuturesArbAdapter())
 _portfolio_risk.register_engine(_MetaScalpAdapter())
+
+# DensityWatcher — фоновый мониторинг плотности стакана
+from mexc_monitor.density_watcher import DensityWatcher
+_density_watcher = DensityWatcher(
+    symbols=["BTCUSDT", "ETHUSDT"],
+    poll_interval_sec=10.0,
+    min_notional_usdt=50_000,
+    multiplier=5.0,
+)
 
 
 @app.get("/api/portfolio-risk/status")
@@ -3175,6 +4041,208 @@ def metascalp_open_ticker(
         "metascalp_url": f"metascalp://open-ticker/{ticker}?connection={conn_id}",
         "signal_level_result": result,
     }
+
+
+# ─── MetaScalp Density / Participant signals (ProBoyScalp strategy) ────────
+
+
+@app.get("/api/metascalp/density/scan")
+def metascalp_density_scan(
+    conn_id: str = Query("", description="Connection ID (пусто = auto-resolve)"),
+    tickers: str = Query("", description="CSV тикеров (пусто = watchlist из конфига)"),
+    only_candidates: bool = Query(True, description="Только кандидаты (стены + спред)"),
+    min_notional: float = Query(0, ge=0, description="Override min_notional_usdt (0 = из конфига)"),
+    multiplier: float = Query(0, ge=0, description="Override multiplier (0 = из конфига)"),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Сканировать стакан MetaScalp на плотности под стратегию ProBoyScalp."""
+    cid = conn_id.strip()
+    if not cid:
+        conns = _metascalp_client.connections()
+        if not conns:
+            return {"ok": False, "error": "No MetaScalp connections available"}
+        cid = conns[0].id
+
+    if tickers.strip():
+        tk_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    else:
+        tk_list = [str(t).strip().upper() for t in _metascalp_signal_worker.get_config().get("watchlist", []) if str(t).strip()]
+
+    if not tk_list:
+        return {"ok": False, "error": "No tickers provided and watchlist is empty"}
+
+    scanner = _metascalp_density_scanner
+    if min_notional > 0 or multiplier > 0:
+        # Создаём ad-hoc сканер с переопределёнными порогами
+        from mexc_monitor.metascalp.density_scanner import MetaScalpDensityScanner
+        cfg = _metascalp_signal_worker.get_config()
+        scanner = MetaScalpDensityScanner(
+            _metascalp_client,
+            min_notional_usdt=min_notional if min_notional > 0 else float(cfg.get("min_notional_usdt", 1000)),
+            multiplier=multiplier if multiplier > 0 else float(cfg.get("multiplier", 5)),
+            min_spread_bps=float(cfg.get("min_spread_bps", 5)),
+        )
+
+    scans = scanner.scan_watchlist(cid, tk_list, only_candidates=only_candidates, push_history=True)
+    return {
+        "ok": True,
+        "conn_id": cid,
+        "scanned_count": len(tk_list),
+        "returned_count": len(scans),
+        "scans": [s.to_dict() for s in scans],
+    }
+
+
+@app.post("/api/metascalp/density/scan-now")
+def metascalp_density_scan_now(_: None = Depends(_require_admin_token)) -> dict:
+    """Принудительный проход SignalWorker сейчас (независимо от interval)."""
+    signals = _metascalp_signal_worker.scan_now()
+    return {
+        "ok": True,
+        "signals_count": len(signals),
+        "signals": [s.to_dict() for s in signals],
+    }
+
+
+@app.get("/api/metascalp/signals")
+def metascalp_signals(
+    limit: int = Query(20, ge=1, le=200),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Последние комбинированные сигналы (плотности + участник) из ring buffer."""
+    signals = _metascalp_signal_worker.get_top_signals(limit=limit)
+    return {"ok": True, "count": len(signals), "signals": signals}
+
+
+@app.get("/api/metascalp/density/last-scan")
+def metascalp_density_last_scan(_: None = Depends(_require_admin_token)) -> dict:
+    """Последний полный снимок скана watchlist (все тикеры, включая пропущенные)."""
+    scans = _metascalp_signal_worker.get_last_scan()
+    return {"ok": True, "count": len(scans), "scans": scans}
+
+
+@app.get("/api/metascalp/density/history")
+def metascalp_density_history(
+    ticker: str = Query(..., description="Тикер"),
+    since_ms: int | None = Query(None, description="С (epoch ms)"),
+    max_points: int = Query(200, ge=10, le=2000),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """История snapshots плотности по тикеру из density_buffer."""
+    from mexc_monitor.density_buffer import get_history, snapshot_to_dict
+
+    ticker_norm = ticker.strip().upper()
+    history = get_history(ticker_norm, since_ms=since_ms, max_points=max_points)
+    return {
+        "ok": True,
+        "ticker": ticker_norm,
+        "count": len(history),
+        "history": [snapshot_to_dict(s) for s in history],
+    }
+
+
+@app.get("/api/metascalp/density/wall-changes")
+def metascalp_density_wall_changes(
+    ticker: str = Query(..., description="Тикер"),
+    since_ms: int | None = Query(None, description="С (epoch ms)"),
+    limit: int = Query(100, ge=1, le=1000),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """История изменений стен (appeared/disappeared/grew/shrunk) по тикеру."""
+    from mexc_monitor.density_buffer import get_wall_changes, wall_change_to_dict
+
+    ticker_norm = ticker.strip().upper()
+    changes = get_wall_changes(ticker_norm, since_ms=since_ms, limit=limit)
+    return {
+        "ok": True,
+        "ticker": ticker_norm,
+        "count": len(changes),
+        "changes": [wall_change_to_dict(c) for c in changes],
+    }
+
+
+@app.get("/api/metascalp/participants")
+def metascalp_participants(
+    tickers: str = Query("", description="CSV тикеров (пусто = все отслеживаемые)"),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Активные участники (всплески market-ордеров) сейчас."""
+    tk_list = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers.strip() else None
+    signals = _metascalp_participant_detector.detect_all(tk_list)
+    return {
+        "ok": True,
+        "count": len(signals),
+        "participants": [s.to_dict() for s in signals],
+        "detector_stats": _metascalp_participant_detector.stats(),
+    }
+
+
+@app.get("/api/metascalp/participants/volume")
+def metascalp_participants_volume(
+    ticker: str = Query(..., description="Тикер"),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Сводка объёмов buy/sell по тикеру без формирования сигнала (для UI)."""
+    ticker_norm = ticker.strip().upper()
+    return {
+        "ok": True,
+        "summary": _metascalp_participant_detector.get_volume_summary(ticker_norm),
+    }
+
+
+@app.post("/api/metascalp/trades/subscribe")
+def metascalp_trades_subscribe(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Подписаться на WS trades тикеров (для ParticipantDetector).
+
+    Body: {"conn_id": "...", "tickers": ["LYN_USDT", ...]}
+    """
+    conn_id = str(payload.get("conn_id", "")).strip()
+    tickers = payload.get("tickers", [])
+    if not isinstance(tickers, list):
+        return {"ok": False, "error": "tickers must be a list"}
+    if not conn_id:
+        conns = _metascalp_client.connections()
+        if not conns:
+            return {"ok": False, "error": "No MetaScalp connections available"}
+        conn_id = conns[0].id
+    added: list[str] = []
+    for tk in tickers:
+        tk = str(tk).strip().upper()
+        if tk:
+            _metascalp_ws_bridge.subscribe_trades(conn_id, tk)
+            added.append(tk)
+    return {
+        "ok": True,
+        "conn_id": conn_id,
+        "subscribed": added,
+        "all_subscribed": [f"{c}:{t}" for c, t in _metascalp_ws_bridge.subscribed_trades()],
+    }
+
+
+@app.get("/api/metascalp/signals/config")
+def metascalp_signals_config_get(_: None = Depends(_require_admin_token)) -> dict:
+    """Текущий конфиг SignalWorker (watchlist, пороги, interval)."""
+    return {"ok": True, "config": _metascalp_signal_worker.get_config(), "running": _metascalp_signal_worker.is_running()}
+
+
+@app.post("/api/metascalp/signals/config")
+def metascalp_signals_config_update(
+    payload: dict,
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Обновить конфиг SignalWorker (поля: enabled, watchlist, interval_sec, пороги)."""
+    cfg = _metascalp_signal_worker.update_config(payload)
+    return {"ok": True, "config": cfg, "running": _metascalp_signal_worker.is_running()}
+
+
+@app.post("/api/metascalp/signals/reload")
+def metascalp_signals_reload(_: None = Depends(_require_admin_token)) -> dict:
+    """Перезагрузить конфиг SignalWorker с диска (с рестартом если был включён)."""
+    cfg = _metascalp_signal_worker.reload_config()
+    return {"ok": True, "config": cfg, "running": _metascalp_signal_worker.is_running()}
 
 
 @app.get("/{full_path:path}")

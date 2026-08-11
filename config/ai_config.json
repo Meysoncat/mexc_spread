@@ -1,0 +1,14 @@
+{
+  "_comment": "Конфигурация AI Trading Agent. Укажите API ключ в переменной окружения.",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "api_key_env": "OPENAI_API_KEY",
+  "ollama_url": "http://localhost:11434",
+  "max_tokens": 4096,
+  "temperature": 0.3,
+  "autonomy": "confirm",
+  "system_prompt": "Ты — AI Trading Assistant для крипто-трейдера. Ты помогаешь с анализом рынка, поиском сигналов, риск-менеджментом и обучением. Отвечай на русском языке. Будь конкретным и используй данные из инструментов.",
+  "telegram_enabled": false,
+  "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id_env": "TELEGRAM_CHAT_ID"
+}
