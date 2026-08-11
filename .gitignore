@@ -55,3 +55,19 @@ webbridge-*.json
 # Local roadmap drafts not yet promoted into docs/.
 mexc_spread_roadmap.md
 
+# Research scratch (one-off investigations, not project docs).
+research/
+docs/HUMMINGBOT_*.md
+
+# One-off analysis / scrape scripts (see file headers).
+analyze_trades.py
+scrape_proboyscalp.py
+
+# Local config (machine-specific client config, skills index with absolute paths).
+conf/
+.agents/skills.json
+
+# Downloaded generic agent skills — project skill web-user-sim stays tracked.
+.agents/skills/*
+!.agents/skills/web-user-sim/
+
