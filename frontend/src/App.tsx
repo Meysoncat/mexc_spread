@@ -66,6 +66,9 @@ const VSPage = lazy(() =>
     default: m.VSPage,
   })),
 );
+const ScreenerPage = lazy(() =>
+  import("./pages/ScreenerPage").then((m) => ({ default: m.ScreenerPage })),
+);
 
 function PageFallback() {
   return (
@@ -102,6 +105,7 @@ function App() {
             <Route path="backtest" element={<BacktestPage />} />
             <Route path="density" element={<DensityMonitorPage />} />
             <Route path="vs" element={<VSPage />} />
+            <Route path="screener" element={<ScreenerPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
