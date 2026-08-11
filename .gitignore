@@ -23,6 +23,10 @@ data/
 # Skill runtime artifacts (web-user-sim screenshots, reports, debug scripts).
 .web-user-sim/
 
+# Hummingbot research scrape (one-off, see docs/COMPETITORS.md).
+hb-out/
+scrape_hummingbot.py
+
 # Logs.
 *.log
 api*.log
