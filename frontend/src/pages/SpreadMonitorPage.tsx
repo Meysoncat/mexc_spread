@@ -1660,7 +1660,8 @@ export function SpreadMonitorPage() {
 
   useEffect(() => {
     const saved = localStorage.getItem("mexc-ui-theme");
-    const isDark = saved === "dark";
+    // Default to dark on first visit (matches the no-flash script in index.html).
+    const isDark = saved === null ? true : saved === "dark";
     document.documentElement.classList.toggle("dark", isDark);
     setDark(isDark);
   }, []);

@@ -10,6 +10,19 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply theme before first paint to avoid a flash. Defaults to the dark
+      // terminal theme on first visit; honours an explicit user choice.
+      (function () {
+        try {
+          var t = localStorage.getItem("mexc-ui-theme");
+          var dark = t === null ? true : t === "dark";
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
