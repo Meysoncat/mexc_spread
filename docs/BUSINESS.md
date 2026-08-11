@@ -172,5 +172,5 @@ flowchart TD
 ## 8. Связанные документы
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — модули, API, ORM, история, исполнение в коде.
-- [ZAPUSK.md](ZAPUSK.md) — запуск Streamlit и современного UI.
+- [ZAPUSK.md](ZAPUSK.md) — запуск приложения.
 - [README.md](../README.md) — обзор и ссылки.

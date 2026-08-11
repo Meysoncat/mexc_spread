@@ -23,8 +23,7 @@
 | **Backend** | Python 3.10+, FastAPI, Uvicorn |
 | **Data & API** | httpx, pandas, numpy, SQLAlchemy 2.0 |
 | **WebSocket** | websocket-client (push-фиды MEXC) |
-| **Классический UI** | Streamlit |
-| **Современный UI** | React 18, TypeScript, Vite 5, Tailwind CSS |
+| **Frontend** | React 18, TypeScript, Vite 5, Tailwind CSS |
 | **Графики** | Lightweight Charts (TradingView) |
 | **База данных** | SQLite (история спредов, позиций) |
 | **Конфигурация** | JSON + переменные окружения |
@@ -36,8 +35,7 @@
 
 ```
 mexc_spread_monitor/
-├── app.py                          # Точка входа Streamlit (классический UI)
-├── backend/main.py                 # FastAPI сервер (REST API для современного UI)
+├── backend/main.py                 # FastAPI сервер (REST API)
 ├── frontend/                       # React + Vite SPA
 │   ├── src/App.tsx                 # Главный компонент
 │   ├── src/filters.ts              # Клиентская фильтрация (зеркало Python)
@@ -85,7 +83,6 @@ mexc_spread_monitor/
 │   ├── network/                    # DNS resolver, custom transport
 │   └── orm/                        # SQLAlchemy модели
 ├── tests/                          # Pytest тесты
-├── run_app.bat                     # Запуск Streamlit
 ├── run_modern.bat                  # Запуск FastAPI + Vite
 └── pyproject.toml                  # Зависимости Python
 ```
@@ -153,13 +150,7 @@ mexc_spread_monitor/
 
 ## 6. Пользовательские интерфейсы
 
-### 6.1. Streamlit (`app.py`)
-- Быстрый прототип/классический интерфейс
-- Боковая панель: фильтры, сортировка, автообновление
-- Таблица с конфигурацией колонок, экспорт CSV
-- Поддержка рынков: spot, futures, cross (базис)
-
-### 6.2. React SPA (`frontend/`)
+### 6.1. React SPA (`frontend/`)
 - Полноценный терминал с 10+ страницами
 - Spread Monitor, MultiExchange, Arbitrage, FuturesArb, SpreadCapture, LeadLag, History, Trading, Alerts
 - Графики свечей и спредов на Lightweight Charts
@@ -167,7 +158,7 @@ mexc_spread_monitor/
 - Карточки сделок, стаканы, калькулятор объёма
 - Интеграция с FastAPI через прокси Vite (`/api/*`)
 
-### 6.3. REST API (`backend/main.py`)
+### 6.2. REST API (`backend/main.py`)
 - `GET /api/health` — состояние системы
 - `GET /api/snapshot?market=spot|futures|cross` — снимок рынка (с кэшем)
 - `GET /api/depth` — стакан L2 с VWAP-оценкой
@@ -202,20 +193,20 @@ mexc_spread_monitor/
 ## 8. Поток данных (упрощённо)
 
 ```
-MEXC REST/WebSocket
-       ↓
-  client.py / ws_*.py
-       ↓
- pipeline.py (load_snapshot)
-       ↓
- execution.py (net spread, L1, VWAP)
-       ↓
-  ┌──────────────┬──────────────┐
-  ↓              ↓              ↓
-app.py    backend/main.py   history_worker
-(Streamlit)   (FastAPI)     (SQLite)
-              ↓
-         frontend (React)
+MEXC REST/WebSocket + 7 бирж WS
+        ↓
+   client.py / ws_*.py
+        ↓
+  pipeline.py (load_snapshot)
+        ↓
+  execution.py (net spread, L1, VWAP)
+        ↓
+   ┌──────────────┬──────────────┐
+   ↓              ↓              ↓
+backend/main.py   history_worker   trading engines
+  (FastAPI)        (SQLite)
+     ↓
+frontend (React)
 ```
 
 ---
@@ -227,7 +218,7 @@ app.py    backend/main.py   history_worker
 - ✅ Net spread с моделью комиссий
 - ✅ WebSocket-фиды для снижения задержек
 - ✅ История в SQLite
-- ✅ Два UI: Streamlit + React/FastAPI
+- ✅ UI: React/FastAPI (11 страниц)
 - ✅ Три торговых движка (spread capture, cross-exchange arb, futures arb)
 - ✅ Paper/live режимы, kill switch, риск-контроль
 - ✅ Мультибиржевая поддержка (Binance, Bybit, OKX, Gate.io, HTX, Bitget, dYdX, Hyperliquid, AsterDEX, Lighter)
