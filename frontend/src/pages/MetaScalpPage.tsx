@@ -203,6 +203,48 @@ export function MetaScalpPage() {
     auto_cancel_triggered: true,
   });
 
+  // Density Signals (ProBoyScalp strategy)
+  interface DensitySignalItem {
+    timestamp_ms: number;
+    conn_id: string;
+    ticker: string;
+    walls_count: number;
+    max_wall_notional_usdt: number;
+    spread_bps: number;
+    best_bid: number;
+    best_ask: number;
+    participant_direction: string;
+    participant_spike_vol_usdt: number;
+    participant_is_strong: boolean;
+    participant_dom_ratio: number;
+    score: number;
+  }
+  const [densitySignals, setDensitySignals] = useState<DensitySignalItem[]>([]);
+  const [densitySignalsLoading, setDensitySignalsLoading] = useState(false);
+  const [densitySignalsAutoRefresh, setDensitySignalsAutoRefresh] = useState(true);
+
+  const fetchDensitySignals = useCallback(async () => {
+    setDensitySignalsLoading(true);
+    try {
+      const data = await apiGet("/api/metascalp/signals?limit=20");
+      if (data?.ok) setDensitySignals(data.signals || []);
+    } catch {
+      // silent — UI optional
+    } finally {
+      setDensitySignalsLoading(false);
+    }
+  }, []);
+
+  const scanNow = useCallback(async () => {
+    setDensitySignalsLoading(true);
+    try {
+      await apiPost("/api/metascalp/density/scan-now", {});
+      await fetchDensitySignals();
+    } finally {
+      setDensitySignalsLoading(false);
+    }
+  }, [fetchDensitySignals]);
+
   const fetchPing = useCallback(async () => {
     const data = await apiGet("/api/metascalp/ping");
     setPing(data);
@@ -301,6 +343,14 @@ export function MetaScalpPage() {
       }
     };
   }, [autoRefresh, fetchAll, fetchBasis]);
+
+  // Density signals: initial fetch + auto-refresh every 10s
+  useEffect(() => {
+    fetchDensitySignals();
+    if (!densitySignalsAutoRefresh) return;
+    const id = setInterval(fetchDensitySignals, 10_000);
+    return () => clearInterval(id);
+  }, [fetchDensitySignals, densitySignalsAutoRefresh]);
 
   const handlePlaceOrder = async () => {
     const payload = {
@@ -451,6 +501,24 @@ export function MetaScalpPage() {
         </div>
       </div>
 
+      {/* Connection guide — shown when no connections or disconnected */}
+      {(!ping?.ok || connections.length === 0) && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <h3 className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+            Как подключить MetaScalp
+          </h3>
+          <ol className="mt-2 space-y-1 text-xs text-ink-muted list-decimal list-inside">
+            <li>Установите MetaScalp Desktop (http://127.0.0.1:17845)</li>
+            <li>Добавьте API ключи биржи в настройках MetaScalp</li>
+            <li>Убедитесь, что MetaScalp запущен и слушает порт 17845</li>
+            <li>Нажмите «Обновить» выше — подключение появится автоматически</li>
+          </ol>
+          <p className="mt-2 text-xs text-ink-muted">
+            Статус: <code>http://127.0.0.1:17845</code> — MetaScalp API
+          </p>
+        </div>
+      )}
+
       {/* Status + Connection selector */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <SectionCard title="Статус MetaScalp" action={
@@ -507,6 +575,98 @@ export function MetaScalpPage() {
           </div>
         </SectionCard>
       </div>
+
+      {/* Density Signals (ProBoyScalp strategy) */}
+      <SectionCard
+        title="Density Signals (ProBoyScalp)"
+        action={
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={densitySignalsAutoRefresh}
+                onChange={(e) => setDensitySignalsAutoRefresh(e.target.checked)}
+                className="h-3 w-3"
+              />
+              auto
+            </label>
+            <button
+              onClick={scanNow}
+              disabled={densitySignalsLoading}
+              className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent/90 disabled:opacity-50"
+            >
+              <Target className="h-3 w-3" />
+              Сканировать
+            </button>
+            <button
+              onClick={fetchDensitySignals}
+              className="text-ink-muted hover:text-accent"
+            >
+              <RefreshCw className={`h-4 w-4 ${densitySignalsLoading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        }
+      >
+        <div className="mb-2 text-xs text-ink-muted">
+          Комбинированные сигналы: плотности в стакане + активность участника.
+          Клик по тикеру переключает стакан ниже.
+        </div>
+        {densitySignals.length === 0 ? (
+          <div className="py-4 text-center text-xs text-ink-muted">
+            {densitySignalsLoading ? "Сканирование…" : "Нет активных сигналов. Настрой watchlist в конфиге или нажмите «Сканировать»."}
+          </div>
+        ) : (
+          <div className="max-h-72 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="text-left text-ink-muted">
+                  <th className="py-1 pr-2">Тикер</th>
+                  <th className="py-1 pr-2 text-right">Стены</th>
+                  <th className="py-1 pr-2 text-right">Макс. стена</th>
+                  <th className="py-1 pr-2 text-right">Спред</th>
+                  <th className="py-1 pr-2 text-right">Участник</th>
+                  <th className="py-1 pr-2 text-right">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {densitySignals.map((s) => (
+                  <tr
+                    key={`${s.ticker}-${s.timestamp_ms}`}
+                    onClick={() => setTicker(s.ticker)}
+                    className="cursor-pointer border-t border-line hover:bg-accent/5"
+                  >
+                    <td className="py-1 pr-2 font-medium text-ink">
+                      <span className="inline-flex items-center gap-1">
+                        {s.participant_is_strong && <span title="Сильный участник">🔥</span>}
+                        {s.ticker}
+                      </span>
+                    </td>
+                    <td className="py-1 pr-2 text-right">{s.walls_count}</td>
+                    <td className="py-1 pr-2 text-right text-ink-muted">
+                      {s.max_wall_notional_usdt.toFixed(0)}
+                    </td>
+                    <td className="py-1 pr-2 text-right">
+                      <span className={s.spread_bps >= 15 ? "font-semibold text-emerald-600 dark:text-emerald-400" : ""}>
+                        {s.spread_bps.toFixed(1)}
+                      </span>
+                    </td>
+                    <td className="py-1 pr-2 text-right">
+                      {s.participant_direction ? (
+                        <span className={s.participant_direction === "buy" ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
+                          {s.participant_direction.toUpperCase()} {s.participant_spike_vol_usdt.toFixed(0)}
+                        </span>
+                      ) : (
+                        <span className="text-ink-muted">—</span>
+                      )}
+                    </td>
+                    <td className="py-1 pr-2 text-right font-semibold">{s.score.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
 
       {/* Ticker input */}
       <div className="flex items-center gap-2">

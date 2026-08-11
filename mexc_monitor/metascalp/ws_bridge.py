@@ -21,23 +21,31 @@ import threading
 from typing import Any
 
 from .cache import MetaScalpCache
+from .participant_detector import ParticipantDetector
 from .ws_client import MetaScalpWebSocketClient
 
 logger = logging.getLogger(__name__)
 
 
 class MetaScalpWSBridge:
-    """Bridge MetaScalp WebSocket → in-memory cache.
+    """Bridge MetaScalp WebSocket → in-memory cache + participant detector.
 
     Translates incoming WS messages into cache updates.
     Thread-safe: can be started/stopped from any thread.
     """
 
-    def __init__(self, cache: MetaScalpCache) -> None:
+    def __init__(
+        self,
+        cache: MetaScalpCache,
+        participant_detector: ParticipantDetector | None = None,
+    ) -> None:
         self._cache = cache
+        self._participant_detector = participant_detector
         self._ws_client = MetaScalpWebSocketClient(on_message=self._on_ws_message)
         self._running = False
         self._lock = threading.Lock()
+        # Тикеры, на которые подписались на trades — чтобы не дублировать подписки
+        self._subscribed_trades: set[tuple[str, str]] = set()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -82,6 +90,32 @@ class MetaScalpWSBridge:
         """Subscribe to notifications."""
         self._ws_client.subscribe_notifications()
         logger.debug("Subscribed to notifications")
+
+    def subscribe_trades(self, conn_id: str, ticker: str) -> None:
+        """Subscribe to trade updates for a ticker and route them to ParticipantDetector.
+
+        Idempotent: re-subscribing the same (conn_id, ticker) is a no-op.
+        Safe to call before the WS is connected — the subscription will be
+        replayed on next ``_on_open``.
+        """
+        key = (conn_id, ticker.strip().upper())
+        with self._lock:
+            if key in self._subscribed_trades:
+                return
+            self._subscribed_trades.add(key)
+        self._ws_client.subscribe_trades(conn_id, ticker)
+        logger.debug("Subscribed to trades for %s/%s", conn_id, ticker)
+
+    def unsubscribe_trades(self, conn_id: str, ticker: str) -> None:
+        """Forget a trades subscription locally (MetaScalp WS has no unsubscribe)."""
+        key = (conn_id, ticker.strip().upper())
+        with self._lock:
+            self._subscribed_trades.discard(key)
+
+    def subscribed_trades(self) -> list[tuple[str, str]]:
+        """Snapshot of (conn_id, ticker) pairs currently subscribed for trades."""
+        with self._lock:
+            return list(self._subscribed_trades)
 
     # ── Message handler ───────────────────────────────────────────────────────
 
@@ -133,6 +167,20 @@ class MetaScalpWSBridge:
     def _handle_notification(self, data: dict[str, Any]) -> None:
         """Generic notification — log but don't cache."""
         logger.debug("MetaScalp notification: %s", data.get("Message", data))
+
+    def _handle_trade(self, data: dict[str, Any]) -> None:
+        """Incoming trade: forward to ParticipantDetector (if attached).
+
+        Note: MetaScalp trade payloads may be a single dict or a list of dicts.
+        """
+        if self._participant_detector is None:
+            return
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    self._participant_detector.on_trade_payload(item)
+        elif isinstance(data, dict):
+            self._participant_detector.on_trade_payload(data)
 
     def _handle_generic(self, msg_type: str, data: dict[str, Any]) -> None:
         """Fallback for unknown message types."""
