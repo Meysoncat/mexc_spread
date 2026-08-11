@@ -7,6 +7,8 @@ import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { apiUrl } from "../../config";
 import type { ChartInterval, ChartVisualType, KlinesResponse, Market } from "../../types";
 import { ChartCore } from "./ChartCore";
+import { chartColors } from "./chartTheme";
+import { priceFormatFromSample } from "./priceFormat";
 
 export interface PriceChartProps {
   symbol: string;
@@ -15,18 +17,6 @@ export interface PriceChartProps {
   visual: ChartVisualType;
   className?: string;
   mode?: "dark" | "light";
-}
-
-function priceFormatFromSample(sample: number) {
-  const p = Math.abs(sample);
-  if (!Number.isFinite(p) || p === 0) {
-    return { type: "price" as const, precision: 4, minMove: 0.0001 };
-  }
-  if (p >= 10_000) return { type: "price" as const, precision: 2, minMove: 0.01 };
-  if (p >= 100) return { type: "price" as const, precision: 2, minMove: 0.01 };
-  if (p >= 1) return { type: "price" as const, precision: 4, minMove: 0.0001 };
-  if (p >= 0.01) return { type: "price" as const, precision: 6, minMove: 1e-6 };
-  return { type: "price" as const, precision: 8, minMove: 1e-8 };
 }
 
 export function PriceChart({
@@ -90,7 +80,7 @@ export function PriceChart({
 
           if (visual === "line") {
             const series = chart.addSeries(LineSeries, {
-              color: "#26a69a",
+              color: chartColors.up,
               lineWidth: 2,
               priceFormat: priceFmt,
               priceLineVisible: true,
@@ -104,11 +94,11 @@ export function PriceChart({
             seriesRef.current = series;
           } else {
             const series = chart.addSeries(CandlestickSeries, {
-              upColor: "#26a69a",
-              downColor: "#ef5350",
+              upColor: chartColors.up,
+              downColor: chartColors.down,
               borderVisible: false,
-              wickUpColor: "#26a69a",
-              wickDownColor: "#ef5350",
+              wickUpColor: chartColors.up,
+              wickDownColor: chartColors.down,
               priceFormat: priceFmt,
             });
             const candleData = raw.map((c) => ({

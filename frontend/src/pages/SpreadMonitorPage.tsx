@@ -1154,7 +1154,6 @@ const MarketTile = memo(function MarketTile({
   onToggleFavorite,
   tilesVariant,
   market,
-  isDark,
   exchange,
 }: {
   r: MarketRow;
@@ -1170,7 +1169,6 @@ const MarketTile = memo(function MarketTile({
   onToggleFavorite: () => void;
   tilesVariant: TilesVariant;
   market: Market;
-  isDark: boolean;
   exchange: Exchange;
 }) {
   const compact = tilesVariant === "charts";
@@ -1295,7 +1293,7 @@ const MarketTile = memo(function MarketTile({
         </div>
       </div>
       {tilesVariant === "charts" && (
-        <MiniSparkline market={market} symbol={r.symbol} isDark={isDark} exchange={exchange} />
+        <MiniSparkline market={market} symbol={r.symbol} exchange={exchange} />
       )}
       <dl
         className={`grid grid-cols-2 gap-x-2 font-mono text-ink-muted ${
@@ -1373,7 +1371,6 @@ const CrossMarketTile = memo(function CrossMarketTile({
   isFavorite,
   onToggleFavorite,
   tilesVariant,
-  isDark,
 }: {
   r: CrossMarketRow;
   volSpotLabel: string;
@@ -1386,7 +1383,6 @@ const CrossMarketTile = memo(function CrossMarketTile({
   isFavorite: boolean;
   onToggleFavorite: () => void;
   tilesVariant: TilesVariant;
-  isDark: boolean;
 }) {
   const compact = tilesVariant === "charts";
   return (
@@ -1511,7 +1507,7 @@ const CrossMarketTile = memo(function CrossMarketTile({
         </div>
       </div>
       {tilesVariant === "charts" && (
-        <MiniSparkline market="cross" symbol={r.symbol_spot} isDark={isDark} />
+        <MiniSparkline market="cross" symbol={r.symbol_spot} />
       )}
       <dl
         className={`grid grid-cols-2 gap-x-2 font-mono text-ink-muted ${
@@ -3410,7 +3406,6 @@ export function SpreadMonitorPage() {
                               bumpFavorites();
                             }}
                             tilesVariant={viewTilesVariant}
-                            isDark={dark}
                           />
                         );
                       })
@@ -3435,7 +3430,6 @@ export function SpreadMonitorPage() {
                             }}
                             tilesVariant={viewTilesVariant}
                             market={market}
-                            isDark={dark}
                             exchange={exchange}
                           />
                         );

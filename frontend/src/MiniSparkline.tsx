@@ -1,10 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  CandlestickSeries,
-  ColorType,
-  createChart,
-} from "lightweight-charts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CandlestickSeries } from "lightweight-charts";
 import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
+import { ChartCore } from "./components/charts/ChartCore";
+import { chartColors } from "./components/charts/chartTheme";
 import { fetchKlinesBatched } from "./klinesBatch";
 import type { Exchange, KlineCandle, Market } from "./types";
 
@@ -13,15 +11,21 @@ const MINI_KLINES_LIMIT = 96;
 interface MiniSparklineProps {
   market: Market;
   symbol: string;
-  isDark: boolean;
   exchange?: Exchange;
 }
 
 /**
- * Компактный свечной график (1h) — загрузка через batch-эндпоинт при появлении в viewport.
- * Все видимые тайлы собираются в один HTTP-запрос с кэшированием на 60s.
+ * Компактный свечной график (1h) — загрузка через batch-эндпоинт при появлении
+ * в viewport. Все видимые тайлы собираются в один HTTP-запрос с кэшированием 60s.
+ *
+ * Построен на ChartCore (тема/resize/dispose — общие); ограниченно рендерится
+ * (только когда тайл попал во viewport), сохраняя lazy-load.
  */
-export function MiniSparkline({ market, symbol, isDark, exchange = "binance" }: MiniSparklineProps) {
+export function MiniSparkline({
+  market,
+  symbol,
+  exchange = "binance",
+}: MiniSparklineProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(false);
 
@@ -41,83 +45,43 @@ export function MiniSparkline({ market, symbol, isDark, exchange = "binance" }: 
     return () => ob.disconnect();
   }, []);
 
-  useLayoutEffect(() => {
-    if (!shouldLoad || !hostRef.current) return;
-    const el = hostRef.current;
-    const w = Math.max(el.clientWidth, 120);
-    const h = Math.max(el.clientHeight, 72);
-
-    const bg = isDark ? "#0f172a" : "#f1f5f9";
-
-    const chart: IChartApi = createChart(el, {
-      layout: {
-        background: { type: ColorType.Solid, color: bg },
-      },
-      grid: {
-        vertLines: { visible: false },
-        horzLines: { visible: false },
-      },
-      rightPriceScale: {
-        visible: false,
+  const handleChartReady = useCallback(
+    (chart: IChartApi) => {
+      const series: ISeriesApi<"Candlestick"> = chart.addSeries(
+        CandlestickSeries,
+        {
+          upColor: chartColors.up,
+          downColor: chartColors.down,
+          borderVisible: false,
+          wickUpColor: chartColors.up,
+          wickDownColor: chartColors.down,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        },
+      );
+      chart.priceScale("right").applyOptions({
         autoScale: true,
         scaleMargins: { top: 0.18, bottom: 0.18 },
-      },
-      leftPriceScale: { visible: false },
-      timeScale: { visible: false },
-      crosshair: {
-        vertLine: { visible: false, labelVisible: false },
-        horzLine: { visible: false, labelVisible: false },
-      },
-      width: w,
-      height: h,
-      handleScroll: false,
-      handleScale: false,
-    });
+      });
 
-    const series: ISeriesApi<"Candlestick"> = chart.addSeries(CandlestickSeries, {
-      upColor: isDark ? "#26a69a" : "#16a34a",
-      downColor: isDark ? "#ef5350" : "#dc2626",
-      borderVisible: false,
-      wickUpColor: isDark ? "#26a69a" : "#16a34a",
-      wickDownColor: isDark ? "#ef5350" : "#dc2626",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    let cancelled = false;
-
-    fetchKlinesBatched(market, symbol, "1h", MINI_KLINES_LIMIT, exchange)
-      .then((candles: KlineCandle[]) => {
-        if (cancelled || !candles.length) return;
-        const pts = candles.map((c) => ({
-          time: c.time as UTCTimestamp,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        }));
-        series.setData(pts);
-        chart.timeScale().fitContent();
-        chart.priceScale("right").applyOptions({
-          autoScale: true,
-          scaleMargins: { top: 0.18, bottom: 0.18 },
-        });
-      })
-      .catch(() => {});
-
-    const ro = new ResizeObserver(() => {
-      const nw = Math.max(hostRef.current?.clientWidth ?? 0, 120);
-      const nh = Math.max(hostRef.current?.clientHeight ?? 0, 72);
-      chart.applyOptions({ width: nw, height: nh });
-    });
-    ro.observe(el);
-
-    return () => {
-      cancelled = true;
-      ro.disconnect();
-      chart.remove();
-    };
-  }, [shouldLoad, market, symbol, isDark, exchange]);
+      fetchKlinesBatched(market, symbol, "1h", MINI_KLINES_LIMIT, exchange)
+        .then((candles: KlineCandle[]) => {
+          if (!candles.length) return;
+          series.setData(
+            candles.map((c) => ({
+              time: c.time as UTCTimestamp,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+            })),
+          );
+          chart.timeScale().fitContent();
+        })
+        .catch(() => {});
+    },
+    [market, symbol, exchange],
+  );
 
   return (
     <div
@@ -125,6 +89,31 @@ export function MiniSparkline({ market, symbol, isDark, exchange = "binance" }: 
       className="mt-2 h-[88px] w-full shrink-0 overflow-hidden rounded-lg border border-line/70"
       aria-hidden
       onMouseDown={(e) => e.stopPropagation()}
-    />
+    >
+      {shouldLoad && (
+        <ChartCore
+          onChartReady={handleChartReady}
+          className="h-full w-full"
+          options={{
+            grid: {
+              vertLines: { visible: false },
+              horzLines: { visible: false },
+            },
+            rightPriceScale: {
+              visible: false,
+              scaleMargins: { top: 0.18, bottom: 0.18 },
+            },
+            leftPriceScale: { visible: false },
+            timeScale: { visible: false },
+            crosshair: {
+              vertLine: { visible: false, labelVisible: false },
+              horzLine: { visible: false, labelVisible: false },
+            },
+            handleScroll: false,
+            handleScale: false,
+          }}
+        />
+      )}
+    </div>
   );
 }
