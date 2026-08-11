@@ -18,6 +18,7 @@ interface ScreenerOpportunity {
   lifetime_sec: number;
   pct_time_above: number;
   spread_std: number | null;
+  spread_zscore: number | null;
   tick_age_ms: number;
   score: number;
   score_breakdown: Record<string, number>;
@@ -36,6 +37,13 @@ interface ScreenerConfig {
   w_stab: number;
   w_vol: number;
   w_stale: number;
+  w_zscore: number;
+  adaptive_mode: boolean;
+  spread_percentile: number;
+  min_spread_zscore: number;
+  target_opportunity_min: number;
+  target_opportunity_max: number;
+  use_spread_zscore: boolean;
 }
 
 interface StreamPayload {
@@ -43,6 +51,8 @@ interface StreamPayload {
   total_universe: number;
   opportunity_count: number;
   opportunities: ScreenerOpportunity[];
+  spread_percentile?: number;
+  percentile_cutoff?: number | null;
 }
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -58,7 +68,24 @@ const fmtUsd = (v: number) => {
 
 // ─── Config field specs (for the tunable filter panel) ───────────────────────
 
-type NumKey = keyof ScreenerConfig;
+// Only the numeric config fields (booleans are handled by dedicated toggles).
+type NumKey =
+  | "min_net_spread_bps"
+  | "max_spread_bps"
+  | "min_l1_notional_usdt"
+  | "min_volume_24h_usdt"
+  | "min_lifetime_sec"
+  | "w_spread"
+  | "w_liq"
+  | "w_life"
+  | "w_stab"
+  | "w_vol"
+  | "w_stale"
+  | "w_zscore"
+  | "spread_percentile"
+  | "min_spread_zscore"
+  | "target_opportunity_min"
+  | "target_opportunity_max";
 
 interface FieldSpec {
   key: NumKey;
@@ -82,6 +109,14 @@ const WEIGHT_FIELDS: FieldSpec[] = [
   { key: "w_stab", label: "w stability", step: 0.1 },
   { key: "w_vol", label: "w volatility", step: 0.1 },
   { key: "w_stale", label: "w staleness", step: 0.05 },
+  { key: "w_zscore", label: "w zscore", step: 0.1 },
+];
+
+const ADAPTIVE_FIELDS: FieldSpec[] = [
+  { key: "spread_percentile", label: "Percentile (95=топ 5%)", step: 1 },
+  { key: "min_spread_zscore", label: "Min z-score", step: 0.5 },
+  { key: "target_opportunity_min", label: "Target min", step: 1 },
+  { key: "target_opportunity_max", label: "Target max", step: 1 },
 ];
 
 // ─── Page ────────────────────────────────────────────────────────────────────
@@ -91,6 +126,8 @@ export function ScreenerPage() {
   const [config, setConfig] = useState<ScreenerConfig | null>(null);
   const [scannedAt, setScannedAt] = useState<string | null>(null);
   const [totalUniverse, setTotalUniverse] = useState(0);
+  const [percentile, setPercentile] = useState<number | null>(null);
+  const [cutoff, setCutoff] = useState<number | null>(null);
   const [connected, setConnected] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -136,6 +173,8 @@ export function ScreenerPage() {
         setOpps(p.opportunities ?? []);
         setScannedAt(p.scanned_at ?? null);
         setTotalUniverse(p.total_universe ?? 0);
+        setPercentile(p.spread_percentile ?? null);
+        setCutoff(p.percentile_cutoff ?? null);
         setErr(null);
       } catch {
         /* ignore malformed */
@@ -167,6 +206,23 @@ export function ScreenerPage() {
           setErr(e instanceof Error ? e.message : String(e));
         }
       }, 500);
+    },
+    [],
+  );
+
+  const updateBool = useCallback(
+    (key: "adaptive_mode" | "use_spread_zscore", value: boolean) => {
+      setConfig((prev) => (prev ? { ...prev, [key]: value } : prev));
+      apiFetch("/api/screener/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.ok && d.config) setConfig(d.config);
+        })
+        .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
     },
     [],
   );
@@ -225,8 +281,41 @@ export function ScreenerPage() {
       {/* Filter panel */}
       {panelOpen && config && (
         <div className="shrink-0 border-b border-line bg-surface-elevated px-4 py-3">
+          {/* Adaptive controls */}
+          <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+            <label className="flex items-center gap-2 text-xs text-ink">
+              <input
+                type="checkbox"
+                checked={config.adaptive_mode}
+                onChange={(e) => updateBool("adaptive_mode", e.target.checked)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              <span className="font-medium">Адаптивный режим</span>
+            </label>
+            <label className="flex items-center gap-2 text-xs text-ink">
+              <input
+                type="checkbox"
+                checked={config.use_spread_zscore}
+                onChange={(e) => updateBool("use_spread_zscore", e.target.checked)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              <span className="font-medium">Z-score gate</span>
+            </label>
+            {config.adaptive_mode && (
+              <span className="rounded-md bg-accent/10 px-2 py-1 text-[11px] text-accent">
+                авто-калибровка: P{percentile ?? config.spread_percentile}
+                {cutoff != null && ` → срез ${cutoff.toFixed(1)} bps`} (цель{" "}
+                {config.target_opportunity_min}–{config.target_opportunity_max})
+              </span>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 md:grid-cols-3 lg:grid-cols-6">
-            {[...GATE_FIELDS, ...WEIGHT_FIELDS].map((f) => (
+            {[
+              ...ADAPTIVE_FIELDS,
+              ...GATE_FIELDS,
+              ...WEIGHT_FIELDS,
+            ].map((f) => (
               <label key={f.key} className="flex flex-col gap-1">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                   {f.label}
@@ -276,6 +365,7 @@ export function ScreenerPage() {
                 <th className="px-3 py-2 text-right">Vol 24h</th>
                 <th className="px-3 py-2 text-right">% выше</th>
                 <th className="px-3 py-2 text-right">σ bps</th>
+                <th className="px-3 py-2 text-right">z</th>
                 <th className="px-3 py-2 text-right">Score</th>
                 <th className="px-3 py-2"></th>
               </tr>
@@ -312,6 +402,9 @@ export function ScreenerPage() {
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-ink-muted">
                     {o.spread_std == null ? "—" : o.spread_std.toFixed(1)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-muted">
+                    {o.spread_zscore == null ? "—" : o.spread_zscore.toFixed(2)}
                   </td>
                   <td
                     className="px-3 py-2 text-right font-mono font-semibold text-ink"
