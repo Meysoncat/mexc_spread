@@ -2200,7 +2200,6 @@ export function SpreadMonitorPage() {
         onClose={closeWorkspace}
         appMarket={market}
         ctx={workspaceCtx}
-        isDark={dark}
       />
       <SpreadChartModal
         open={spreadChartSymbol != null}

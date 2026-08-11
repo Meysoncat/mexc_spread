@@ -11,9 +11,9 @@ import { X } from "lucide-react";
 import { apiUrl } from "./config";
 import { readStoredVisual } from "./chartPreferences";
 import {
-  ChartWidget,
-  type ChartWidgetRef,
-} from "./components/ChartWidget";
+  TradingChart,
+  type TradingChartRef,
+} from "./components/charts";
 import type {
   ChartInterval,
   ChartVisualType,
@@ -83,7 +83,6 @@ interface AssetWorkspaceModalProps {
   onClose: () => void;
   appMarket: Market;
   ctx: WorkspaceOpenContext | null;
-  isDark: boolean;
 }
 
 function clearPriceLines(
@@ -105,9 +104,8 @@ export function AssetWorkspaceModal({
   onClose,
   appMarket,
   ctx,
-  isDark,
 }: AssetWorkspaceModalProps) {
-  const widgetRef = useRef<ChartWidgetRef>(null);
+  const widgetRef = useRef<TradingChartRef>(null);
   const densityLinesRef = useRef<IPriceLine[]>([]);
 
   const [interval, setInterval] = useState<ChartInterval>("1h");
@@ -384,13 +382,12 @@ export function AssetWorkspaceModal({
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <div className="relative min-h-[42vh] flex-1 border-b border-line lg:min-h-0 lg:border-b-0 lg:border-r">
-          <ChartWidget
+          <TradingChart
             ref={widgetRef}
             symbol={chartSymbol}
             market={appMarket}
             interval={interval}
             visual={visual}
-            isDark={isDark}
             onChartReady={handleChartReady}
             className="absolute inset-0"
           />
