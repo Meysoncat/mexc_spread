@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ListOrdered, X } from "lucide-react";
+import { ListOrdered, BarChart3, Layers, X } from "lucide-react";
 import { apiUrl } from "./config";
 import type { DepthResponse, DomMarket, OrderbookLevel } from "./types";
+import { DepthChart } from "./components/charts/DepthChart";
+import { DensityChart } from "./components/charts/DensityChart";
 
 const LIMIT_OPTIONS = [50, 100, 200, 500] as const;
+type ViewMode = "table" | "chart" | "density";
 
 function fmtNum(n: number, frac: number): string {
   if (!Number.isFinite(n)) return "—";
@@ -25,11 +28,13 @@ interface DomModalProps {
   onClose: () => void;
   market: DomMarket;
   symbol: string | null;
+  initialView?: ViewMode;
 }
 
-export function DomModal({ open, onClose, market, symbol }: DomModalProps) {
+export function DomModal({ open, onClose, market, symbol, initialView = "table" }: DomModalProps) {
   const [limit, setLimit] = useState<number>(100);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [viewMode, setViewMode] = useState<ViewMode>(initialView);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<DepthResponse | null>(null);
@@ -187,6 +192,30 @@ export function DomModal({ open, onClose, market, symbol }: DomModalProps) {
               />
               Авто 2.5 с
             </label>
+            <div className="flex rounded-lg border border-line">
+              <button
+                type="button"
+                onClick={() => setViewMode("table")}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "table" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+              >
+                <ListOrdered className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("chart")}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "chart" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("density")}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "density" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+                title="Density Analysis"
+              >
+                <Layers className="h-3.5 w-3.5" />
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => void load(true)}
@@ -268,6 +297,22 @@ export function DomModal({ open, onClose, market, symbol }: DomModalProps) {
                 </div>
               )}
 
+              {viewMode === "chart" ? (
+                <div className="h-[min(60vh,500px)] w-full">
+                  <DepthChart
+                    bids={data.bids.map((l) => ({ price: l.price, qty: l.qty }))}
+                    asks={data.asks.map((l) => ({ price: l.price, qty: l.qty }))}
+                    className="h-full w-full"
+                  />
+                </div>
+              ) : viewMode === "density" ? (
+                <div className="max-h-[min(60vh,500px)] overflow-y-auto">
+                  <DensityChart
+                    symbol={symbol ?? ""}
+                    market={market === "futures" ? "futures" : "spot"}
+                  />
+                </div>
+              ) : (
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
                   <p className="mb-1 text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">
@@ -384,6 +429,7 @@ export function DomModal({ open, onClose, market, symbol }: DomModalProps) {
                   </div>
                 </div>
               </div>
+              )}
 
               <section
                 className="mt-6 rounded-xl border-2 border-accent/25 bg-surface px-3 py-4 shadow-sm dark:border-accent/30 dark:bg-surface/80"

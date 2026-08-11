@@ -20,6 +20,8 @@ import { LiveModeWarning } from "../components/LiveModeWarning";
 import { useEngineCapabilities } from "../hooks/useEngineCapabilities";
 import { useNavigationState } from "../hooks/useNavigationState";
 import { EXCHANGE_LABELS, type ChartInterval, ChartVisualType, DepthResponse } from "../types";
+import { SlippageEstimator } from "../SlippageEstimator";
+import { OpenInterestWidget } from "../components/OpenInterestWidget";
 
 interface FuturesArbSettings {
   enabled: boolean;
@@ -906,6 +908,12 @@ export function SpreadSniperPage() {
               </div>
             </div>
           )}
+          <div className="px-4 py-3">
+            <OpenInterestWidget symbol={symbol} />
+          </div>
+          <div className="px-4 py-3">
+            <SlippageEstimator symbol={symbol} market="spot" />
+          </div>
         </div>
       </div>
     </div>

@@ -17,6 +17,7 @@ import {
   Download,
   ChartLine,
   Columns3,
+  Layers,
   LayoutGrid,
   LayoutList,
   List,
@@ -46,6 +47,9 @@ import { MiniSparkline } from "../MiniSparkline";
 import { OpenInMetaScalpButton } from "../components/OpenInMetaScalpButton";
 import { WelcomeBanner } from "../components/WelcomeBanner";
 import { InlineSpreadTrend } from "../InlineSpreadTrend";
+import { PriceFlash } from "../PriceFlash";
+import { SpreadHeatCell } from "../SpreadHeatCell";
+import { FundingBadge } from "../FundingBadge";
 import { applyMarketFilters } from "../filters";
 import {
   clearFavoritesMarket,
@@ -75,13 +79,10 @@ import { SkeletonTableRows, SkeletonCard } from "../components/ui/Skeleton";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
-// Метки бирж берём из канонического реестра (types.ts) — без дублирования.
-/** @deprecated используйте EXCHANGE_LABELS из types.ts */
-const EXCHANGE_DISPLAY_NAMES: Record<Exchange, string> = EXCHANGE_LABELS;
-
 const SORT_OPTIONS_SPOT_FUT: { value: string; label: string }[] = [
   { value: "spread_bps", label: "Спред (bps)" },
   { value: "net_spread_bps", label: "Чистый спред (bps)" },
+  { value: "spread_lifetime_sec", label: "Lifetime (сек)" },
   { value: "spread_abs", label: "Спред (абс.)" },
   { value: "l1_max_notional_quote", label: "L1 max USDT≈" },
   { value: "volume_24h_quote", label: "Объём 24h (котировка)" },
@@ -145,6 +146,8 @@ const MIN_VOL_QUOTE_STORAGE_KEY = "mexc-ui-min-vol-quote";
 const MIN_SPREAD_BPS_STORAGE_KEY = "mexc-ui-min-spread-bps";
 const COMPACT_ROWS_STORAGE_KEY = "mexc-ui-compact-rows";
 const HIDDEN_COLS_STORAGE_PREFIX = "mexc-ui-hidden-cols-";
+/** Порог net_spread_bps для подсчёта spread lifetime (секунды выше порога). */
+const SPREAD_LIFETIME_THRESHOLD_BPS = 3;
 /** Панель фильтров сворачиваемая; по умолчанию скрыта — ходовые фильтры есть в строке над таблицей. */
 const FILTERS_COLLAPSED_STORAGE_KEY = "mexc-ui-filters-collapsed";
 
@@ -161,6 +164,9 @@ const SPOTFUT_HIDEABLE_COLS: { key: string; label: string }[] = [
   { key: "spread_abs", label: "Спред (абс.)" },
   { key: "spread_bps", label: "Спред bps" },
   { key: "net_spread_bps", label: "Net bps" },
+  { key: "lifetime", label: "Lifetime" },
+  { key: "wall_bid", label: "Wall Bid" },
+  { key: "wall_ask", label: "Wall Ask" },
   { key: "trend", label: "Trend" },
   { key: "l1", label: "L1 USDT" },
   { key: "mid", label: "Mid" },
@@ -344,6 +350,58 @@ function fmt(n: number | null | undefined, digits: number): string {
   });
 }
 
+/** Форматирование spread lifetime: 45s, 12m, 2h 15m */
+function fmtLifetime(sec: number | null | undefined): string {
+  if (sec == null || sec < 0) return "—";
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** Форматирование нотации стены: $180K, $1.2M */
+function fmtWallNotional(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+/** Получить данные о стенах для списка символов. */
+async function fetchWallData(
+  symbols: string[],
+  market: string,
+): Promise<Record<string, { bid: number; ask: number }>> {
+  const result: Record<string, { bid: number; ask: number }> = {};
+  // Fetch walls for each symbol in parallel (limited to 5 concurrent)
+  const chunks: string[][] = [];
+  for (let i = 0; i < symbols.length; i += 5) {
+    chunks.push(symbols.slice(i, i + 5));
+  }
+  for (const chunk of chunks) {
+    await Promise.allSettled(
+      chunk.map(async (sym) => {
+        try {
+          const q = new URLSearchParams({ symbol: sym, market, multiplier: "5", min_notional: "50000" });
+          const r = await fetch(apiUrl(`/api/density/walls?${q}`));
+          const d = await r.json();
+          if (d.ok && d.walls) {
+            const bidWalls = d.walls.filter((w: { side: string }) => w.side === "bid");
+            const askWalls = d.walls.filter((w: { side: string }) => w.side === "ask");
+            const maxBid = bidWalls.length > 0 ? Math.max(...bidWalls.map((w: { notional_usdt: number }) => w.notional_usdt)) : null;
+            const maxAsk = askWalls.length > 0 ? Math.max(...askWalls.map((w: { notional_usdt: number }) => w.notional_usdt)) : null;
+            result[sym] = { bid: maxBid ?? 0, ask: maxAsk ?? 0 };
+          }
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+  }
+  return result;
+}
+
 const SNAPSHOT_LOG = import.meta.env.DEV;
 
 async function fetchSnapshot(
@@ -431,6 +489,7 @@ function downloadCsv(rows: SnapshotRow[], market: Market) {
       "spread_abs",
       "spread_bps",
       "net_spread_bps",
+      "spread_lifetime_sec",
       "fee_round_trip_bps",
       "mid",
       "l1_max_notional_quote",
@@ -633,7 +692,7 @@ const MarketRowTr = memo(function MarketRowTr({
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
   onOpenChart: (symbol: string) => void;
   onOpenSpreadChart: (symbol: string) => void;
-  onOpenDom: (m: DomMarket, symbol: string) => void;
+  onOpenDom: (m: DomMarket, symbol: string, initialView?: "table" | "chart" | "density") => void;
   onOpenWorkspace: (w: WorkspaceOpenContext) => void;
   onQuickCapture: (symbol: string) => void;
   domBookMarket: DomMarket;
@@ -761,6 +820,19 @@ const MarketRowTr = memo(function MarketRowTr({
               >
                 <LayoutList className="h-4 w-4" strokeWidth={2} />
               </button>
+              <button
+                type="button"
+                className="rounded-md p-1 text-ink-muted transition hover:bg-violet-500/15 hover:text-violet-500"
+                title="Density — анализ плотности стакана"
+                aria-label={`Density ${r.symbol}`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenDom(domBookMarket, r.symbol, "density");
+                }}
+              >
+                <Layers className="h-4 w-4" strokeWidth={2} />
+              </button>
               {r.net_spread_bps != null && r.net_spread_bps >= 3 && (
                 <button
                   type="button"
@@ -787,9 +859,7 @@ const MarketRowTr = memo(function MarketRowTr({
         <td className="px-4 py-2.5">{fmt(r.spread_abs, 8)}</td>
       )}
       {!h.has("spread_bps") && (
-        <td className="px-4 py-2.5 text-accent font-mono tabular-nums">
-          {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
-        </td>
+        <SpreadHeatCell value={r.spread_bps} threshold={50} />
       )}
       {!h.has("net_spread_bps") && (
         <td className={`px-4 py-2.5 font-mono tabular-nums font-semibold ${
@@ -799,7 +869,39 @@ const MarketRowTr = memo(function MarketRowTr({
           : r.net_spread_bps <= -10 ? "text-rose-500"
           : "text-ink-muted"
         }`}>
-          {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
+          <PriceFlash value={r.net_spread_bps}>
+            {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
+          </PriceFlash>
+        </td>
+      )}
+      {!h.has("lifetime") && (
+        <td className={`px-4 py-2.5 font-mono tabular-nums text-xs ${
+          r.spread_lifetime_sec == null ? "text-ink-muted"
+          : r.spread_lifetime_sec >= 1800 ? "text-emerald-500 font-semibold"
+          : r.spread_lifetime_sec >= 300 ? "text-amber-500"
+          : "text-ink-muted"
+        }`}>
+          {r.spread_lifetime_sec == null ? "—" : fmtLifetime(r.spread_lifetime_sec)}
+        </td>
+      )}
+      {!h.has("wall_bid") && (
+        <td className={`px-4 py-2.5 font-mono tabular-nums text-xs ${
+          r.wall_bid_notional == null ? "text-ink-muted"
+          : r.wall_bid_notional >= 100000 ? "text-emerald-500 font-semibold"
+          : r.wall_bid_notional >= 50000 ? "text-emerald-600 dark:text-emerald-400"
+          : "text-ink-muted"
+        }`}>
+          {r.wall_bid_notional == null ? "—" : fmtWallNotional(r.wall_bid_notional)}
+        </td>
+      )}
+      {!h.has("wall_ask") && (
+        <td className={`px-4 py-2.5 font-mono tabular-nums text-xs ${
+          r.wall_ask_notional == null ? "text-ink-muted"
+          : r.wall_ask_notional >= 100000 ? "text-rose-500 font-semibold"
+          : r.wall_ask_notional >= 50000 ? "text-rose-600 dark:text-rose-400"
+          : "text-ink-muted"
+        }`}>
+          {r.wall_ask_notional == null ? "—" : fmtWallNotional(r.wall_ask_notional)}
         </td>
       )}
       {!h.has("trend") && <InlineSpreadTrend symbol={r.symbol} />}
@@ -815,7 +917,7 @@ const MarketRowTr = memo(function MarketRowTr({
       )}
       {!h.has("funding") && (
         <td className="px-4 py-2.5">
-          {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
+          <FundingBadge value={r.funding_rate} />
         </td>
       )}
       {!h.has("bid_qty") && (
@@ -843,7 +945,7 @@ const CrossMarketRowTr = memo(function CrossMarketRowTr({
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
   onOpenChart: (symbol: string) => void;
   onOpenSpreadChart: (symbol: string) => void;
-  onOpenDom: (m: DomMarket, symbol: string) => void;
+  onOpenDom: (m: DomMarket, symbol: string, initialView?: "table" | "chart" | "density") => void;
   onOpenWorkspace: (w: WorkspaceOpenContext) => void;
   isFavorite: boolean;
   onToggleFavorite: () => void;
@@ -1061,7 +1163,7 @@ const MarketTile = memo(function MarketTile({
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
   onOpenChart: (symbol: string) => void;
   onOpenSpreadChart: (symbol: string) => void;
-  onOpenDom: (m: DomMarket, symbol: string) => void;
+  onOpenDom: (m: DomMarket, symbol: string, initialView?: "table" | "chart" | "density") => void;
   onOpenWorkspace: (w: WorkspaceOpenContext) => void;
   domBookMarket: DomMarket;
   isFavorite: boolean;
@@ -1176,6 +1278,19 @@ const MarketTile = memo(function MarketTile({
           >
             <LayoutList className="h-4 w-4" strokeWidth={2} />
           </button>
+          <button
+            type="button"
+            className="rounded-md p-1 text-ink-muted transition hover:bg-violet-500/15 hover:text-violet-500"
+            title="Density — анализ плотности"
+            aria-label={`Density ${r.symbol}`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDom(domBookMarket, r.symbol, "density");
+            }}
+          >
+            <Layers className="h-4 w-4" strokeWidth={2} />
+          </button>
           <OpenInMetaScalpButton ticker={r.symbol} />
         </div>
       </div>
@@ -1199,16 +1314,32 @@ const MarketTile = memo(function MarketTile({
         </div>
         <div className="flex justify-between gap-2">
           <span title="Спред (Ask − Bid), выраженный в базисных пунктах (1 bps = 0.01%)">bps</span>
-          <span className="text-accent">
-            {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
-          </span>
+          <PriceFlash value={r.spread_bps}>
+            <span className="text-accent">
+              {r.spread_bps == null ? "—" : fmt(r.spread_bps, 2)}
+            </span>
+          </PriceFlash>
         </div>
         <div className="flex justify-between gap-2">
           <span title="Чистый спред после вычета торговых комиссий (taker fees обеих сторон)">Net</span>
-          <span className="text-emerald-600 dark:text-emerald-400">
-            {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
-          </span>
+          <PriceFlash value={r.net_spread_bps}>
+            <span className="text-emerald-600 dark:text-emerald-400">
+              {r.net_spread_bps == null ? "—" : fmt(r.net_spread_bps, 2)}
+            </span>
+          </PriceFlash>
         </div>
+        {r.spread_lifetime_sec != null && r.spread_lifetime_sec > 0 && (
+          <div className="flex justify-between gap-2">
+            <span title="Время выше порога спреда">Life</span>
+            <span className={
+              r.spread_lifetime_sec >= 1800 ? "text-emerald-500 font-semibold"
+              : r.spread_lifetime_sec >= 300 ? "text-amber-500"
+              : "text-ink-muted"
+            }>
+              {fmtLifetime(r.spread_lifetime_sec)}
+            </span>
+          </div>
+        )}
         <div className="flex justify-between gap-2">
           <span title="Средняя цена между Bid и Ask: (Bid + Ask) / 2">Mid</span>
           <span className="text-ink">{fmt(r.mid, 8)}</span>
@@ -1223,7 +1354,7 @@ const MarketTile = memo(function MarketTile({
         </div>
         <div className="col-span-2 text-[11px]">
           <span className="text-ink-muted">Funding: </span>
-          {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
+          <FundingBadge value={r.funding_rate} />
         </div>
       </dl>
     </article>
@@ -1250,7 +1381,7 @@ const CrossMarketTile = memo(function CrossMarketTile({
   onCtrlCopy: (e: MouseEvent, symbol: string, symbolFut?: string) => void;
   onOpenChart: (symbol: string) => void;
   onOpenSpreadChart: (symbol: string) => void;
-  onOpenDom: (m: DomMarket, symbol: string) => void;
+  onOpenDom: (m: DomMarket, symbol: string, initialView?: "table" | "chart" | "density") => void;
   onOpenWorkspace: (w: WorkspaceOpenContext) => void;
   isFavorite: boolean;
   onToggleFavorite: () => void;
@@ -1413,7 +1544,7 @@ const CrossMarketTile = memo(function CrossMarketTile({
         </div>
         <div className="col-span-2 text-[11px]">
           <span className="text-ink-muted">Funding: </span>
-          {r.funding_rate == null ? "—" : fmt(r.funding_rate, 6)}
+          <FundingBadge value={r.funding_rate} />
         </div>
       </dl>
     </article>
@@ -1434,6 +1565,8 @@ export function SpreadMonitorPage() {
   );
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [totalSnapshot, setTotalSnapshot] = useState(0);
+  /** Трекер spread lifetime: symbol → timestamp (ms) когда спред впервые поднялся выше порога. */
+  const lifetimeTrackerRef = useRef<Map<string, number>>(new Map());
   const [isFetching, setIsFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
@@ -1442,6 +1575,8 @@ export function SpreadMonitorPage() {
   const [minSpreadBps, setMinSpreadBps] = useState(() =>
     readStoredNumber(MIN_SPREAD_BPS_STORAGE_KEY, 0),
   );
+  /** Пороговое значение net_spread_bps для lifetime — из настроек фильтра или константы. */
+  const lifetimeThresholdBps = Math.max(SPREAD_LIFETIME_THRESHOLD_BPS, minSpreadBps);
   const [minVolQuote, setMinVolQuote] = useState(() =>
     readStoredNumber(MIN_VOL_QUOTE_STORAGE_KEY, DEFAULT_MIN_VOL_QUOTE),
   );
@@ -1473,7 +1608,7 @@ export function SpreadMonitorPage() {
     readStoredBool(FILTERS_COLLAPSED_STORAGE_KEY, true),
   );
 
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [intervalSec, setIntervalSec] = useState(20);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [exchangePairCounts, setExchangePairCounts] = useState<
@@ -1482,6 +1617,8 @@ export function SpreadMonitorPage() {
 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => {
     if (typeof window === "undefined") return "list";
+    // On mobile, default to tiles view
+    if (window.innerWidth < 768) return "tiles";
     const v = window.localStorage.getItem(DISPLAY_STORAGE_KEY);
     return v === "tiles" ? "tiles" : "list";
   });
@@ -1502,6 +1639,7 @@ export function SpreadMonitorPage() {
   const [domTarget, setDomTarget] = useState<{
     market: DomMarket;
     symbol: string;
+    initialView?: "table" | "chart" | "density";
   } | null>(null);
   const [workspaceCtx, setWorkspaceCtx] = useState<WorkspaceOpenContext | null>(
     null,
@@ -1629,8 +1767,8 @@ export function SpreadMonitorPage() {
     setSpreadChartSymbol(null);
   }, []);
 
-  const openDom = useCallback((m: DomMarket, sym: string) => {
-    setDomTarget({ market: m, symbol: sym });
+  const openDom = useCallback((m: DomMarket, sym: string, initialView?: "table" | "chart" | "density") => {
+    setDomTarget({ market: m, symbol: sym, initialView });
   }, []);
 
   const closeDom = useCallback(() => {
@@ -1749,7 +1887,7 @@ export function SpreadMonitorPage() {
       if (!data.ok) {
         const msg = data.error ?? "Неизвестная ошибка";
         if (SNAPSHOT_LOG) console.warn("[MEXC UI] snapshot ok=false", m, msg);
-        setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${msg}`);
+        setError(`Ошибка загрузки данных ${EXCHANGE_LABELS[exchange]}: ${msg}`);
         setRows([]);
         setTotalSnapshot(0);
         return;
@@ -1759,11 +1897,53 @@ export function SpreadMonitorPage() {
       if (!Array.isArray(data.rows)) {
         console.error("[MEXC UI] snapshot rows не массив", typeof data.rows, m);
       }
-      setRows(nextRows);
+      // Spread lifetime tracking: считаем, сколько секунд спред выше порога
+      const nowMs = Date.now();
+      const tracker = lifetimeTrackerRef.current;
+      const currentSymbols = new Set<string>();
+      const threshold = lifetimeThresholdBps;
+      const rowsWithLifetime = nextRows.map((r: SnapshotRow) => {
+        if (!("symbol" in r) || market === "cross") return r;
+        const sym = r.symbol;
+        currentSymbols.add(sym);
+        const netBps = (r as MarketRow).net_spread_bps;
+        if (netBps != null && netBps >= threshold) {
+          if (!tracker.has(sym)) tracker.set(sym, nowMs);
+          const startedMs = tracker.get(sym)!;
+          return { ...r, spread_lifetime_sec: Math.round((nowMs - startedMs) / 1000) };
+        }
+        tracker.delete(sym);
+        return { ...r, spread_lifetime_sec: null };
+      });
+      // Очистить символы, которых больше нет в снимке
+      for (const key of tracker.keys()) {
+        if (!currentSymbols.has(key)) tracker.delete(key);
+      }
+      setRows(rowsWithLifetime);
       const total =
         typeof data.count === "number" ? data.count : nextRows.length;
       setTotalSnapshot(total);
       setLoadedAt(data.loaded_at ?? null);
+
+      // Fetch wall data for top symbols (async, non-blocking)
+      const topSymbols = rowsWithLifetime
+        .filter((r): r is MarketRow => "symbol" in r)
+        .slice(0, 30)
+        .map((r) => r.symbol);
+      if (topSymbols.length > 0 && market !== "cross") {
+        void fetchWallData(topSymbols, market === "futures" ? "futures" : "spot")
+          .then((wallMap) => {
+            setRows((prev) =>
+              prev.map((r) => {
+                if (!("symbol" in r)) return r;
+                const wall = wallMap[(r as MarketRow).symbol];
+                if (!wall) return r;
+                return { ...r, wall_bid_notional: wall.bid, wall_ask_notional: wall.ask };
+              }),
+            );
+          })
+          .catch(() => {});
+      }
       setExchangePairCounts((prev) => {
         const next = { ...prev, [exchange]: total };
         try {
@@ -1777,7 +1957,7 @@ export function SpreadMonitorPage() {
         return next;
       });
     },
-    [exchange],
+    [exchange, lifetimeThresholdBps, market],
   );
 
   const load = useCallback(
@@ -1800,7 +1980,7 @@ export function SpreadMonitorPage() {
       } catch (e) {
         if (e instanceof DOMException && e.name === "AbortError") return;
         if (id !== fetchIdRef.current) return;
-        setError(`Ошибка загрузки данных ${EXCHANGE_DISPLAY_NAMES[exchange]}: ${e instanceof Error ? e.message : String(e)}`);
+        setError(`Ошибка загрузки данных ${EXCHANGE_LABELS[exchange]}: ${e instanceof Error ? e.message : String(e)}`);
         setRows([]);
         setTotalSnapshot(0);
       } finally {
@@ -2013,6 +2193,7 @@ export function SpreadMonitorPage() {
         onClose={closeDom}
         market={domTarget?.market ?? "spot"}
         symbol={domTarget?.symbol ?? null}
+        initialView={domTarget?.initialView ?? "table"}
       />
       <AssetWorkspaceModal
         open={workspaceCtx != null}
@@ -2043,7 +2224,7 @@ export function SpreadMonitorPage() {
         <div className="flex items-start justify-between gap-2 border-b border-line p-5">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-ink-muted">
-              {EXCHANGE_DISPLAY_NAMES[exchange]}
+              {EXCHANGE_LABELS[exchange]}
             </p>
             <h1 className="mt-1 text-lg font-semibold leading-tight text-ink">
               Spread Monitor
@@ -2598,7 +2779,7 @@ export function SpreadMonitorPage() {
       {/* Main content area */}
       <main className="flex min-w-0 flex-1 flex-col">
         <WelcomeBanner />
-        <header className="relative flex flex-wrap items-center justify-between gap-4 border-b border-line bg-surface-elevated px-6 py-4">
+        <header className="relative flex flex-wrap items-center justify-between gap-3 border-b border-line bg-surface-elevated px-4 py-3 md:px-6 md:py-4">
           {showStaleTable && (
             <div
               className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden bg-accent/20"
@@ -2612,7 +2793,7 @@ export function SpreadMonitorPage() {
               <button
                 type="button"
                 onClick={toggleFiltersCollapsed}
-                className="hidden shrink-0 items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink transition hover:bg-surface-elevated xl:inline-flex"
+                className="hidden shrink-0 items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink transition hover:bg-surface-elevated md:inline-flex"
                 title="Развернуть панель со всеми фильтрами, избранным и настройками вида"
                 aria-label="Развернуть панель фильтров"
               >
@@ -2626,6 +2807,23 @@ export function SpreadMonitorPage() {
                 )}
               </button>
             )}
+            {/* Always-visible search */}
+            <div className="relative">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Поиск BTC, ETH…"
+                className="w-40 rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:ring-2 focus:ring-accent md:w-56"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink"
+                >
+                  ×
+                </button>
+              )}
+            </div>
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/15 text-accent">
               <Activity className="h-5 w-5" strokeWidth={2} />
             </div>
@@ -2744,7 +2942,7 @@ export function SpreadMonitorPage() {
 
         {/* 0.3: компактная строка ходовых фильтров — видна, когда боковая панель свёрнута */}
         {filtersCollapsed && (
-          <div className="hidden flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface-elevated/70 px-6 py-2.5 xl:flex">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface-elevated/70 px-4 py-2.5 xl:px-6">
             <label className="flex items-center gap-2 text-xs text-ink-muted">
               Поиск
               <input
@@ -2810,7 +3008,7 @@ export function SpreadMonitorPage() {
           </div>
         )}
 
-        <div className="relative flex-1 overflow-hidden p-4">
+        <div className="relative flex-1 overflow-hidden p-2 md:p-4">
           {copyToast && (
             <div
               className="pointer-events-none fixed bottom-6 right-6 z-50 max-w-sm rounded-lg border border-line bg-surface-elevated px-4 py-2 text-sm text-ink shadow-lg dark:shadow-panel-dark"
@@ -3004,6 +3202,21 @@ export function SpreadMonitorPage() {
                             ascending={ascending}
                             onSort={toggleColumnSort}
                           />
+                        )}
+                        {!hiddenCols.has("lifetime") && (
+                          <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted" title="Время выше порога спреда">
+                            Life
+                          </th>
+                        )}
+                        {!hiddenCols.has("wall_bid") && (
+                          <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted" title="Крупнейший bid-уровень (USDT)">
+                            Wall Bid
+                          </th>
+                        )}
+                        {!hiddenCols.has("wall_ask") && (
+                          <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted" title="Крупнейший ask-уровень (USDT)">
+                            Wall Ask
+                          </th>
                         )}
                         {!hiddenCols.has("trend") && (
                           <th className="w-[6%] px-4 py-2 text-xs font-medium text-ink-muted">
@@ -3241,7 +3454,7 @@ export function SpreadMonitorPage() {
                   <p className="text-ink-muted">
                     0 совпадений: под фильтры не попала ни одна пара из{" "}
                     <span className="font-mono">{rows.length}</span> в снимке{" "}
-                    {EXCHANGE_DISPLAY_NAMES[exchange]}.
+                    {EXCHANGE_LABELS[exchange]}.
                   </p>
                   {hasActiveFilters && (
                     <button
@@ -3255,7 +3468,7 @@ export function SpreadMonitorPage() {
                 </div>
               ) : (
                 <p className="p-8 text-center text-ink-muted">
-                  Нет данных для {EXCHANGE_DISPLAY_NAMES[exchange]}
+                  Нет данных для {EXCHANGE_LABELS[exchange]}
                 </p>
               ))}
           </div>

@@ -78,7 +78,7 @@ export function AsterDexPage() {
   const [sortBy, setSortBy] = useState<string>("spread_bps");
   const [ascending, setAscending] = useState(false);
   const [crossSymbols, setCrossSymbols] = useState("BTCUSDT,ETHUSDT,SOLUSDT,DOGEUSDT,ADAUSDT");
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   // Глобальный символ — для быстрого добавления в список сравнения.
   const { state: navState, setSymbol: setNavSymbol } = useNavigationState();

@@ -6,8 +6,8 @@ import {
   EXCHANGE_LABELS,
   type Exchange,
   type MarketRow,
-  type SnapshotResponse,
 } from "../types";
+import { WithdrawalFeeCalculator } from "../WithdrawalFeeCalculator";
 
 /** Все биржи из переключателя (CEX + DEX). */
 const ALL_EXCHANGES: { value: Exchange; label: string }[] =
@@ -74,31 +74,6 @@ function fmt(n: number | null | undefined, digits = 4): string {
   });
 }
 
-async function fetchExchangeRows(
-  exchange: Exchange,
-  signal: AbortSignal,
-): Promise<ExchangeQuote[]> {
-  const q = new URLSearchParams({ market: "futures", exchange });
-  const r = await fetch(apiUrl(`/api/snapshot?${q}`), { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const data = (await r.json()) as SnapshotResponse;
-  if (!data.ok || !Array.isArray(data.rows)) {
-    throw new Error(data.error ?? "нет данных");
-  }
-  return (data.rows as MarketRow[])
-    .filter((row) => row.bid > 0 && row.ask > 0)
-    .map((row) => ({
-      exchange,
-      symbol: row.symbol,
-      bid: row.bid,
-      ask: row.ask,
-      mid: row.mid,
-      spread_bps: row.spread_bps,
-      volume_24h_quote: row.volume_24h_quote,
-      funding_rate: row.funding_rate,
-    }));
-}
-
 export function MultiExchangePage() {
   const [selected, setSelected] = useState<Exchange[]>([
     "mexc",
@@ -126,23 +101,47 @@ export function MultiExchangePage() {
         for (const ex of exchanges) next[ex] = true;
         return next;
       });
-      for (const ex of exchanges) {
-        fetchExchangeRows(ex, signal)
-          .then((rows) => {
-            setByExchange((prev) => ({ ...prev, [ex]: rows }));
-            setErrors((prev) => ({ ...prev, [ex]: undefined }));
-          })
-          .catch((e: unknown) => {
-            if (e instanceof DOMException && e.name === "AbortError") return;
-            setErrors((prev) => ({
-              ...prev,
-              [ex]: e instanceof Error ? e.message : String(e),
-            }));
-          })
-          .finally(() => {
+
+      // Один запрос ко всем биржам параллельно на бэкенде
+      const q = new URLSearchParams({
+        exchanges: exchanges.join(","),
+        market: "futures",
+      });
+      fetch(apiUrl(`/api/snapshot/multi?${q}`), { signal, ...({ signal } as RequestInit) })
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.ok || !data.results) return;
+          for (const ex of exchanges) {
+            const payload = data.results[ex];
+            if (!payload) continue;
+            if (payload.ok && Array.isArray(payload.rows)) {
+              const rows = (payload.rows as MarketRow[])
+                .filter((row) => row.bid > 0 && row.ask > 0)
+                .map((row) => ({
+                  exchange: ex,
+                  symbol: row.symbol,
+                  bid: row.bid,
+                  ask: row.ask,
+                  mid: row.mid,
+                  spread_bps: row.spread_bps,
+                  volume_24h_quote: row.volume_24h_quote,
+                  funding_rate: row.funding_rate,
+                }));
+              setByExchange((prev) => ({ ...prev, [ex]: rows }));
+              setErrors((prev) => ({ ...prev, [ex]: undefined }));
+            } else {
+              setErrors((prev) => ({ ...prev, [ex]: payload.error ?? "Ошибка" }));
+            }
             setLoading((prev) => ({ ...prev, [ex]: false }));
-          });
-      }
+          }
+        })
+        .catch((e: unknown) => {
+          if (e instanceof DOMException && e.name === "AbortError") return;
+          for (const ex of exchanges) {
+            setErrors((prev) => ({ ...prev, [ex]: e instanceof Error ? e.message : String(e) }));
+            setLoading((prev) => ({ ...prev, [ex]: false }));
+          }
+        });
     },
     [],
   );
@@ -208,7 +207,7 @@ export function MultiExchangePage() {
   const anyLoading = selected.some((ex) => loading[ex]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-3 md:p-6">
       <div>
         <h1 className="text-lg font-semibold text-ink">
           Мультибиржа: сравнение по символу
@@ -295,6 +294,8 @@ export function MultiExchangePage() {
           Совпадений: <span className="font-mono">{filtered.length}</span>
         </span>
       </div>
+
+      <WithdrawalFeeCalculator />
 
       <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-line bg-surface-elevated">
         <table className="w-full text-left text-sm">
