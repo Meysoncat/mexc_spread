@@ -3325,6 +3325,10 @@ _futures_arb_basis_calc = BasisCalculator(_futures_arb_settings)
 _futures_arb_funding = FundingTracker(_futures_arb_settings)
 _futures_arb_position_mgr = PositionManager(state_file="data/futures_arb_state.json")
 _futures_arb_risk = RiskController(_futures_arb_settings)
+from mexc_monitor.futures_arb.balance_checker import MexcSpotBalanceChecker
+# Spot balance checker for reverse cash-and-carry gating. Unconfigured (no MEXC
+# spot creds) → no enforcement (paper mode); configured → enforces real balance.
+_futures_arb_balance_checker = MexcSpotBalanceChecker()
 _futures_arb_basis_store = BasisHistoryStore(
     db_path="data/basis_history.db",
     interval_sec=_futures_arb_settings.basis_history_interval_sec,
@@ -3337,6 +3341,7 @@ _futures_arb_engine = FuturesArbStrategyEngine(
     funding_tracker=_futures_arb_funding,
     position_manager=_futures_arb_position_mgr,
     risk_controller=_futures_arb_risk,
+    balance_checker=_futures_arb_balance_checker,
 )
 
 # Register all engines with PortfolioRiskManager
