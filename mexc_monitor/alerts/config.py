@@ -23,6 +23,10 @@ class AlertConfig:
     arbitrage_enabled: bool = True
     arbitrage_threshold_bps: float = 10.0
     trade_events_enabled: bool = True
+    density_signals_enabled: bool = True  # Density + participant signals (ProBoyScalp)
+    # Комбинированные правила (P2)
+    min_lifetime_sec: int = 0  # 0 = не проверять lifetime
+    min_volume_usdt: float = 0  # 0 = не проверять объём
     # Rate limiting
     rate_limit_sec: int = 60
 
@@ -52,6 +56,9 @@ def load_alert_config() -> AlertConfig:
                     arbitrage_enabled=bool(raw.get("arbitrage_enabled", cfg.arbitrage_enabled)),
                     arbitrage_threshold_bps=float(raw.get("arbitrage_threshold_bps", cfg.arbitrage_threshold_bps)),
                     trade_events_enabled=bool(raw.get("trade_events_enabled", cfg.trade_events_enabled)),
+                    density_signals_enabled=bool(raw.get("density_signals_enabled", cfg.density_signals_enabled)),
+                    min_lifetime_sec=max(0, int(raw.get("min_lifetime_sec", cfg.min_lifetime_sec))),
+                    min_volume_usdt=max(0, float(raw.get("min_volume_usdt", cfg.min_volume_usdt))),
                     rate_limit_sec=max(1, int(raw.get("rate_limit_sec", cfg.rate_limit_sec))),
                 )
         except (json.JSONDecodeError, OSError, TypeError, ValueError):

@@ -12,6 +12,8 @@ interface AlertConfigSummary {
   arbitrage_enabled: boolean;
   arbitrage_threshold_bps: number;
   trade_events_enabled: boolean;
+  min_lifetime_sec: number;
+  min_volume_usdt: number;
   rate_limit_sec: number;
 }
 
@@ -54,6 +56,10 @@ export function AlertsPage() {
     ? [
         config.spread_threshold_enabled &&
           `спред ≥ ${config.spread_threshold_bps} bps`,
+        config.min_lifetime_sec > 0 &&
+          `удержание ≥ ${config.min_lifetime_sec} сек`,
+        config.min_volume_usdt > 0 &&
+          `объём ≥ ${(config.min_volume_usdt / 1000).toFixed(0)}K USDT`,
         config.arbitrage_enabled &&
           `арбитраж ≥ ${config.arbitrage_threshold_bps} bps`,
         config.trade_events_enabled && "открытие/закрытие позиций",
@@ -61,7 +67,7 @@ export function AlertsPage() {
     : [];
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-6">
+    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-3 md:p-6">
       {/* Заголовок и статус */}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">

@@ -126,6 +126,45 @@ class AlertService:
 
         return self._send(text)
 
+    def send_density_signal(
+        self,
+        ticker: str,
+        *,
+        walls_count: int,
+        max_wall_notional_usdt: float,
+        spread_bps: float,
+        participant_direction: str | None = None,
+        participant_volume_usdt: float = 0.0,
+        participant_is_strong: bool = False,
+    ) -> bool:
+        """Алерт: комбинированный сигнал ProBoyScalp (плотности + участник).
+
+        Срабатывает только если есть стены (density) — участник опционален
+        (но если есть, алерт помечается как «strong»).
+        """
+        if not self._config.density_signals_enabled:
+            return False
+        if walls_count <= 0:
+            return False
+        key = f"density_signal:{ticker}"
+        if self._is_rate_limited(key):
+            return False
+
+        parts: list[str] = [
+            f"🎯 <b>Density Signal</b>\n",
+            f"Тикер: <code>{ticker}</code>\n",
+            f"Плотности: <b>{walls_count}</b> (макс {max_wall_notional_usdt:.0f} USDT)\n",
+            f"Спред: <b>{spread_bps:.1f} bps</b>",
+        ]
+        if participant_direction:
+            emoji = "🔥" if participant_is_strong else "▸"
+            parts.append(
+                f"\n{emoji} Участник: <b>{participant_direction.upper()}</b> "
+                f"{participant_volume_usdt:.0f} USDT"
+            )
+        text = "".join(parts)
+        return self._send(text)
+
     def test_connection(self) -> bool:
         """Тестовое сообщение."""
         if not self._config.bot_token or not self._config.chat_id:
@@ -161,6 +200,8 @@ class AlertService:
                 cfg.arbitrage_threshold_bps = max(0.0, float(patch["arbitrage_threshold_bps"]))
             if "trade_events_enabled" in patch:
                 cfg.trade_events_enabled = bool(patch["trade_events_enabled"])
+            if "density_signals_enabled" in patch:
+                cfg.density_signals_enabled = bool(patch["density_signals_enabled"])
             if "rate_limit_sec" in patch:
                 cfg.rate_limit_sec = max(1, int(patch["rate_limit_sec"]))
             save_alert_config(cfg)

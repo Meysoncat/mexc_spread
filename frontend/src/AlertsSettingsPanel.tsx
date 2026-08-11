@@ -11,6 +11,8 @@ interface AlertConfig {
   arbitrage_enabled: boolean;
   arbitrage_threshold_bps: number;
   trade_events_enabled: boolean;
+  min_lifetime_sec: number;
+  min_volume_usdt: number;
   rate_limit_sec: number;
 }
 
@@ -137,6 +139,22 @@ export function AlertsSettingsPanel({ open, onClose }: { open: boolean; onClose:
                 <input type="number" step="1" value={config.spread_threshold_bps}
                   onChange={(e) => save({ spread_threshold_bps: parseFloat(e.target.value) || 0 })}
                   className="w-20 rounded-lg border border-line bg-surface px-2 py-1 text-sm font-mono text-ink" />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="text-sm text-ink-muted pl-6">Мин. удержание (сек)</span>
+                </label>
+                <input type="number" step="10" value={config.min_lifetime_sec}
+                  onChange={(e) => save({ min_lifetime_sec: parseInt(e.target.value) || 0 })}
+                  className="w-20 rounded-lg border border-line bg-surface px-2 py-1 text-sm font-mono text-ink" />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="text-sm text-ink-muted pl-6">Мин. объём 24h (USDT)</span>
+                </label>
+                <input type="number" step="1000" value={config.min_volume_usdt}
+                  onChange={(e) => save({ min_volume_usdt: parseFloat(e.target.value) || 0 })}
+                  className="w-24 rounded-lg border border-line bg-surface px-2 py-1 text-sm font-mono text-ink" />
               </div>
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 cursor-pointer">
