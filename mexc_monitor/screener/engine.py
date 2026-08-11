@@ -27,6 +27,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from mexc_monitor.pipeline import safe_load_snapshot
+from mexc_monitor.ws_spot_orderbook import get_book_update_rate
 from mexc_monitor.screener.config import (
     ScreenerConfig,
     apply_config_patch,
@@ -300,6 +301,11 @@ class ScreenerEngine:
             lifetime = self._state.get_lifetime(sym, now_ms)
             pct_above, spread_std = self._state.get_rolling(sym, threshold)
             zscore = self._state.get_zscore(sym, spread_bps)
+            # Tier 1.5 activity signal (None for symbols not on the bookTicker WS).
+            try:
+                book_rate = get_book_update_rate(sym)
+            except Exception:
+                book_rate = None
 
             c = Candidate(
                 symbol=sym,
@@ -316,6 +322,7 @@ class ScreenerEngine:
                 pct_time_above=pct_above,
                 spread_std=spread_std,
                 spread_zscore=zscore,
+                book_update_rate_per_min=book_rate,
             )
             candidates.append(c)
             if net is not None:

@@ -60,7 +60,8 @@ class ScreenerConfig:
     rolling_window: int = 40  # recent spread samples kept per symbol
 
     # ── Scorer weights ───────────────────────────────────────────────────────
-    w_spread: float = 1.0
+    w_ev: float = 1.0  # EV (realizable edge = net_spread × activity_factor) — dominant
+    w_spread: float = 0.0  # raw spread reward (kept for opt-in; EV supersedes it)
     w_liq: float = 0.6
     w_life: float = 0.8
     w_stab: float = 0.5
@@ -94,6 +95,10 @@ class ScreenerConfig:
     # via the bookTicker stream update rate. Below this → flagged not-active.
     # Sourced from ws_spot_orderbook.get_book_update_rate() (pushes per minute).
     min_book_update_rate_per_min: float = 60.0
+    # When a candidate's bookTicker rate is unknown (symbol not subscribed yet),
+    # the EV scorer uses this neutral factor in [0, 1] (0.5 = half credit, so an
+    # unconfirmed wide-spread coin can still surface and get promoted to the WS).
+    activity_unknown_factor: float = 0.5
 
 
 DEFAULT_CONFIG = ScreenerConfig()

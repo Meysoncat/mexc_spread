@@ -233,6 +233,7 @@ def test_percentile_clamps_out_of_range_pct():
 def test_score_breakdown_has_all_terms():
     score, breakdown = score_candidate(_candidate(), _cfg())
     assert set(breakdown.keys()) == {
+        "ev",
         "spread",
         "liquidity",
         "lifetime",
@@ -245,6 +246,7 @@ def test_score_breakdown_has_all_terms():
     assert breakdown["volatility"] <= 0
     assert breakdown["staleness"] <= 0
     assert breakdown["volume24h"] >= 0
+    assert breakdown["ev"] >= 0
 
 
 def test_higher_net_spread_scores_higher():
@@ -294,6 +296,40 @@ def test_higher_volume_scores_higher():
     thin = _candidate(volume_24h_quote=1_000.0)
     deep = _candidate(volume_24h_quote=5_000_000.0)
     assert score_candidate(deep, _cfg())[0] > score_candidate(thin, _cfg())[0]
+
+
+# ── EV (realizable edge = net_spread × activity_factor) ─────────────────────
+
+
+def test_active_wide_spread_beats_dead_wide_spread():
+    # Same wide spread, but one has real book activity, the other is dead.
+    active = _candidate(net_spread_bps=80.0, book_update_rate_per_min=120.0)
+    dead = _candidate(net_spread_bps=80.0, book_update_rate_per_min=2.0)
+    cfg = _cfg(w_ev=1.0, min_book_update_rate_per_min=60.0)
+    assert score_candidate(active, cfg)[0] > score_candidate(dead, cfg)[0]
+
+
+def test_unknown_activity_uses_neutral_factor():
+    # Unconfirmed coin (no book rate) gets the neutral factor, so it still
+    # scores by spread — can surface and get promoted to the WS.
+    c = _candidate(net_spread_bps=80.0)  # book_update_rate_per_min is None
+    _, b = score_candidate(c, _cfg(activity_unknown_factor=0.5, min_book_update_rate_per_min=60.0))
+    # ev = w_ev(1.0) * min(80, 50) * 0.5 = 25.0
+    assert b["ev"] == pytest.approx(25.0)
+
+
+def test_activity_factor_caps_at_one():
+    # A very fast book (10× the floor) should cap activity at 1.0, not 10.0.
+    c = _candidate(net_spread_bps=40.0, book_update_rate_per_min=600.0)
+    _, b = score_candidate(c, _cfg(min_book_update_rate_per_min=60.0))
+    # ev = 1.0 * min(40,50) * 1.0 = 40.0
+    assert b["ev"] == pytest.approx(40.0)
+
+
+def test_ev_zero_when_net_spread_zero():
+    c = _candidate(net_spread_bps=0.0, book_update_rate_per_min=600.0)
+    _, b = score_candidate(c, _cfg())
+    assert b["ev"] == 0.0
 
 
 def test_zscore_reward_capped():

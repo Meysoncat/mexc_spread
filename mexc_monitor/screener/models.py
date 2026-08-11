@@ -29,6 +29,8 @@ class Candidate:
     pct_time_above: float  # 0..100 over the rolling window
     spread_std: float | None  # bps, over the rolling window
     spread_zscore: float | None  # per-symbol z-score of current spread
+    # real-time activity (tier 1.5): bookTicker pushes/min, None if not subscribed
+    book_update_rate_per_min: float | None = None
     # filled by scorer
     score: float = 0.0
     score_breakdown: dict[str, float] | None = None
@@ -50,6 +52,7 @@ class ScreenerOpportunity:
     pct_time_above: float
     spread_std: float | None
     spread_zscore: float | None
+    book_update_rate_per_min: float | None
     tick_age_ms: float
     score: float
     score_breakdown: dict[str, float]
@@ -70,6 +73,7 @@ def candidate_to_opportunity(c: Candidate) -> ScreenerOpportunity:
         pct_time_above=c.pct_time_above,
         spread_std=c.spread_std,
         spread_zscore=c.spread_zscore,
+        book_update_rate_per_min=c.book_update_rate_per_min,
         tick_age_ms=c.tick_age_ms,
         score=c.score,
         score_breakdown=c.score_breakdown or {},
@@ -93,6 +97,11 @@ def opportunity_to_dict(o: ScreenerOpportunity) -> dict:
         "spread_std": o.spread_std,
         "spread_zscore": (
             round(o.spread_zscore, 2) if o.spread_zscore is not None else None
+        ),
+        "book_update_rate_per_min": (
+            round(o.book_update_rate_per_min, 1)
+            if o.book_update_rate_per_min is not None
+            else None
         ),
         "tick_age_ms": round(o.tick_age_ms, 0),
         "score": round(o.score, 3),

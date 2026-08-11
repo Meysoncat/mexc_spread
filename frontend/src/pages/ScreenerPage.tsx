@@ -19,6 +19,7 @@ interface ScreenerOpportunity {
   pct_time_above: number;
   spread_std: number | null;
   spread_zscore: number | null;
+  book_update_rate_per_min: number | null;
   tick_age_ms: number;
   score: number;
   score_breakdown: Record<string, number>;
@@ -366,6 +367,8 @@ export function ScreenerPage() {
                 <th className="px-3 py-2 text-right">% выше</th>
                 <th className="px-3 py-2 text-right">σ bps</th>
                 <th className="px-3 py-2 text-right">z</th>
+                <th className="px-3 py-2 text-right">updt/мин</th>
+                <th className="px-3 py-2 text-right">EV</th>
                 <th className="px-3 py-2 text-right">Score</th>
                 <th className="px-3 py-2"></th>
               </tr>
@@ -405,6 +408,22 @@ export function ScreenerPage() {
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-ink-muted">
                     {o.spread_zscore == null ? "—" : o.spread_zscore.toFixed(2)}
+                  </td>
+                  <td
+                    className="px-3 py-2 text-right font-mono text-ink-muted"
+                    title="bookTicker updates/min — real-time activity proxy (≥60 ≈ active)"
+                  >
+                    {o.book_update_rate_per_min == null
+                      ? "—"
+                      : o.book_update_rate_per_min.toFixed(0)}
+                  </td>
+                  <td
+                    className="px-3 py-2 text-right font-mono text-ink"
+                    title="Realizable edge ≈ net_spread × activity_factor (from score_breakdown.ev)"
+                  >
+                    {o.score_breakdown?.ev == null
+                      ? "—"
+                      : o.score_breakdown.ev.toFixed(2)}
                   </td>
                   <td
                     className="px-3 py-2 text-right font-mono font-semibold text-ink"

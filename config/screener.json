@@ -23,7 +23,8 @@
   "scan_interval_sec": 2.0,
   "top_limit": 10,
   "rolling_window": 40,
-  "w_spread": 1.0,
+  "w_ev": 1.0,
+  "w_spread": 0.0,
   "w_liq": 0.6,
   "w_life": 0.8,
   "w_stab": 0.5,
@@ -45,5 +46,6 @@
   "calibration_step": 1.0,
   "use_spread_zscore": true,
   "min_spread_zscore": 1.0,
-  "min_book_update_rate_per_min": 60.0
+  "min_book_update_rate_per_min": 60.0,
+  "activity_unknown_factor": 0.5
 }

@@ -105,6 +105,18 @@ def passes_gates(
     return (len(reasons) == 0, reasons)
 
 
+def _activity_factor(c: Candidate, cfg: ScreenerConfig) -> float:
+    """Real-time activity factor in [0, 1] from bookTicker update rate.
+
+    None (symbol not subscribed) → ``activity_unknown_factor`` (neutral), so an
+    unconfirmed wide-spread coin can still surface and get promoted to the WS.
+    """
+    if c.book_update_rate_per_min is None:
+        return cfg.activity_unknown_factor
+    floor = max(cfg.min_book_update_rate_per_min, 1e-6)
+    return min(max(c.book_update_rate_per_min / floor, 0.0), 1.0)
+
+
 def score_candidate(
     c: Candidate, cfg: ScreenerConfig
 ) -> tuple[float, dict[str, float]]:
@@ -112,8 +124,15 @@ def score_candidate(
     so the UI can show *why* a coin ranks where it does."""
     net = c.net_spread_bps if c.net_spread_bps is not None else 0.0
     z = c.spread_zscore if c.spread_zscore is not None else 0.0
+    activity = _activity_factor(c, cfg)
 
-    spread_term = cfg.w_spread * min(max(net, 0.0), cfg.spread_cap_bps)
+    spread_eff = min(max(net, 0.0), cfg.spread_cap_bps)
+    # EV — the realizable $-edge/time proxy: net spread discounted by how active
+    # the book is right now. This is the dominant term (a wide-but-dead spread
+    # scores low because activity_factor ≈ 0).
+    ev_term = cfg.w_ev * spread_eff * activity
+    # Raw spread magnitude (opt-in; superseded by EV — default weight 0).
+    spread_term = cfg.w_spread * spread_eff
     liq_term = cfg.w_liq * math.log1p(max(c.l1_notional, 0.0) / cfg.liq_ref_usdt)
     life_term = cfg.w_life * math.log1p(max(c.lifetime_sec, 0.0))
     stab_term = cfg.w_stab * (max(c.pct_time_above, 0.0) / 100.0)
@@ -126,6 +145,7 @@ def score_candidate(
     )
 
     breakdown = {
+        "ev": ev_term,
         "spread": spread_term,
         "liquidity": liq_term,
         "lifetime": life_term,
@@ -136,7 +156,8 @@ def score_candidate(
         "volume24h": vol24_term,
     }
     score = (
-        spread_term
+        ev_term
+        + spread_term
         + liq_term
         + life_term
         + stab_term
