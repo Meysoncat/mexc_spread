@@ -5,12 +5,14 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { ColorType, createChart } from "lightweight-charts";
+import { createChart } from "lightweight-charts";
 import type { IChartApi, DeepPartial, ChartOptions } from "lightweight-charts";
+import { resolveChartOptions, useAppTheme } from "./chartTheme";
 
 export interface ChartCoreProps {
   children?: ReactNode;
   containerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Explicit theme override; defaults to the detected app theme (.dark). */
   mode?: "dark" | "light";
   onChartReady?: (chart: IChartApi) => void;
   className?: string;
@@ -39,6 +41,8 @@ export const ChartCore = forwardRef<ChartCoreRef, ChartCoreProps>(
     onChartReadyRef.current = onChartReady;
 
     const containerRef = externalContainerRef ?? internalContainerRef;
+    const { mode: detectedMode } = useAppTheme();
+    const themeMode = mode ?? detectedMode;
 
     useImperativeHandle(
       ref,
@@ -50,48 +54,18 @@ export const ChartCore = forwardRef<ChartCoreRef, ChartCoreProps>(
       [],
     );
 
+    // Create the chart once, independent of theme so zoom/pan survives a theme
+    // toggle. Theme colours come from resolveChartOptions() (reads CSS tokens).
     useEffect(() => {
       const el = containerRef.current;
       if (!el) return;
 
-      let resolvedMode = mode;
-      if (!resolvedMode) {
-        resolvedMode = el.closest(".dark") ? "dark" : "light";
-      }
-
-      const isDark = resolvedMode === "dark";
-      const bg = isDark ? "#1e293b" : "#ffffff";
-      const fg = isDark ? "#e2e8f0" : "#0f172a";
-      const grid = isDark ? "#334155" : "#e2e8f0";
-
       const chart = createChart(el, {
-        layout: {
-          background: { type: ColorType.Solid, color: bg },
-          textColor: fg,
-        },
-        grid: {
-          vertLines: { color: grid },
-          horzLines: { color: grid },
-        },
-        rightPriceScale: {
-          borderColor: grid,
-          autoScale: true,
-          scaleMargins: { top: 0.12, bottom: 0.12 },
-          entireTextOnly: false,
-        },
-        timeScale: {
-          borderColor: grid,
-          timeVisible: true,
-          secondsVisible: false,
-        },
-        crosshair: {
-          mode: 0,
-        },
+        ...resolveChartOptions(),
         width: el.clientWidth,
         height: el.clientHeight,
         ...options,
       });
-
       chartRef.current = chart;
 
       const ro = new ResizeObserver(() => {
@@ -110,8 +84,16 @@ export const ChartCore = forwardRef<ChartCoreRef, ChartCoreProps>(
         chartRef.current = null;
         chart.remove();
       };
-    }, [mode, containerRef]);
+      // Chart is created once; theme/option changes are applied below.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [containerRef]);
 
+    // Re-apply theme on toggle without recreating the chart.
+    useEffect(() => {
+      chartRef.current?.applyOptions(resolveChartOptions());
+    }, [themeMode]);
+
+    // Apply consumer-provided option overrides.
     useEffect(() => {
       if (chartRef.current && options) {
         chartRef.current.applyOptions(options);
@@ -127,8 +109,7 @@ export const ChartCore = forwardRef<ChartCoreRef, ChartCoreProps>(
         ref={internalContainerRef}
         className={className ?? "h-full w-full min-h-[280px]"}
       >
-        {children}
-      </div>
+        {children}</div>
     );
   },
 );
