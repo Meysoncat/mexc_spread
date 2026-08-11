@@ -9,6 +9,7 @@ import { AlertToggle } from "./AlertToggle";
 import { FeedsStatusWidget } from "./FeedsStatusWidget";
 import { GlobalAssetBar } from "./GlobalAssetBar";
 import { KillSwitchButton } from "./KillSwitchButton";
+import { AIChatPanel } from "../AIChatPanel";
 
 const NAV_COLLAPSED_STORAGE_KEY = "mexc-ui-nav-collapsed";
 
@@ -97,6 +98,7 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+      <AIChatPanel />
     </div>
   );
 }
