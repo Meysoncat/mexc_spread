@@ -33,8 +33,8 @@ class EngineRegistry:
                 cls._instance = inst
             return cls._instance
 
-    def get_or_create(self, exchange: Exchange, market: Market) -> Any:
-        """Return existing engine or create a new one for the given exchange+market.
+    def get_or_create(self, exchange: Exchange, market: Market, account_id: str = "default") -> Any:
+        """Return existing engine or create a new one for the given exchange+market+account.
 
         On first call for a key, loads settings and creates a private client,
         then instantiates a TradingEngine configured for that exchange/market.
@@ -43,11 +43,11 @@ class EngineRegistry:
         # Import here to avoid circular imports (engine imports from this package)
         from mexc_monitor.trading.engine import TradingEngine
 
-        key = EngineKey(exchange=exchange, market=market)
+        key = EngineKey(exchange=exchange, market=market, account_id=account_id)
         with self._engines_lock:
             if key not in self._engines:
-                settings = load_trading_settings_for_exchange(exchange, market)
-                client = create_private_client(exchange, market)
+                settings = load_trading_settings_for_exchange(exchange, market, account_id=account_id)
+                client = create_private_client(exchange, market, account_id=account_id)
                 engine = TradingEngine(
                     settings=settings,
                     private_client=client,
@@ -57,9 +57,9 @@ class EngineRegistry:
                 self._engines[key] = engine
             return self._engines[key]
 
-    def get(self, exchange: Exchange, market: Market) -> Any | None:
+    def get(self, exchange: Exchange, market: Market, account_id: str = "default") -> Any | None:
         """Return engine if it exists for the given key, None otherwise."""
-        key = EngineKey(exchange=exchange, market=market)
+        key = EngineKey(exchange=exchange, market=market, account_id=account_id)
         with self._engines_lock:
             return self._engines.get(key)
 

@@ -73,21 +73,27 @@ def _env_with_fallback(
 
 
 def load_trading_settings_for_exchange(
-    exchange: Exchange, market: Market
+    exchange: Exchange, market: Market, account_id: str = "default"
 ) -> TradingSettings:
     """Load trading settings with exchange-specific prefix, falling back to MEXC defaults.
 
     For each setting, checks:
-    1. {EXCHANGE}_TRADING_{SETTING} env var (e.g. BINANCE_TRADING_SYMBOL)
-    2. MEXC_TRADING_{SETTING} env var (fallback)
-    3. Hardcoded default
+    1. {EXCHANGE}_TRADING_{ACCOUNT_ID}_{SETTING} env var (e.g. BINANCE_TRADING_2_SYMBOL)
+    2. {EXCHANGE}_TRADING_{SETTING} env var (e.g. BINANCE_TRADING_SYMBOL)
+    3. MEXC_TRADING_{SETTING} env var (fallback)
+    4. Hardcoded default
 
     Uses EXCHANGE_CONFIGS[exchange].env_prefix to determine the prefix.
     """
     config = EXCHANGE_CONFIGS[exchange]
     prefix = f"{config.env_prefix}_TRADING"
+    account_prefix = f"{prefix}_{account_id.upper()}" if account_id != "default" else prefix
 
     def _env(name: str, default: T, parser: Callable[[str], T] = str) -> T:  # type: ignore[assignment]
+        # Try account-specific first, then exchange-specific, then MEXC fallback
+        val = os.environ.get(f"{account_prefix}_{name}")
+        if val is not None and val.strip():
+            return parser(val.strip())
         return _env_with_fallback(prefix, name, default, parser)
 
     return TradingSettings(

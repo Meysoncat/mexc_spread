@@ -45,6 +45,10 @@ class EngineKey:
 
     exchange: Exchange
     market: Market
+    account_id: str = "default"
 
     def __str__(self) -> str:
+        if self.account_id != "default":
+            return f"{self.exchange.value}/{self.market.value}/{self.account_id}"
+        return f"{self.exchange.value}/{self.market.value}"
         return f"{self.exchange.value}:{self.market.value}"

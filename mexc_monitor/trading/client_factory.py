@@ -31,20 +31,24 @@ CLIENT_CLASSES: dict[Exchange, Type[BasePrivateClient]] = {
 def create_private_client(
     exchange: Exchange,
     market: Market,
+    account_id: str = "default",
 ) -> BasePrivateClient:
-    """Factory: create a configured private client for the given exchange+market.
+    """Factory: create a configured private client for the given exchange+market+account.
 
     Reads credentials from environment variables following the convention:
-      {EXCHANGE}_API_KEY, {EXCHANGE}_API_SECRET
+      {EXCHANGE}_API_KEY_{ACCOUNT_ID} (e.g. MEXC_API_KEY_2)
+      {EXCHANGE}_API_KEY (fallback)
 
     Selects spot_base_url or futures_base_url based on market parameter.
     """
     config = EXCHANGE_CONFIGS[exchange]
     env_prefix = config.env_prefix
 
-    api_key = os.environ.get(f"{env_prefix}_API_KEY", "")
-    api_secret = os.environ.get(f"{env_prefix}_API_SECRET", "")
-    recv_window = int(os.environ.get(f"{env_prefix}_RECV_WINDOW_MS", "5000"))
+    # Try account-specific env vars first, then fallback to default
+    account_suffix = f"_{account_id.upper()}" if account_id != "default" else ""
+    api_key = os.environ.get(f"{env_prefix}_API_KEY{account_suffix}") or os.environ.get(f"{env_prefix}_API_KEY", "")
+    api_secret = os.environ.get(f"{env_prefix}_API_SECRET{account_suffix}") or os.environ.get(f"{env_prefix}_API_SECRET", "")
+    recv_window = int(os.environ.get(f"{env_prefix}_RECV_WINDOW_MS{account_suffix}") or os.environ.get(f"{env_prefix}_RECV_WINDOW_MS", "5000"))
 
     base_url = (
         config.spot_base_url if market == Market.SPOT

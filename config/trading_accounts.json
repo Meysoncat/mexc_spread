@@ -1,0 +1,14 @@
+{
+  "_comment": "Мультиаккаунты для торговых движков. Каждый аккаунт имеет свой набор API ключей.",
+  "accounts": [
+    {
+      "id": "main",
+      "label": "Основной",
+      "exchange": "mexc",
+      "market": "spot",
+      "api_key_env": "MEXC_API_KEY",
+      "api_secret_env": "MEXC_API_SECRET",
+      "enabled": true
+    }
+  ]
+}
