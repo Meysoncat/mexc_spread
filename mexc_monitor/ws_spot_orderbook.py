@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import replace
 from typing import Any
 
@@ -31,6 +32,9 @@ _lock = threading.Lock()
 # symbol (upper) -> (bid_price, ask_price, bid_qty, ask_qty)
 _tops: dict[str, tuple[float, float, float, float]] = {}
 _last_mono: dict[str, float] = {}
+# symbol (upper) -> monotonic timestamps of recent bookTicker pushes (activity signal)
+_push_times: dict[str, deque[float]] = {}
+_push_window_sec: float = 60.0
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _active_symbols: tuple[str, ...] = ()
@@ -108,15 +112,56 @@ def _extract_top(data: dict[str, Any]) -> tuple[str, float, float, float, float]
 
 def _apply_push(symbol: str, bid: float, ask: float, bid_qty: float, ask_qty: float) -> None:
     mono = time.monotonic()
+    cutoff = mono - _push_window_sec
     with _lock:
         _tops[symbol] = (bid, ask, bid_qty, ask_qty)
         _last_mono[symbol] = mono
+        times = _push_times.get(symbol)
+        if times is None:
+            times = deque()
+            _push_times[symbol] = times
+        times.append(mono)
+        while times and times[0] < cutoff:
+            times.popleft()
     # Пишем в ring buffer для графиков спреда и SSE
     try:
         from mexc_monitor.spread_buffer import push_tick
         push_tick(symbol, bid, ask, bid_qty, ask_qty)
     except Exception:
         pass
+
+
+def get_book_update_rate(symbol: str, window_sec: float = _push_window_sec) -> float | None:
+    """bookTicker pushes per minute for ``symbol`` (real-time activity proxy).
+
+    Returns None if the symbol has never been seen. The rate is extrapolated
+    to per-minute from the actual elapsed time within the window (so a symbol
+    that received 3 pushes in 5s reports ~36/min, not 3/min).
+    """
+    sym = symbol.upper()
+    now = time.monotonic()
+    cutoff = now - window_sec
+    with _lock:
+        times = _push_times.get(sym)
+        if not times:
+            return None
+        recent = [t for t in times if t >= cutoff]
+    if not recent:
+        return 0.0
+    elapsed = max(now - recent[0], 1e-6)
+    return len(recent) / elapsed * 60.0
+
+
+def get_book_update_rates(window_sec: float = _push_window_sec) -> dict[str, float]:
+    """All symbols' bookTicker update rates (pushes/min). Drops zero/empty."""
+    out: dict[str, float] = {}
+    with _lock:
+        symbols = list(_push_times.keys())
+    for sym in symbols:
+        rate = get_book_update_rate(sym, window_sec=window_sec)
+        if rate is not None and rate > 0.0:
+            out[sym] = rate
+    return out
 
 
 def get_fresh_spot_tops(*, max_age_sec: float) -> dict[str, tuple[float, float, float, float]]:

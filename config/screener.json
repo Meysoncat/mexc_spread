@@ -1,9 +1,10 @@
 {
-  "_comment": "Spread Screener defaults. Market: MEXC spot, maker round-trip = 0. Adaptive mode auto-scales the spread gate to the live universe (percentile + per-symbol z-score) and a controller nudges the percentile to keep opportunity count in [target_opportunity_min, target_opportunity_max] (genuine opportunities are rare). Override via SCREENER_* env or PATCH /api/screener/config.",
+  "_comment": "Spread Screener defaults. Market: MEXC spot, maker round-trip = 0. Adaptive mode auto-scales the spread gate to the live universe (percentile + per-symbol z-score) and a controller nudges the percentile to keep opportunity count in [target_opportunity_min, target_opportunity_max] (genuine opportunities are rare). Volume gate is SOFT (low-24h-but-active coins survive to the activity tier). Override via SCREENER_* env or PATCH /api/screener/config.",
   "min_net_spread_bps": 3.0,
   "max_spread_bps": 200.0,
-  "min_l1_notional_usdt": 100.0,
-  "min_volume_24h_usdt": 100000.0,
+  "min_l1_notional_usdt": 250.0,
+  "min_volume_24h_usdt": 5000.0,
+  "volume_gate_mode": "soft",
   "min_lifetime_sec": 8.0,
   "max_tick_age_ms": 10000.0,
   "symbol_blacklist": [
@@ -29,8 +30,10 @@
   "w_vol": 0.4,
   "w_stale": 0.05,
   "w_zscore": 0.3,
+  "w_volume24h": 0.3,
   "spread_cap_bps": 50.0,
   "liq_ref_usdt": 1000.0,
+  "volume_ref_usdt": 50000.0,
   "zscore_cap": 4.0,
   "adaptive_mode": true,
   "spread_percentile": 95.0,
@@ -41,5 +44,6 @@
   "target_opportunity_max": 5,
   "calibration_step": 1.0,
   "use_spread_zscore": true,
-  "min_spread_zscore": 1.0
+  "min_spread_zscore": 1.0,
+  "min_book_update_rate_per_min": 60.0
 }

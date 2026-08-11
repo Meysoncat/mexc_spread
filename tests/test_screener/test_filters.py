@@ -79,6 +79,25 @@ def test_low_volume_fails():
     assert any("volume" in r for r in reasons)
 
 
+def test_low_volume_soft_mode_passes():
+    # The whole point of soft mode: a low-24h-but-otherwise-valid coin survives.
+    c = _candidate(volume_24h_quote=1_000.0)
+    passed, reasons = passes_gates(
+        c, _cfg(volume_gate_mode="soft", min_volume_24h_usdt=100_000.0)
+    )
+    assert passed
+    assert not any("volume" in r for r in reasons)
+
+
+def test_low_volume_hard_mode_explicit_fails():
+    c = _candidate(volume_24h_quote=1_000.0)
+    passed, reasons = passes_gates(
+        c, _cfg(volume_gate_mode="hard", min_volume_24h_usdt=100_000.0)
+    )
+    assert not passed
+    assert any("volume" in r for r in reasons)
+
+
 def test_short_lifetime_fails():
     c = _candidate(lifetime_sec=2.0)
     passed, reasons = passes_gates(c, _cfg(min_lifetime_sec=8.0))
@@ -221,9 +240,11 @@ def test_score_breakdown_has_all_terms():
         "volatility",
         "staleness",
         "zscore",
+        "volume24h",
     }
     assert breakdown["volatility"] <= 0
     assert breakdown["staleness"] <= 0
+    assert breakdown["volume24h"] >= 0
 
 
 def test_higher_net_spread_scores_higher():
@@ -267,6 +288,12 @@ def test_higher_zscore_scores_higher():
     low = _candidate(spread_zscore=0.5)
     high = _candidate(spread_zscore=3.5)
     assert score_candidate(high, _cfg())[0] > score_candidate(low, _cfg())[0]
+
+
+def test_higher_volume_scores_higher():
+    thin = _candidate(volume_24h_quote=1_000.0)
+    deep = _candidate(volume_24h_quote=5_000_000.0)
+    assert score_candidate(deep, _cfg())[0] > score_candidate(thin, _cfg())[0]
 
 
 def test_zscore_reward_capped():

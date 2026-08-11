@@ -73,7 +73,9 @@ def passes_gates(
             f"l1_notional {c.l1_notional:.0f} < {cfg.min_l1_notional_usdt}"
         )
 
-    if c.volume_24h_quote < cfg.min_volume_24h_usdt:
+    # 24h volume: in "hard" mode it's a kill gate; in "soft" mode it is NOT —
+    # a low-24h coin that is active *now* must survive to the activity tier.
+    if cfg.volume_gate_mode != "soft" and c.volume_24h_quote < cfg.min_volume_24h_usdt:
         reasons.append(
             f"volume_24h {c.volume_24h_quote:.0f} < {cfg.min_volume_24h_usdt}"
         )
@@ -118,6 +120,10 @@ def score_candidate(
     vol_term = -cfg.w_vol * (c.spread_std if c.spread_std is not None else 0.0)
     stale_term = -cfg.w_stale * (max(c.tick_age_ms, 0.0) / 1000.0)
     z_term = cfg.w_zscore * min(max(z, 0.0), cfg.zscore_cap)
+    # 24h volume reward — ranks liquid coins higher (soft signal, never a kill).
+    vol24_term = cfg.w_volume24h * math.log1p(
+        max(c.volume_24h_quote, 0.0) / cfg.volume_ref_usdt
+    )
 
     breakdown = {
         "spread": spread_term,
@@ -127,6 +133,7 @@ def score_candidate(
         "volatility": vol_term,
         "staleness": stale_term,
         "zscore": z_term,
+        "volume24h": vol24_term,
     }
     score = (
         spread_term
@@ -136,5 +143,6 @@ def score_candidate(
         + vol_term
         + stale_term
         + z_term
+        + vol24_term
     )
     return score, breakdown

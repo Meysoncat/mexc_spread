@@ -42,6 +42,10 @@ class ScreenerConfig:
     max_spread_bps: float = 200.0  # sanity ceiling — wider = illiquid junk
     min_l1_notional_usdt: float = 100.0
     min_volume_24h_usdt: float = 100_000.0
+    # volume gate mode: "hard" = kill on low 24h volume (legacy);
+    # "soft" = 24h volume is NOT a hard cut — it only feeds the scorer, so a
+    # low-24h coin that is active *right now* survives to the activity tier.
+    volume_gate_mode: str = "hard"
     min_lifetime_sec: float = 8.0  # spread must persist above threshold
     max_tick_age_ms: float = 10_000.0
     symbol_blacklist: tuple[str, ...] = field(default_factory=_default_blacklist)
@@ -63,9 +67,11 @@ class ScreenerConfig:
     w_vol: float = 0.4
     w_stale: float = 0.05
     w_zscore: float = 0.3
+    w_volume24h: float = 0.3  # 24h-volume reward weight (soft mode ranking signal)
     # Scorer normalizers
     spread_cap_bps: float = 50.0  # cap on spread reward
     liq_ref_usdt: float = 1000.0  # log1p(l1_notional / liq_ref)
+    volume_ref_usdt: float = 50_000.0  # log1p(volume_24h / volume_ref)
     zscore_cap: float = 4.0  # cap on z-score reward
 
     # ── Adaptive thresholds ──────────────────────────────────────────────────
@@ -82,6 +88,12 @@ class ScreenerConfig:
     calibration_step: float = 1.0  # percentile nudge per calibration tick
     use_spread_zscore: bool = True
     min_spread_zscore: float = 1.0
+
+    # ── Tier 1.5: real-time activity confirmation (bookTicker update rate) ────
+    # After the snapshot gate (tier 1), candidates are confirmed "active now"
+    # via the bookTicker stream update rate. Below this → flagged not-active.
+    # Sourced from ws_spot_orderbook.get_book_update_rate() (pushes per minute).
+    min_book_update_rate_per_min: float = 60.0
 
 
 DEFAULT_CONFIG = ScreenerConfig()
@@ -161,6 +173,7 @@ def _apply_env_overrides(cfg: ScreenerConfig) -> ScreenerConfig:
 def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
     """Return a new config with a validated patch applied (used by PATCH endpoint)."""
     bool_fields = {"adaptive_mode", "use_spread_zscore"}
+    str_fields = {"volume_gate_mode"}
     int_fields = {
         "top_limit",
         "rolling_window",
@@ -182,6 +195,11 @@ def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
             kw[k] = (
                 v if isinstance(v, bool) else str(v).strip().lower() in ("true", "1", "yes")
             )
+        elif k in str_fields:
+            val = str(v).strip().lower()
+            if k == "volume_gate_mode" and val not in ("hard", "soft"):
+                raise ValueError(f"invalid value for {k}: {v!r} (expected 'hard' or 'soft')")
+            kw[k] = val
         elif k in int_fields:
             kw[k] = int(v)
         else:
