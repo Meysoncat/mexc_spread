@@ -6,22 +6,38 @@ import {
   useRef,
   useState,
 } from "react";
-import { CandlestickSeries, LineSeries } from "lightweight-charts";
-import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
+import {
+  AreaSeries,
+  CandlestickSeries,
+  HistogramSeries,
+} from "lightweight-charts";
+import type {
+  IChartApi,
+  ISeriesApi,
+  MouseEventParams,
+  UTCTimestamp,
+} from "lightweight-charts";
 import { apiUrl } from "../../config";
 import type {
   ChartInterval,
   ChartVisualType,
+  KlineCandle,
   KlinesResponse,
   Market,
 } from "../../types";
 import { ChartCore } from "./ChartCore";
-import { chartColors } from "./chartTheme";
+import { accentAlpha, chartColors } from "./chartTheme";
 import { priceFormatFromSample } from "./priceFormat";
+
+/** Price/area/candlestick series types the chart can expose to callers. */
+export type PriceSeries =
+  | ISeriesApi<"Candlestick">
+  | ISeriesApi<"Line">
+  | ISeriesApi<"Area">;
 
 export interface TradingChartRef {
   chart: IChartApi | null;
-  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null;
+  series: PriceSeries | null;
 }
 
 export interface TradingChartProps {
@@ -30,36 +46,60 @@ export interface TradingChartProps {
   interval: ChartInterval;
   visual: ChartVisualType;
   className?: string;
+  /** Hide the volume histogram (defaults to shown). */
+  hideVolume?: boolean;
   /** Fires after a series is (re)created with fresh data. */
-  onChartReady?: (
-    chart: IChartApi,
-    series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
-  ) => void;
+  onChartReady?: (chart: IChartApi, series: PriceSeries) => void;
+}
+
+const VOL_UP = "rgba(38, 166, 154, 0.45)";
+const VOL_DOWN = "rgba(239, 83, 80, 0.45)";
+
+const volFmt = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 2,
+});
+
+function fmtPrice(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  const digits = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
+  return v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: digits,
+  });
 }
 
 /**
  * Declarative klines chart (candlestick or line) on top of ChartCore.
  *
- * This is the canonical price chart — it replaces the ChartWidget/PriceChart
- * duplication (each of which kept its own createChart + fetch + priceFormat).
- * The ref exposes the same `{ chart, series }` contract ChartWidget did, so
- * callers that attach price lines / overlays need no changes.
+ * Renders the price series plus a volume histogram pinned to the bottom, and a
+ * floating OHLC tooltip that follows the crosshair. The ref exposes the same
+ * `{ chart, series }` contract callers use to attach price lines / overlays.
  */
 export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
   function TradingChart(
-    { symbol, market, interval, visual, className, onChartReady },
+    { symbol, market, interval, visual, className, hideVolume, onChartReady },
     ref,
   ) {
     const chartRef = useRef<IChartApi | null>(null);
-    const seriesRef = useRef<
-      ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null
-    >(null);
+    const seriesRef = useRef<PriceSeries | null>(null);
+    const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+    // time (epoch seconds) -> candle, for O(1) crosshair tooltip lookups.
+    const candlesRef = useRef<Map<number, KlineCandle>>(new Map());
     const onReadyRef = useRef(onChartReady);
-    onReadyRef.current = onChartReady;
+    useEffect(() => {
+      onReadyRef.current = onChartReady;
+    }, [onChartReady]);
 
     const [chartReady, setChartReady] = useState(false);
     const [loading, setLoading] = useState(false);
     const [err, setErr] = useState<string | null>(null);
+    const [tip, setTip] = useState<{
+      x: number;
+      y: number;
+      c: KlineCandle;
+    } | null>(null);
 
     useImperativeHandle(
       ref,
@@ -88,16 +128,22 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
       let cancelled = false;
       setLoading(true);
       setErr(null);
+      setTip(null);
 
-      // Drop any previous series before creating a new one.
-      if (seriesRef.current) {
-        try {
-          chart.removeSeries(seriesRef.current);
-        } catch {
-          /* chart may already be disposed */
+      // Drop any previous series before creating new ones.
+      const dropSeries = () => {
+        for (const s of [seriesRef.current, volumeSeriesRef.current]) {
+          if (!s) continue;
+          try {
+            chart.removeSeries(s);
+          } catch {
+            /* chart may already be disposed */
+          }
         }
         seriesRef.current = null;
-      }
+        volumeSeriesRef.current = null;
+      };
+      dropSeries();
 
       const klinesMarket = market === "cross" ? "spot" : market;
       const q = new URLSearchParams({ market: klinesMarket, symbol, interval });
@@ -118,9 +164,16 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
           const lastClose = raw[raw.length - 1]?.close ?? raw[0].close;
           const priceFmt = priceFormatFromSample(lastClose);
 
+          // Index candles for the crosshair tooltip.
+          const map = new Map<number, KlineCandle>();
+          for (const c of raw) map.set(c.time, c);
+          candlesRef.current = map;
+
           if (visual === "line") {
-            const series = chart.addSeries(LineSeries, {
-              color: chartColors.accent,
+            const series = chart.addSeries(AreaSeries, {
+              lineColor: chartColors.accent,
+              topColor: accentAlpha(0.28),
+              bottomColor: accentAlpha(0.02),
               lineWidth: 2,
               priceFormat: priceFmt,
               priceLineVisible: true,
@@ -156,10 +209,31 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
             seriesRef.current = series;
           }
 
+          // Volume histogram on an overlay scale pinned to the bottom.
+          if (!hideVolume) {
+            const vol = chart.addSeries(HistogramSeries, {
+              priceFormat: { type: "volume" },
+              priceScaleId: "volume",
+              lastValueVisible: false,
+              priceLineVisible: false,
+            });
+            vol.setData(
+              raw.map((c) => ({
+                time: c.time as UTCTimestamp,
+                value: c.volume,
+                color: c.close >= c.open ? VOL_UP : VOL_DOWN,
+              })),
+            );
+            vol.priceScale().applyOptions({
+              scaleMargins: { top: 0.8, bottom: 0 },
+            });
+            volumeSeriesRef.current = vol;
+          }
+
           chart.timeScale().fitContent();
           chart.priceScale("right").applyOptions({
             autoScale: true,
-            scaleMargins: { top: 0.12, bottom: 0.12 },
+            scaleMargins: { top: 0.1, bottom: hideVolume ? 0.12 : 0.26 },
           });
           if (seriesRef.current) {
             onReadyRef.current?.(chart, seriesRef.current);
@@ -174,16 +248,37 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
 
       return () => {
         cancelled = true;
-        if (seriesRef.current) {
-          try {
-            chart.removeSeries(seriesRef.current);
-          } catch {
-            /* chart may already be disposed */
-          }
-          seriesRef.current = null;
-        }
+        dropSeries();
       };
-    }, [chartReady, symbol, market, interval, visual]);
+    }, [chartReady, symbol, market, interval, visual, hideVolume]);
+
+    // Floating OHLC tooltip that follows the crosshair.
+    useEffect(() => {
+      const chart = chartRef.current;
+      if (!chart || !chartReady) return;
+
+      const handler = (param: MouseEventParams) => {
+        const pt = param.point;
+        if (
+          !param.time ||
+          !pt ||
+          pt.x < 0 ||
+          pt.y < 0
+        ) {
+          setTip(null);
+          return;
+        }
+        const c = candlesRef.current.get(Number(param.time));
+        if (!c) {
+          setTip(null);
+          return;
+        }
+        setTip({ x: pt.x, y: pt.y, c });
+      };
+
+      chart.subscribeCrosshairMove(handler);
+      return () => chart.unsubscribeCrosshairMove(handler);
+    }, [chartReady]);
 
     return (
       <div className="relative h-full w-full">
@@ -197,6 +292,7 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
             Загрузка…
           </p>
         )}
+        {tip && <OhlcTooltip {...tip} visual={visual} />}
         <ChartCore
           onChartReady={handleChartReady}
           className={className ?? "h-full w-full min-h-[280px]"}
@@ -205,3 +301,55 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
     );
   },
 );
+
+/** Compact OHLC/volume readout anchored near the crosshair. */
+function OhlcTooltip({
+  x,
+  y,
+  c,
+  visual,
+}: {
+  x: number;
+  y: number;
+  c: KlineCandle;
+  visual: ChartVisualType;
+}) {
+  const changePct = c.open > 0 ? ((c.close - c.open) / c.open) * 100 : 0;
+  const up = c.close >= c.open;
+  // Keep the card on-screen: flip to the left of the cursor past the midpoint.
+  const flip = x > 220;
+  return (
+    <div
+      className="pointer-events-none absolute z-20 min-w-[9rem] rounded-lg border border-line bg-surface-elevated/95 px-2.5 py-2 font-mono text-[11px] leading-tight shadow-panel-dark backdrop-blur"
+      style={{
+        left: flip ? x - 152 : x + 16,
+        top: Math.max(8, y - 12),
+      }}
+    >
+      {visual === "candle" ? (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+          <span className="text-ink-muted">O</span>
+          <span className="text-right text-ink">{fmtPrice(c.open)}</span>
+          <span className="text-ink-muted">H</span>
+          <span className="text-right text-ink">{fmtPrice(c.high)}</span>
+          <span className="text-ink-muted">L</span>
+          <span className="text-right text-ink">{fmtPrice(c.low)}</span>
+          <span className="text-ink-muted">C</span>
+          <span className="text-right text-ink">{fmtPrice(c.close)}</span>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-ink-muted">Цена</span>
+          <span className="text-ink">{fmtPrice(c.close)}</span>
+        </div>
+      )}
+      <div className="mt-1 flex items-center justify-between gap-3 border-t border-line/60 pt-1">
+        <span className={up ? "text-emerald-500" : "text-red-500"}>
+          {up ? "+" : ""}
+          {changePct.toFixed(2)}%
+        </span>
+        <span className="text-ink-muted">Vol {volFmt.format(c.volume)}</span>
+      </div>
+    </div>
+  );
+}

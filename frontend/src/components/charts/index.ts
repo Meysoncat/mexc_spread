@@ -3,6 +3,7 @@ export {
   TradingChart,
   type TradingChartProps,
   type TradingChartRef,
+  type PriceSeries,
 } from "./TradingChart";
 export { PriceChart, type PriceChartProps } from "./PriceChart";
 export { BasisChart, type BasisChartProps } from "./BasisChart";
