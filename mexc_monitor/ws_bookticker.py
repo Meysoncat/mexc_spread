@@ -12,6 +12,13 @@
   - Bitget USDT-FUTURES (channel `ticker`)
   - HTX linear-swap (`market.<code>.bbo`, gzip-фреймы)
 
+Поддерживается spot (для мультирыночных бирж, ленивый старт по запросу):
+  - OKX spot (тот же channel `tickers`, instType SPOT)
+  - Gate.io spot (`spot.book_ticker`)
+  - HTX spot (`market.<symbol>.bbo`, gzip; формат tick отличается от futures)
+  Binance spot WS намеренно не добавлен: stream.binance.com геоблокируется так же,
+  как REST, а all-market `!bookTicker` для spot депрекейтнут — spot остаётся на REST.
+
 24h-объёмы меняются медленно, поэтому берутся по REST и кэшируются (60 сек).
 """
 
@@ -474,6 +481,106 @@ def _parse_htx(msg: Any) -> list[_Update] | None:
     return [(sym, bid, bq or 0.0, ask, aq or 0.0)]
 
 
+# ================================================================ SPOT streams
+# Мультирыночные биржи: spot bookTicker поверх той же _Feed-инфраструктуры.
+# Символьные форматы (из клиентов): OKX "BTC-USDT", Gate.io "BTC_USDT",
+# HTX "BTCUSDT" (для подписки нужен lowercase).
+
+_GATEIO_SPOT_WS_URL = "wss://api.gateio.ws/ws/v4/"
+_HTX_SPOT_WS_URL = "wss://api.huobi.pro/ws"
+
+
+def _okx_spot_subscribe() -> list[str]:
+    from mexc_monitor.okx.client import OkxPublicClient
+
+    inst_ids = [t.symbol for t in OkxPublicClient().book_tickers("SPOT")]
+    msgs: list[str] = []
+    for i in range(0, len(inst_ids), 50):
+        args = [{"channel": "tickers", "instId": x} for x in inst_ids[i : i + 50]]
+        msgs.append(json.dumps({"op": "subscribe", "args": args}))
+    return msgs
+
+
+# OKX spot использует тот же формат сообщений, что и SWAP → _parse_okx подходит.
+
+
+def _gateio_spot_subscribe() -> list[str]:
+    from mexc_monitor.gateio.client import GateioPublicClient
+
+    pairs = [t.symbol for t in GateioPublicClient().book_tickers(market="spot")]
+    now = int(time.time())
+    return [
+        json.dumps(
+            {
+                "time": now,
+                "channel": "spot.book_ticker",
+                "event": "subscribe",
+                "payload": [p],
+            }
+        )
+        for p in pairs
+    ]
+
+
+def _gateio_spot_ping() -> str:
+    return json.dumps({"time": int(time.time()), "channel": "spot.ping"})
+
+
+def _parse_gateio_spot(msg: Any) -> list[_Update] | None:
+    from mexc_monitor.gateio.client import _normalize_symbol
+
+    if not isinstance(msg, dict):
+        return None
+    if msg.get("channel") != "spot.book_ticker" or msg.get("event") != "update":
+        return None
+    r = msg.get("result")
+    if not isinstance(r, dict):
+        return None
+    sym = r.get("s")
+    bid, ask = _f(r.get("b")), _f(r.get("a"))
+    if not sym or not bid or not ask:
+        return None
+    return [
+        (_normalize_symbol(sym), bid, _f(r.get("B")) or 0.0, ask, _f(r.get("A")) or 0.0)
+    ]
+
+
+def _htx_spot_subscribe() -> list[str]:
+    from mexc_monitor.htx.client import HtxPublicClient
+
+    symbols = [t.symbol for t in HtxPublicClient().book_tickers(market="spot")]
+    return [
+        json.dumps({"sub": f"market.{s.lower()}.bbo", "id": s.lower()})
+        for s in symbols
+    ]
+
+
+def _parse_htx_spot(msg: Any) -> list[_Update] | None:
+    # Spot bbo: tick.bid/tick.ask — скаляры, tick.bidSize/askSize — объёмы
+    # (в отличие от futures, где bid/ask — массивы [price, qty]).
+    if not isinstance(msg, dict):
+        return None
+    ch = msg.get("ch", "")
+    tick = msg.get("tick")
+    if not ch.endswith(".bbo") or not isinstance(tick, dict):
+        return None
+    code = ch.split(".")[1] if ch.count(".") >= 2 else ""
+    if not code:
+        return None
+    bid, ask = _f(tick.get("bid")), _f(tick.get("ask"))
+    if not bid or not ask:
+        return None
+    return [
+        (
+            code.upper(),
+            bid,
+            _f(tick.get("bidSize")) or 0.0,
+            ask,
+            _f(tick.get("askSize")) or 0.0,
+        )
+    ]
+
+
 _feeds: dict[str, _Feed] = {
     "binance": _Feed(
         "binance", _BINANCE_FUTURES_WS_URL, _parse_binance, silent_timeout=10.0
@@ -515,6 +622,34 @@ _feeds: dict[str, _Feed] = {
         _HTX_WS_URL,
         _parse_htx,
         subscribe=_htx_subscribe,
+        control=_htx_control,
+        gzip_frames=True,
+    ),
+}
+
+# Spot-фиды (ленивый старт по первому spot-снапшоту, не прогреваются заранее).
+_spot_feeds: dict[str, _Feed] = {
+    "okx": _Feed(
+        "okx-spot",
+        _OKX_WS_URL,
+        _parse_okx,
+        subscribe=_okx_spot_subscribe,
+        ping_interval=20.0,
+        ping_payload=lambda: "ping",
+    ),
+    "gateio": _Feed(
+        "gateio-spot",
+        _GATEIO_SPOT_WS_URL,
+        _parse_gateio_spot,
+        subscribe=_gateio_spot_subscribe,
+        ping_interval=20.0,
+        ping_payload=_gateio_spot_ping,
+    ),
+    "htx": _Feed(
+        "htx-spot",
+        _HTX_SPOT_WS_URL,
+        _parse_htx_spot,
+        subscribe=_htx_spot_subscribe,
         control=_htx_control,
         gzip_frames=True,
     ),
@@ -595,23 +730,61 @@ _volume_loaders: dict[str, Callable[[], dict[str, tuple[float, float]]]] = {
 }
 
 
-def _volumes_for(exchange: str) -> dict[str, tuple[float, float]]:
+def _okx_spot_volumes() -> dict[str, tuple[float, float]]:
+    from mexc_monitor.okx.client import OkxPublicClient, _normalize_symbol
+
+    return {
+        _normalize_symbol(t.symbol): (t.volume_24h_base, t.volume_24h_quote)
+        for t in OkxPublicClient().book_tickers("SPOT")
+    }
+
+
+def _gateio_spot_volumes() -> dict[str, tuple[float, float]]:
+    from mexc_monitor.gateio.client import GateioPublicClient, _normalize_symbol
+
+    return {
+        _normalize_symbol(t.symbol): (t.volume_24h_base, t.volume_24h_quote)
+        for t in GateioPublicClient().book_tickers(market="spot")
+    }
+
+
+def _htx_spot_volumes() -> dict[str, tuple[float, float]]:
+    from mexc_monitor.htx.client import HtxPublicClient
+
+    return {
+        t.symbol: (t.volume_24h_base, t.volume_24h_quote)
+        for t in HtxPublicClient().book_tickers(market="spot")
+    }
+
+
+_spot_volume_loaders: dict[str, Callable[[], dict[str, tuple[float, float]]]] = {
+    "okx": _okx_spot_volumes,
+    "gateio": _gateio_spot_volumes,
+    "htx": _htx_spot_volumes,
+}
+
+
+def _volumes_for(
+    exchange: str, market: str = "futures"
+) -> dict[str, tuple[float, float]]:
+    key = f"{exchange}:{market}"
     now = time.monotonic()
     with _volume_lock:
-        cached = _volume_cache.get(exchange)
+        cached = _volume_cache.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
-    loader = _volume_loaders.get(exchange)
+    loaders = _spot_volume_loaders if market == "spot" else _volume_loaders
+    loader = loaders.get(exchange)
     if loader is None:
         return {}
     try:
         volumes = loader()
     except Exception as e:  # noqa: BLE001 — объёмы не критичны для снапшота
-        logger.warning("ws-bookticker %s volumes failed: %s", exchange, e)
-        stale = _volume_cache.get(exchange)
+        logger.warning("ws-bookticker %s/%s volumes failed: %s", exchange, market, e)
+        stale = _volume_cache.get(key)
         return stale[1] if stale is not None else {}
     with _volume_lock:
-        _volume_cache[exchange] = (now + _VOLUME_CACHE_TTL_SEC, volumes)
+        _volume_cache[key] = (now + _VOLUME_CACHE_TTL_SEC, volumes)
     return volumes
 
 
@@ -622,35 +795,24 @@ def ensure_started() -> None:
 
 
 def feeds_health() -> dict[str, dict[str, Any]]:
-    """Состояние всех WS-фидов (для /api/health)."""
+    """Состояние всех WS-фидов (для /api/health).
+
+    Ключи futures — имя биржи (как раньше, чтобы не ломать диагностику);
+    spot-фиды под ключом ``<биржа>_spot``.
+    """
     from mexc_monitor.dydx.ws_feed import dydx_ws_health
 
     out = {name: feed.health() for name, feed in _feeds.items()}
+    for name, feed in _spot_feeds.items():
+        out[f"{name}_spot"] = feed.health()
     out["dydx"] = dydx_ws_health()
     return out
 
 
-def try_ws_snapshot_rows(exchange: str, market: str | None) -> list[BookTickerRow] | None:
-    """Строки снапшота из WS-буфера, если стрим жив и свеж; иначе None (REST).
-
-    Первый вызов запускает фоновый стрим — данные появятся через секунды,
-    а до тех пор снапшот строится по REST как раньше.
-    """
-    if market not in (None, "futures", "perp"):
-        return None
-    if exchange == "dydx":
-        from mexc_monitor.dydx.ws_feed import try_dydx_ws_snapshot_rows
-
-        return try_dydx_ws_snapshot_rows()
-    feed = _feeds.get(exchange)
-    if feed is None:
-        return None
-    feed.ensure_started()
-    book = feed.snapshot()
-    if not book or len(book) < 10:
-        return None
-
-    volumes = _volumes_for(exchange)
+def _rows_from_book(
+    book: dict[str, tuple[float, float, float, float]],
+    volumes: dict[str, tuple[float, float]],
+) -> list[BookTickerRow]:
     now_iso = datetime.now(timezone.utc).isoformat()
     rows: list[BookTickerRow] = []
     for sym, (bid, bq, ask, aq) in book.items():
@@ -675,9 +837,44 @@ def try_ws_snapshot_rows(exchange: str, market: str | None) -> list[BookTickerRo
     return rows
 
 
+def try_ws_snapshot_rows(exchange: str, market: str | None) -> list[BookTickerRow] | None:
+    """Строки снапшота из WS-буфера, если стрим жив и свеж; иначе None (REST).
+
+    Первый вызов запускает фоновый стрим — данные появятся через секунды,
+    а до тех пор снапшот строится по REST как раньше. Поддержаны futures/perp
+    (все биржи) и spot (okx/gateio/htx — ленивый старт).
+    """
+    if market == "spot":
+        feed = _spot_feeds.get(exchange)
+        if feed is None:
+            return None
+        feed.ensure_started()
+        book = feed.snapshot()
+        if not book or len(book) < 10:
+            return None
+        return _rows_from_book(book, _volumes_for(exchange, "spot"))
+
+    if market not in (None, "futures", "perp"):
+        return None
+    if exchange == "dydx":
+        from mexc_monitor.dydx.ws_feed import try_dydx_ws_snapshot_rows
+
+        return try_dydx_ws_snapshot_rows()
+    feed = _feeds.get(exchange)
+    if feed is None:
+        return None
+    feed.ensure_started()
+    book = feed.snapshot()
+    if not book or len(book) < 10:
+        return None
+    return _rows_from_book(book, _volumes_for(exchange, "futures"))
+
+
 def stop_all() -> None:
     from mexc_monitor.dydx.ws_feed import stop_dydx_ws
 
     stop_dydx_ws()
     for feed in _feeds.values():
+        feed.stop.set()
+    for feed in _spot_feeds.values():
         feed.stop.set()
