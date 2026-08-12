@@ -61,7 +61,7 @@ class TestEngineKey:
 
     def test_str_representation(self):
         key = EngineKey(exchange=Exchange.BINANCE, market=Market.FUTURES)
-        assert str(key) == "binance:futures"
+        assert str(key) == "binance/futures"
 
     def test_frozen_immutability(self):
         key = EngineKey(exchange=Exchange.OKX, market=Market.SPOT)
