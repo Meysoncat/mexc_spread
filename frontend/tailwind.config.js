@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["DM Sans", "system-ui", "sans-serif"],
+        sans: ["Space Grotesk", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       colors: {
@@ -20,6 +20,7 @@ export default {
         accent: {
           DEFAULT: "rgb(var(--accent) / <alpha-value>)",
           dim: "rgb(var(--accent-dim) / <alpha-value>)",
+          foreground: "rgb(var(--on-accent) / <alpha-value>)",
         },
         line: "rgb(var(--line) / <alpha-value>)",
       },
@@ -27,6 +28,7 @@ export default {
         panel: "0 4px 24px -4px rgb(0 0 0 / 0.12), 0 8px 48px -8px rgb(0 0 0 / 0.08)",
         "panel-dark":
           "0 4px 24px -4px rgb(0 0 0 / 0.45), 0 8px 48px -8px rgb(0 0 0 / 0.35)",
+        glow: "0 0 0 1px rgb(var(--accent) / 0.25), 0 8px 32px -8px rgb(var(--accent) / 0.35)",
       },
     },
   },

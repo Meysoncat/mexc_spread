@@ -327,7 +327,7 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
                 onClick={() => setSelectedMarket("spot")}
                 className={`rounded-l-lg px-3 py-1.5 text-xs font-medium transition ${
                   selectedMarket === "spot"
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink hover:bg-surface"
                 }`}
               >
@@ -338,7 +338,7 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
                 onClick={() => setSelectedMarket("futures")}
                 className={`rounded-r-lg px-3 py-1.5 text-xs font-medium transition ${
                   selectedMarket === "futures"
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink hover:bg-surface"
                 }`}
               >
@@ -624,7 +624,7 @@ export function TradingAdminModal({ open = true, onClose, pageMode = false }: Tr
                       "Runtime параметры обновлены",
                     )
                   }
-                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition hover:opacity-90 disabled:opacity-50"
                 >
                   <Save className="h-4 w-4" />
                   Применить настройки

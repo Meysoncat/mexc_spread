@@ -409,7 +409,7 @@ export function CoinHubPage() {
                 onClick={() => setInterval(iv.value)}
                 className={`px-2.5 py-1 text-xs font-medium transition ${
                   interval === iv.value
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink-muted hover:bg-surface"
                 }`}
               >

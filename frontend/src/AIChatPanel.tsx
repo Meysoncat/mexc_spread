@@ -80,7 +80,7 @@ export function AIChatPanel() {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-lg transition hover:bg-accent/90"
+        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-accent-foreground shadow-lg transition hover:bg-accent/90"
         title="AI Trading Assistant"
       >
         <MessageSquare className="h-6 w-6" />
@@ -142,7 +142,7 @@ export function AIChatPanel() {
             <div
               className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
                 m.role === "user"
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "bg-surface border border-line text-ink"
               }`}
             >
@@ -202,7 +202,7 @@ export function AIChatPanel() {
           <button
             onClick={send}
             disabled={loading || !input.trim()}
-            className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-white transition hover:bg-accent/90 disabled:opacity-50"
+            className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-accent-foreground transition hover:bg-accent/90 disabled:opacity-50"
           >
             <Send className="h-4 w-4" />
           </button>

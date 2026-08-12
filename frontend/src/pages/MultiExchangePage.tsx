@@ -214,7 +214,7 @@ export function MultiExchangePage() {
         </h1>
         <p className="mt-1 text-xs text-ink-muted">
           Фьючерсные пары минимум на двух биржах, отсортированные по net
-          кросс-спреду. Кросс-спред = купить по лучшему ask и продать по лучшему
+          кросс-спреду. Кросс-спред = купить по лучшему ask и продать п�� лучшему
           bid на другой бирже; net = за вычетом тейкер-комиссии обеих ног.
         </p>
       </div>
@@ -233,7 +233,7 @@ export function MultiExchangePage() {
               }
               className={`rounded-md px-2 py-1 text-xs font-medium transition ${
                 isOn
-                  ? "bg-accent text-white shadow"
+                  ? "bg-accent text-accent-foreground shadow"
                   : "bg-surface text-ink-muted ring-1 ring-line hover:text-ink"
               }`}
             >

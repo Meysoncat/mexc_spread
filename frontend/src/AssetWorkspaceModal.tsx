@@ -317,7 +317,7 @@ export function AssetWorkspaceModal({
                 onClick={() => setDomLeg("spot")}
                 className={`rounded-md px-2 py-1 text-xs font-medium ${
                   domLeg === "spot"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
@@ -328,7 +328,7 @@ export function AssetWorkspaceModal({
                 onClick={() => setDomLeg("futures")}
                 className={`rounded-md px-2 py-1 text-xs font-medium ${
                   domLeg === "futures"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >

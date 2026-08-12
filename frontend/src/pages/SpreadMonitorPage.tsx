@@ -2261,7 +2261,7 @@ export function SpreadMonitorPage() {
                 onClick={() => setMarket("spot")}
                 className={`min-w-0 flex-1 rounded-lg px-2 py-2.5 text-sm font-medium transition ${
                   market === "spot"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
@@ -2272,7 +2272,7 @@ export function SpreadMonitorPage() {
                 onClick={() => setMarket("futures")}
                 className={`min-w-0 flex-1 rounded-lg px-2 py-2.5 text-sm font-medium transition ${
                   market === "futures"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
@@ -2576,7 +2576,7 @@ export function SpreadMonitorPage() {
                 onClick={() => setDisplay("list")}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
                   displayMode === "list"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
@@ -2588,7 +2588,7 @@ export function SpreadMonitorPage() {
                 onClick={() => setDisplay("tiles")}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition ${
                   displayMode === "tiles"
-                    ? "bg-accent text-white shadow"
+                    ? "bg-accent text-accent-foreground shadow"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
@@ -2692,7 +2692,7 @@ export function SpreadMonitorPage() {
                     onClick={() => setTilesVariantPersist("cards")}
                     className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
                       tilesVariant === "cards"
-                        ? "bg-accent text-white shadow"
+                        ? "bg-accent text-accent-foreground shadow"
                         : "text-ink-muted hover:text-ink"
                     }`}
                   >
@@ -2704,7 +2704,7 @@ export function SpreadMonitorPage() {
                     onClick={() => setTilesVariantPersist("charts")}
                     className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
                       tilesVariant === "charts"
-                        ? "bg-accent text-white shadow"
+                        ? "bg-accent text-accent-foreground shadow"
                         : "text-ink-muted hover:text-ink"
                     }`}
                   >
@@ -2926,7 +2926,7 @@ export function SpreadMonitorPage() {
               type="button"
               onClick={() => void load({ nocache: true })}
               disabled={isFetching && !hasRows}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow transition hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:opacity-90 disabled:opacity-50"
             >
               <RefreshCw
                 className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`}
