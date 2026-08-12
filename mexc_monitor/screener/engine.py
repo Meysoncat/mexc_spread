@@ -27,7 +27,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from mexc_monitor.pipeline import safe_load_snapshot
-from mexc_monitor.ws_spot_orderbook import get_book_update_rate
+from mexc_monitor.ws_spot_orderbook import (
+    get_book_update_rate,
+    reconcile_spot_orderbook_ws,
+    touch_watchlist,
+)
 from mexc_monitor.screener.config import (
     ScreenerConfig,
     apply_config_patch,
@@ -354,6 +358,15 @@ class ScreenerEngine:
 
         scored.sort(key=lambda t: t[0], reverse=True)
         top = scored[: cfg.top_limit]
+
+        # Tier 1.5: promote the shortlist into the bookTicker WS so their
+        # update-rate (activity) matures. Reconcile self-throttles internally.
+        try:
+            reconcile_spot_orderbook_ws()
+            touch_watchlist([c.symbol for _, c in top])
+        except Exception:
+            logger.debug("Screener: bookTicker watchlist reconcile skipped", exc_info=True)
+
         from mexc_monitor.screener.models import opportunity_to_dict
 
         opportunities = [

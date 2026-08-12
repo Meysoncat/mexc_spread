@@ -39,6 +39,16 @@ _stop = threading.Event()
 _thread: threading.Thread | None = None
 _active_symbols: tuple[str, ...] = ()
 
+# Tier 1.5: dynamic watchlist. The screener promotes its shortlist here so the
+# bookTicker update-rate (activity signal) becomes available for candidates.
+# Sticky with a TTL so the subscription doesn't flap every scan; reconcile is
+# throttled to avoid reconnect storms (full reconnect is the v1 path —
+# incremental sub/unsub on the live connection is a future optimization).
+_watchlist_seen: dict[str, float] = {}
+_WATCHLIST_TTL_SEC: float = 120.0
+_RECONCILE_MIN_INTERVAL_SEC: float = 20.0
+_last_reconcile_mono: float = 0.0
+
 
 def _norm_spot_symbol(s: str) -> str:
     return s.strip().upper()
@@ -288,6 +298,78 @@ def stop_spot_orderbook_ws() -> None:
     _stop.set()
 
 
+def touch_watchlist(symbols) -> None:
+    """Mark these symbols as currently interesting (screener shortlist).
+
+    They are merged into the WS subscription on the next throttled reconcile so
+    their bookTicker update-rate (activity) becomes available. Entries expire
+    after ``_WATCHLIST_TTL_SEC`` of no touches — sticky, so the subscription
+    doesn't flap when a coin briefly drops off the shortlist.
+    """
+    now = time.monotonic()
+    cutoff = now - _WATCHLIST_TTL_SEC
+    with _lock:
+        for s in symbols or ():
+            sym = _norm_spot_symbol(str(s))
+            if sym:
+                _watchlist_seen[sym] = now
+        stale = [k for k, t in _watchlist_seen.items() if t < cutoff]
+        for k in stale:
+            del _watchlist_seen[k]
+
+
+def desired_spot_orderbook_symbols(settings: Any) -> tuple[str, ...]:
+    """Configured base symbols ∪ fresh watchlist, capped per connection."""
+    base = effective_spot_orderbook_symbols(settings)
+    cutoff = time.monotonic() - _WATCHLIST_TTL_SEC
+    with _lock:
+        fresh = [s for s, t in _watchlist_seen.items() if t >= cutoff]
+    out: list[str] = list(base)
+    seen = set(out)
+    for s in fresh:
+        if s not in seen:
+            out.append(s)
+            seen.add(s)
+    if len(out) > _MAX_SUBS_PER_CONNECTION:
+        logger.debug(
+            "spot orderbook WS: desired set capped to %d (base+watchlist)",
+            _MAX_SUBS_PER_CONNECTION,
+        )
+    return tuple(out[:_MAX_SUBS_PER_CONNECTION])
+
+
+def reconcile_spot_orderbook_ws(settings: Any = None) -> None:
+    """Reconcile the WS subscription to base ∪ fresh watchlist (throttled).
+
+    Restarts the connection only when the desired set changed AND the throttle
+    window has elapsed. Safe to call every scan.
+    """
+    global _last_reconcile_mono
+    if settings is None:
+        from mexc_monitor.config import DEFAULT_SETTINGS  # noqa: PLC0415
+
+        settings = DEFAULT_SETTINGS
+    if not settings.spot_orderbook_ws_enabled:
+        return
+    desired = desired_spot_orderbook_symbols(settings)
+    if not desired:
+        return
+    now = time.monotonic()
+    with _lock:
+        changed = set(desired) != set(_active_symbols)
+        too_soon = (now - _last_reconcile_mono) < _RECONCILE_MIN_INTERVAL_SEC
+    if not changed or too_soon:
+        return
+    with _lock:
+        _last_reconcile_mono = now
+    logger.info(
+        "Spot orderbook WS: reconcile watchlist → %d symbol(s): %s",
+        len(desired),
+        ", ".join(desired[:6]) + ("..." if len(desired) > 6 else ""),
+    )
+    ensure_spot_orderbook_ws_started(settings)
+
+
 def ensure_spot_orderbook_ws_started(settings: Any) -> None:
     """Идемпотентный фоновый поток подписок bookTicker (спот)."""
     global _thread, _active_symbols
@@ -295,7 +377,7 @@ def ensure_spot_orderbook_ws_started(settings: Any) -> None:
     if not settings.spot_orderbook_ws_enabled:
         return
 
-    symbols = effective_spot_orderbook_symbols(settings)
+    symbols = desired_spot_orderbook_symbols(settings)
     if not symbols:
         return
 

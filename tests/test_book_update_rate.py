@@ -56,3 +56,58 @@ def test_get_book_update_rates_drops_empty():
     rates = wso.get_book_update_rates()
     assert "BTCUSDT" in rates
     assert "ETHUSDT" not in rates
+
+
+# ── tier 1.5: dynamic watchlist (shortlist → WS subscription) ────────────────
+
+
+@pytest.fixture
+def _settings():
+    from dataclasses import replace
+    from mexc_monitor.config import DEFAULT_SETTINGS
+
+    return replace(
+        DEFAULT_SETTINGS,
+        spot_orderbook_ws_enabled=True,
+        spot_orderbook_ws_symbols=("BTCUSDT", "ETHUSDT"),
+    )
+
+
+def test_touch_watchlist_extends_desired(_settings):
+    wso._watchlist_seen.clear()
+    base = wso.desired_spot_orderbook_symbols(_settings)
+    assert base == ("BTCUSDT", "ETHUSDT")
+    wso.touch_watchlist(["solusdt", "DOGEUSDT"])
+    desired = wso.desired_spot_orderbook_symbols(_settings)
+    assert desired == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT")
+
+
+def test_touch_watchlist_dedups_and_normalizes(_settings):
+    wso._watchlist_seen.clear()
+    wso.touch_watchlist(["btcusdt", "ETHusdt"])  # already in base
+    assert wso.desired_spot_orderbook_symbols(_settings) == ("BTCUSDT", "ETHUSDT")
+
+
+def test_stale_watchlist_entries_expire(_settings):
+    wso._watchlist_seen.clear()
+    wso.touch_watchlist(["SOLUSDT"])
+    # backdate past the TTL
+    wso._watchlist_seen["SOLUSDT"] = time.monotonic() - (wso._WATCHLIST_TTL_SEC + 5)
+    assert "SOLUSDT" not in wso.desired_spot_orderbook_symbols(_settings)
+
+
+def test_desired_capped_at_max_subs(_settings):
+    wso._watchlist_seen.clear()
+    many = [f"COIN{i}USDT" for i in range(wso._MAX_SUBS_PER_CONNECTION + 10)]
+    wso.touch_watchlist(many)
+    desired = wso.desired_spot_orderbook_symbols(_settings)
+    assert len(desired) <= wso._MAX_SUBS_PER_CONNECTION
+
+
+def test_reconcile_noop_when_unchanged(_settings):
+    # desired == active base → no restart attempted (returns early).
+    wso._watchlist_seen.clear()
+    wso._active_symbols = ("BTCUSDT", "ETHUSDT")
+    # Should not raise / should be a no-op (no thread started).
+    wso.reconcile_spot_orderbook_ws(_settings)
+
