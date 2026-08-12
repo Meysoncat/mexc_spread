@@ -99,6 +99,8 @@ export function CoinHubPage() {
   const [loading, setLoading] = useState(false);
   const [interval, setInterval] = useState<ChartInterval>("1h");
   const [nonce, setNonce] = useState(0);
+  const [positionUsd, setPositionUsd] = useState(1000);
+  const [takerFeeBps, setTakerFeeBps] = useState(2);
 
   const load = useCallback(
     (signal: AbortSignal) => {
@@ -170,6 +172,33 @@ export function CoinHubPage() {
         : null;
     return { bestBid, bestAsk, crossSpreadBps, totalVol };
   }, [quotes]);
+
+  // Trade-card economics: buy on best-ask venue, sell on best-bid venue.
+  // Net edge = gross cross-spread minus taker fee on both legs (bps).
+  const trade = useMemo(() => {
+    if (!stats || stats.crossSpreadBps == null) return null;
+    const grossBps = stats.crossSpreadBps;
+    const feeBps = 2 * takerFeeBps;
+    const netBps = grossBps - feeBps;
+    const notional = Math.max(0, positionUsd);
+    const grossPnl = (notional * grossBps) / 10_000;
+    const feeCost = (notional * feeBps) / 10_000;
+    const netPnl = (notional * netBps) / 10_000;
+    return {
+      buyVenue: stats.bestAsk.exchange,
+      buyPrice: stats.bestAsk.ask,
+      sellVenue: stats.bestBid.exchange,
+      sellPrice: stats.bestBid.bid,
+      grossBps,
+      feeBps,
+      netBps,
+      notional,
+      grossPnl,
+      feeCost,
+      netPnl,
+      qty: stats.bestAsk.ask > 0 ? notional / stats.bestAsk.ask : 0,
+    };
+  }, [stats, positionUsd, takerFeeBps]);
 
   // Chart uses the most liquid venue's symbol; fall back to BASEUSDT.
   const chartSymbol = useMemo(() => {
@@ -274,6 +303,98 @@ export function CoinHubPage() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Trade card — cross-exchange arb economics */}
+      {trade && (
+        <div className="rounded-xl border border-line bg-surface-elevated p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+            <h2 className="text-sm font-semibold text-ink">Карточка сделки</h2>
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              Размер позиции ($)
+              <input
+                type="number"
+                min={0}
+                step={100}
+                value={positionUsd || ""}
+                onChange={(e) => setPositionUsd(Number(e.target.value) || 0)}
+                className="w-28 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              Тейкер (bps/сторона)
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={takerFeeBps || ""}
+                onChange={(e) => setTakerFeeBps(Number(e.target.value) || 0)}
+                className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {/* Legs */}
+            <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-emerald-500">Купить (long)</span>
+                <span className="text-ink-muted">{label(trade.buyVenue)}</span>
+              </div>
+              <div className="flex items-center justify-between font-mono">
+                <span className="text-ink">{fmt(trade.buyPrice)}</span>
+                <span className="text-ink-muted">
+                  ≈ {fmt(trade.qty, 4)} {baseUpper}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between border-t border-line/60 pt-2">
+                <span className="text-red-500">Продать (short)</span>
+                <span className="text-ink-muted">{label(trade.sellVenue)}</span>
+              </div>
+              <div className="flex items-center justify-between font-mono">
+                <span className="text-ink">{fmt(trade.sellPrice)}</span>
+                <span className="text-ink-muted">
+                  {fmtUsd(trade.notional)}
+                </span>
+              </div>
+            </div>
+
+            {/* Economics */}
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-surface p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-ink-muted">Грязный спред</span>
+                <span className="font-mono text-ink">
+                  {trade.grossBps.toFixed(2)} bps ·{" "}
+                  {fmtUsd(trade.grossPnl)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-ink-muted">
+                  Комиссия ({trade.feeBps.toFixed(1)} bps)
+                </span>
+                <span className="font-mono text-red-500">
+                  −{fmtUsd(trade.feeCost)}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between border-t border-line/60 pt-2">
+                <span className="font-medium text-ink">Чистый PnL</span>
+                <span
+                  className={`font-mono text-base font-semibold ${
+                    trade.netPnl >= 0 ? "text-emerald-500" : "text-red-500"
+                  }`}
+                >
+                  {trade.netPnl >= 0 ? "+" : ""}
+                  {fmtUsd(trade.netPnl)} · {trade.netBps.toFixed(2)} bps
+                </span>
+              </div>
+              {trade.netBps <= 0 && (
+                <p className="text-[11px] text-red-500">
+                  Комиссия съедает спред — сделка нерентабельна при этой ставке.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
