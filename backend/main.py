@@ -30,6 +30,11 @@ from mexc_monitor.trading.exchange_config import EXCHANGE_CONFIGS
 from mexc_monitor.trading.exchanges import Exchange, Market
 from mexc_monitor.ws_futures import ensure_started_from_settings
 from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_started
+from mexc_monitor.ws_futures_depth_book import (
+    ensure_futures_depth_book_ws_started,
+    get_fresh_depth_book as get_fresh_futures_depth_book,
+    stop_futures_depth_book_ws,
+)
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
 from mexc_monitor.http_utils import effective_http_proxy, set_runtime_http_proxy
@@ -266,6 +271,7 @@ def _resolve_engine(
 def _startup_prefetch_futures_ws() -> None:
     ensure_started_from_settings(DEFAULT_SETTINGS)
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
+    ensure_futures_depth_book_ws_started(DEFAULT_SETTINGS)
     ensure_spot_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_deals_ws_started(DEFAULT_SETTINGS)
     # Seed the proxy registry default from static config, then wire the
@@ -315,6 +321,7 @@ def _shutdown_workers() -> None:
     _screener_engine.stop()
     _registry.shutdown_all()
     stop_history_worker()
+    stop_futures_depth_book_ws()
     stop_spot_orderbook_ws()
     stop_spot_deals_ws()
     _metascalp_poller.stop()
@@ -373,7 +380,7 @@ def _fetch_binance_depth(market: str, symbol: str, *, limit: int = 100) -> dict:
 
 
 def _run_with_timeout(fn, *, timeout_sec: float):
-    """Выполнить fn() в отдельном ��отоке с таймаутом."""
+    """Выполнить fn() в отдельном ����отоке с таймаутом."""
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn)
