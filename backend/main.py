@@ -373,7 +373,7 @@ def _fetch_binance_depth(market: str, symbol: str, *, limit: int = 100) -> dict:
 
 
 def _run_with_timeout(fn, *, timeout_sec: float):
-    """Выполнить fn() в отдельном потоке с таймаутом."""
+    """Выполнить fn() в отдельном ��отоке с таймаутом."""
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn)
@@ -653,7 +653,8 @@ def diagnostics_sources(
     sources: list[dict[str, Any]] = []
     for name in PROBES:
         rest_res = rest.get(name, {})
-        ws_res = ws.get(name)
+        ws_res = ws.get(name)  # futures-фид под именем биржи
+        ws_spot_res = ws.get(f"{name}_spot")  # spot-фид (okx/gateio/htx)
         ws_live = bool(ws_res and ws_res.get("live"))
         rest_ok = rest_res.get("status") == "ok"
         if ws_live:
@@ -667,6 +668,7 @@ def diagnostics_sources(
                 "exchange": name,
                 "rest": rest_res,
                 "ws": ws_res,
+                "ws_spot": ws_spot_res,
                 "recommended": recommended,
                 "proxy": effective_http_proxy(DEFAULT_SETTINGS, name),
             }
@@ -682,6 +684,9 @@ def diagnostics_sources(
             "total": len(sources),
             "rest_reachable": reachable,
             "ws_live": sum(1 for s in sources if s["ws"] and s["ws"].get("live")),
+            "ws_spot_live": sum(
+                1 for s in sources if s["ws_spot"] and s["ws_spot"].get("live")
+            ),
         },
         "sources": sources,
     }

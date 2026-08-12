@@ -10,6 +10,7 @@ import {
   recommendedBadge,
   restBadge,
   sortSources,
+  SPOT_WS_EXCHANGES,
   wsBadge,
 } from "../lib/diagnostics";
 
@@ -121,10 +122,16 @@ export function SourceDiagnosticsPage() {
                 {s.rest_reachable}
               </span>
             </span>
-            <span className="text-ink-muted">
-              WS онлайн:{" "}
-              <span className="font-mono text-emerald-500">{s.ws_live}</span>
-            </span>
+                <span className="text-ink-muted">
+                  WS Futures:{" "}
+                  <span className="font-mono text-emerald-500">{s.ws_live}</span>
+                </span>
+                <span className="text-ink-muted">
+                  WS Spot:{" "}
+                  <span className="font-mono text-emerald-500">
+                    {s.ws_spot_live}
+                  </span>
+                </span>
             <span className="text-ink-muted">
               Прокси:{" "}
               <span className="font-mono text-ink">
@@ -161,7 +168,8 @@ export function SourceDiagnosticsPage() {
                 <tr>
                   <th className="px-3 py-2">Биржа</th>
                   <th className="px-3 py-2">REST</th>
-                  <th className="px-3 py-2">WebSocket</th>
+                  <th className="px-3 py-2">WS Futures</th>
+                  <th className="px-3 py-2">WS Spot</th>
                   <th className="px-3 py-2">Рекомендуемый источник</th>
                 </tr>
               </thead>
@@ -179,6 +187,15 @@ export function SourceDiagnosticsPage() {
                     </td>
                     <td className="px-3 py-2">
                       <BadgeChip badge={wsBadge(row.ws)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      {SPOT_WS_EXCHANGES.has(row.exchange) ? (
+                        <BadgeChip badge={wsBadge(row.ws_spot ?? null)} />
+                      ) : (
+                        <span className="text-xs text-ink-muted" title="Spot WS не поддержан для этой биржи">
+                          —
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <BadgeChip badge={recommendedBadge(row.recommended)} />

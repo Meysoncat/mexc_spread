@@ -1,5 +1,12 @@
 import type { Exchange } from "../types";
 
+/** Биржи с отдельным spot WS-фидом (см. mexc_monitor/ws_bookticker._spot_feeds). */
+export const SPOT_WS_EXCHANGES: ReadonlySet<Exchange> = new Set<Exchange>([
+  "okx",
+  "gateio",
+  "htx",
+]);
+
 /** Статус REST-пробы (совпадает с backend/source_probes.py). */
 export type RestStatus = "ok" | "rate_limited" | "geo_blocked" | "error";
 
@@ -26,6 +33,8 @@ export interface SourceRow {
   exchange: Exchange;
   rest: RestProbe;
   ws: WsHealth | null;
+  /** Spot WS-фид (только мультирыночные okx/gateio/htx), иначе null. */
+  ws_spot?: WsHealth | null;
   recommended: Recommended;
 }
 
@@ -33,7 +42,12 @@ export interface DiagnosticsResponse {
   ok: boolean;
   generated_at: string;
   active_proxy: string | null;
-  summary: { total: number; rest_reachable: number; ws_live: number };
+  summary: {
+    total: number;
+    rest_reachable: number;
+    ws_live: number;
+    ws_spot_live: number;
+  };
   sources: SourceRow[];
 }
 

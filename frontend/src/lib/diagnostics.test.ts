@@ -3,6 +3,7 @@ import {
   recommendedBadge,
   restBadge,
   sortSources,
+  SPOT_WS_EXCHANGES,
   wsBadge,
   type RestProbe,
   type SourceRow,
@@ -92,6 +93,18 @@ describe("recommendedBadge", () => {
     expect(recommendedBadge("ws").tone).toBe("ok");
     expect(recommendedBadge("rest").tone).toBe("warn");
     expect(recommendedBadge("none").tone).toBe("bad");
+  });
+});
+
+describe("SPOT_WS_EXCHANGES", () => {
+  it("contains exactly the multi-market venues with a spot feed", () => {
+    expect([...SPOT_WS_EXCHANGES].sort()).toEqual(["gateio", "htx", "okx"]);
+  });
+
+  it("excludes venues without a dedicated spot WS feed", () => {
+    for (const ex of ["binance", "bybit", "bitget", "dydx"] as const) {
+      expect(SPOT_WS_EXCHANGES.has(ex)).toBe(false);
+    }
   });
 });
 

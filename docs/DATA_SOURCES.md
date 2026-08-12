@@ -68,7 +68,8 @@
 
 - Из инфраструктуры песочницы часть бирж отдаёт **HTTP 451 / 403** (геоблокировка): регулярно — **Binance, Bybit, OKX, MEXC**.
 - Поэтому в preview данные стабильно приходят с **Gate.io, Bitget, Hyperliquid** и других негеоблокированных площадок. Это ограничение сети окружения, **не** дефект кода — при запуске из региона без блокировок отвечают все биржи.
-- **Важно:** для REST-геоблока WebSocket-фиды часто остаются рабочими (напр. Binance REST = 451, но WS отдаёт данные). Это видно на странице **Диагностика источников** (`/diagnostics`, `GET /api/diagnostics/sources`), которая по каждой бирже показывает REST-латентность, статус (`ok`/`geo_blocked`/`rate_limited`/`error`), свежесть WS и рекомендуемый источник.
+- **Важно:** для REST-геоблока WebSocket-фиды часто остаются рабочими (напр. Binance REST = 451, но WS отдаёт данные). Это видно на странице **Диагностика источников** (`/diagnostics`, `GET /api/diagnostics/sources`), которая по каждой бирже показывает REST-латентность, статус (`ok`/`geo_blocked`/`rate_limited`/`error`), свежесть WS (futures и spot отдельно) и рекомендуемый источник.
+- **WS-покрытие снапшота** (`mexc_monitor/ws_bookticker.py`): futures/perp по WS для всех бирж; spot по WS — для мультирыночных **OKX / Gate.io / HTX** (ленивый старт по первому spot-снапшоту). Binance spot остаётся на REST (его WS геоблокируется так же, как REST, а all-market `!bookTicker` для spot депрекейтнут). Остальные spot-рынки идут по REST. `try_ws_snapshot_rows(exchange, market)` сам выбирает WS или падает на REST, если фид не жив.
 
 ---
 
@@ -76,11 +77,11 @@
 
 Обход геоблока — **per-exchange smart routing**: прокси применяется только к нужным биржам, остальные ходят напрямую (тот же принцип, что у Smart-DNS сервисов, но на уровне HTTP/SOCKS-прокси).
 
-- **Резолвинг** (`mexc_monitor/proxy_registry.py`): по бирже в порядке приоритета — per-exchange override → общий default → статический config (`external_apis.json`) → `None` (trust_env / прямой). Override `direct` принудительно обходит прокси для конкретной биржи и **не** падает на config.
+- **Резолвинг** (`mexc_monitor/proxy_registry.py`): по бирже в порядке приоритета — per-exchange override → общий default → статический config (`external_apis.json`) → `None` (trust_env / прямой). Override `direct` принудительно обходит прокси для конкретно�� биржи и **не** падает на config.
 - **Схемы:** `http`, `https`, `socks5`, `socks5h` (для SOCKS нужен `httpx[socks]`, зафиксирован в `requirements.txt`). `socks5h` резолвит DNS на стороне прокси — полезно, если локальный DNS сам заблокирован.
 - **Пул клиентов** (`mexc_monitor/http_shared.py`): общие `httpx.Client` группируются по прокси-URL, keep-alive сохраняется; биржи с одинаковым прокси переиспользуют соединения.
 - **Управление:** страница **Сеть / Прокси** (`/network`) — общий прокси + таблица переопределений по биржам с индивидуальной проверкой связи. API: `GET/PATCH /api/network/config`, `GET /api/network/test?exchange=<name>`. В конфиге: `mexc.http_proxy_url` (общий) и `mexc.http_proxy_per_exchange` (`{биржа: url|"direct"}`).
-- **Про Smart-DNS (xbox-dns.ru и подобные):** для нашей задачи **не подходят** — это DNS-подмена, а не прокси; наш геоблок по IP, смена DNS его не снимает, и криптобирж нет в их whitelist. Нужен именно HTTP/SOCKS-прокси в неблокируемом регионе.
+- **Про Smart-DNS (xbox-dns.ru и подобные):** для н��шей задачи **не подходят** — это DNS-подмена, а не прокси; наш геоблок по IP, смена DNS его не снимает, и криптобирж нет в их whitelist. Нужен именно HTTP/SOCKS-прокси в неблокируемом регионе.
 
 ---
 
