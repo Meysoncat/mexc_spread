@@ -1,0 +1,48 @@
+# ─── Build context hygiene for the Docker image ───────────────────────────────
+# Keep the context small and never bake local/dev/secret artifacts into the image.
+
+# Python virtualenv & caches
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend (deps reinstalled inside the build stage; dist rebuilt there)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Runtime state — MUST stay out of the image (mounted as a volume instead)
+data/
+
+# Proxy bridge artifacts (Xray binary + generated config with VLESS secret)
+.xray/
+
+# Local env & secrets
+.env
+.env.*
+!.env.docker.example
+
+# VCS / editor / CI
+.git/
+.github/
+.idea/
+.vscode/
+.kiro/
+.agents/
+.vercel/
+
+# Docs, screenshots, patches, scratch — not needed at runtime
+*.md
+docs/
+*.png
+*.patch
+examples/
+v0_memories/
+user_read_only_context/
+
+# Windows launcher (dev only)
+run_modern.bat

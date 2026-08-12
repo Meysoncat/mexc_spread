@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { apiUrl } from "../config";
+import { EmptyState } from "../components/ui/EmptyState";
 import type { Exchange, MarketRow, SnapshotResponse } from "../types";
 import { EXCHANGE_LABELS } from "../types";
 
@@ -96,7 +97,7 @@ export function FundingHeatmapPage() {
 
   const filtered = useMemo(() => {
     const s = search.trim().toUpperCase();
-    let out = data.filter((r) => {
+    const out = data.filter((r) => {
       if (s && !r.symbol.includes(s)) return false;
       if (minRate > 0) {
         const maxAbs = Math.max(
@@ -306,9 +307,11 @@ export function FundingHeatmapPage() {
           </tbody>
         </table>
         {filtered.length === 0 && !loading && (
-          <div className="flex h-32 items-center justify-center text-sm text-ink-muted">
-            Нет данных. Нажмите «Обновить» или подождите загрузки с бирж.
-          </div>
+          <EmptyState
+            compact
+            title="Нет данных"
+            description="Нажмите «Обновить» или подождите загрузки ставок фандинга с бирж."
+          />
         )}
       </div>
     </div>

@@ -77,6 +77,11 @@ const ScreenerHistoryPage = lazy(() =>
 const NetworkPage = lazy(() =>
   import("./pages/NetworkPage").then((m) => ({ default: m.NetworkPage })),
 );
+const SourceDiagnosticsPage = lazy(() =>
+  import("./pages/SourceDiagnosticsPage").then((m) => ({
+    default: m.SourceDiagnosticsPage,
+  })),
+);
 const CoinHubPage = lazy(() =>
   import("./pages/CoinHubPage").then((m) => ({ default: m.CoinHubPage })),
 );
@@ -120,6 +125,10 @@ function App() {
             <Route path="coin/:base" element={<CoinHubPage />} />
             <Route path="screener-history" element={<ScreenerHistoryPage />} />
             <Route path="network" element={<NetworkPage />} />
+            <Route
+              path="diagnostics"
+              element={<SourceDiagnosticsPage />}
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

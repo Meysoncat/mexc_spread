@@ -107,7 +107,7 @@ class BybitPublicClient:
         """HTTP GET с обработкой ошибок Bybit API."""
         url = f"{self._base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="bybit", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise BybitApiError(
                 f"Bybit API timeout after {self._timeout}s: {url}"

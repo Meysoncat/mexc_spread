@@ -8,13 +8,15 @@
 |----------|---------|
 | **Быстрый старт** | `run_modern.bat` → [http://localhost:5173](http://localhost:5173) |
 | Из терминала | `npm run dev:modern` в корне (нужен [Node.js](https://nodejs.org/) LTS) |
+| **Продакшн (Docker)** | `cp .env.docker.example .env` → `docker compose up -d --build` → [http://localhost:8006](http://localhost:8006) |
 
-Требования: Python 3.10+, Node.js LTS.
+Требования: Python 3.10+, Node.js LTS. Для деплоя — Docker 24+ / Compose v2.
 
 ## Документация
 
 - **[Архитектура](docs/ARCHITECTURE.md)** — модули, конфигурация, REST/WebSocket, ORM, API.
 - **[Запуск](docs/ZAPUSK.md)** — установка, запуск, типичные ошибки.
+- **[Деплой](docs/DEPLOY.md)** — Docker/VPS, single-image, персистентность, прокси, reverse proxy.
 - **[Бизнес-процессы](docs/BUSINESS.md)** — метрики, ограничения, трейдерские сценарии.
 - **[Автоторговля](docs/TRADING.md)** — режимы paper/live, риск-ограничения, API управления.
 

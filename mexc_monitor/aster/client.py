@@ -94,7 +94,7 @@ class AsterPublicClient:
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self._base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="asterdex", params=params, timeout=self._timeout)
         except httpx.HTTPError as e:
             raise AsterApiError(f"HTTP error: {type(e).__name__}: {e}") from e
         if r.status_code >= 400:

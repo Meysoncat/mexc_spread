@@ -47,6 +47,11 @@ function tokenAlpha(name: string, alpha: number, fallback: string): string {
   return `rgba(${raw} / ${alpha})`;
 }
 
+/** The live `--accent` token as an `rgba(...)` string with the given alpha. */
+export function accentAlpha(alpha: number): string {
+  return tokenAlpha("--accent", alpha, `rgba(245 168 38 / ${alpha})`);
+}
+
 /**
  * Build lightweight-charts `ChartOptions` from the active app theme tokens.
  * Background/text/grid/border follow `surface-elevated` / `ink` / `line`, so a

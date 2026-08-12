@@ -111,7 +111,7 @@ class BinancePublicClient:
         """HTTP GET с обработкой ошибок."""
         url = f"{base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="binance", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise BinanceApiError(
                 f"Binance API timeout after {self._timeout}s: {url}"

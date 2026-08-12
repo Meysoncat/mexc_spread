@@ -9,6 +9,7 @@ import {
   type ChartInterval,
 } from "../types";
 import { TradingChart } from "../components/charts/TradingChart";
+import { TableEmptyState } from "../components/ui/EmptyState";
 import { baseFromSymbol, humanizeError } from "../lib/symbol";
 
 const HUB_EXCHANGES: Exchange[] = [
@@ -478,18 +479,23 @@ export function CoinHubPage() {
                 </td>
               </tr>
             ))}
-            {quotes.length === 0 && (
-              <tr>
-                <td
+            {quotes.length === 0 &&
+              (loading ? (
+                <TableEmptyState
                   colSpan={7}
-                  className="px-3 py-10 text-center text-ink-muted"
-                >
-                  {loading
-                    ? "Загрузка котировок…"
-                    : `Ни одна из бирж не торгует ${baseUpper} фьючерсами (или данные недоступны).`}
-                </td>
-              </tr>
-            )}
+                  variant="loading"
+                  title="Загрузка котировок…"
+                  description="Опрашиваем биржи по этому активу."
+                  compact
+                />
+              ) : (
+                <TableEmptyState
+                  colSpan={7}
+                  title={`Нет данных по ${baseUpper}`}
+                  description={`Ни одна из бирж не торгует ${baseUpper} фьючерсами, либо данные сейчас недоступны.`}
+                  compact
+                />
+              ))}
           </tbody>
         </table>
       </div>

@@ -30,10 +30,25 @@ from mexc_monitor.trading.exchange_config import EXCHANGE_CONFIGS
 from mexc_monitor.trading.exchanges import Exchange, Market
 from mexc_monitor.ws_futures import ensure_started_from_settings
 from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_started
+from mexc_monitor.ws_futures_depth_book import (
+    ensure_futures_depth_book_ws_started,
+    get_fresh_depth_book as get_fresh_futures_depth_book,
+    reconcile_futures_depth_book_ws,
+    stop_futures_depth_book_ws,
+    touch_watchlist as touch_futures_depth_book_watchlist,
+)
+from mexc_monitor.ws_l2_depth import (
+    get_fresh_depth_book as get_fresh_l2_depth_book,
+    l2_depth_health,
+    reconcile as reconcile_l2_depth,
+    stop_all as stop_l2_depth_ws,
+    touch_watchlist as touch_l2_depth_watchlist,
+)
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
-from mexc_monitor.http_utils import effective_http_proxy, mexc_httpx_client, set_runtime_http_proxy
-from mexc_monitor.http_shared import set_shared_http_proxy
+from mexc_monitor.http_utils import effective_http_proxy, set_runtime_http_proxy
+from mexc_monitor.http_shared import reset_clients, set_proxy_resolver
+from mexc_monitor.proxy_registry import REGISTRY, KNOWN_EXCHANGES, ProxyValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -265,10 +280,21 @@ def _resolve_engine(
 def _startup_prefetch_futures_ws() -> None:
     ensure_started_from_settings(DEFAULT_SETTINGS)
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
+    ensure_futures_depth_book_ws_started(DEFAULT_SETTINGS)
     ensure_spot_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_deals_ws_started(DEFAULT_SETTINGS)
-    # Apply the configured exchange proxy to the shared bookTicker REST client.
-    set_shared_http_proxy(effective_http_proxy(DEFAULT_SETTINGS))
+    # Seed the proxy registry default from static config, then wire the
+    # per-exchange resolver into the shared REST client pool so smart routing
+    # applies to every exchange client via shared_get(exchange=...).
+    try:
+        REGISTRY.replace_all(
+            default=DEFAULT_SETTINGS.http_proxy_url or None,
+            per_exchange=dict(DEFAULT_SETTINGS.http_proxy_per_exchange),
+        )
+    except ProxyValidationError as e:
+        logger.warning("Invalid proxy in config, ignoring: %s", e)
+    set_proxy_resolver(lambda ex: effective_http_proxy(DEFAULT_SETTINGS, ex))
+    reset_clients()
     if DEFAULT_SETTINGS.history_enabled:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
@@ -304,6 +330,8 @@ def _shutdown_workers() -> None:
     _screener_engine.stop()
     _registry.shutdown_all()
     stop_history_worker()
+    stop_futures_depth_book_ws()
+    stop_l2_depth_ws()
     stop_spot_orderbook_ws()
     stop_spot_deals_ws()
     _metascalp_poller.stop()
@@ -361,8 +389,35 @@ def _fetch_binance_depth(market: str, symbol: str, *, limit: int = 100) -> dict:
     }
 
 
+def _get_depth_snapshot(market: str, symbol: str, *, limit: int = 100) -> dict:
+    """Единая точка получения L2-стакана для density-эндпоинтов.
+
+    Порядок источников:
+    1. WS-книга MEXC futures (``sub.depth.full``) — без сетевого запроса,
+       всегда свежая, работает даже когда REST геоблокирован;
+    2. REST MEXC (``fetch_orderbook_depth``);
+    3. Binance-fallback.
+
+    Возвращает dict со списками bids/asks (``{price, qty[, notional]}``) и
+    полем ``source`` (``ws`` / ``rest`` / ``binance_fallback``).
+    """
+    from mexc_monitor.orderbook import fetch_orderbook_depth
+
+    m = (market or "").strip().lower()
+    # 1. WS-книга: только MEXC USDT-перпы, для которых крутится depth-фид.
+    if m in ("futures", "perp"):
+        book = get_fresh_futures_depth_book(symbol, max_age_sec=8.0)
+        if book and book.get("bids") and book.get("asks"):
+            return book
+    # 2. REST MEXC → 3. Binance.
+    try:
+        return fetch_orderbook_depth(m or "spot", symbol, limit=limit)
+    except Exception:
+        return _fetch_binance_depth(m or "spot", symbol, limit=limit)
+
+
 def _run_with_timeout(fn, *, timeout_sec: float):
-    """Выполнить fn() в отдельном потоке с таймаутом."""
+    """Выполнить fn() в отдельном ����отоке с таймаутом."""
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(fn)
@@ -616,8 +671,79 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     from mexc_monitor.ws_bookticker import feeds_health
+    from mexc_monitor.ws_futures_depth_book import depth_book_health
 
-    return {"status": "ok", "ws_feeds": feeds_health()}
+    l2 = l2_depth_health()
+    return {
+        "status": "ok",
+        "ws_feeds": feeds_health(),
+        "orderbook_ws": {
+            "mexc_futures_depth": depth_book_health(),
+            "okx_l2_depth": l2.get("okx"),
+            "bybit_l2_depth": l2.get("bybit"),
+        },
+    }
+
+
+@app.get("/api/diagnostics/sources")
+def diagnostics_sources(
+    timeout_sec: float = Query(8.0, ge=1.0, le=30.0),
+) -> dict[str, Any]:
+    """Диагностика источников: REST-латентность + геоблок и свежесть WS-фида.
+
+    По каждой бирже возвращает:
+    - ``rest``: {status, status_code, elapsed_ms, url} — проба REST (через
+      прокси, если настроен);
+    - ``ws``: {running, live, symbols, last_message_age_sec} — состояние
+      WebSocket-фида (если для биржи он есть);
+    - ``recommended``: какой путь сейчас предпочтителен для снимка.
+    """
+    from mexc_monitor.source_probes import PROBES, probe_all
+    from mexc_monitor.ws_bookticker import feeds_health
+
+    rest = probe_all(DEFAULT_SETTINGS, timeout_sec=timeout_sec)
+    ws = feeds_health()
+
+    sources: list[dict[str, Any]] = []
+    for name in PROBES:
+        rest_res = rest.get(name, {})
+        ws_res = ws.get(name)  # futures-фид под именем биржи
+        ws_spot_res = ws.get(f"{name}_spot")  # spot-фид (okx/gateio/htx)
+        ws_live = bool(ws_res and ws_res.get("live"))
+        rest_ok = rest_res.get("status") == "ok"
+        if ws_live:
+            recommended = "ws"
+        elif rest_ok:
+            recommended = "rest"
+        else:
+            recommended = "none"
+        sources.append(
+            {
+                "exchange": name,
+                "rest": rest_res,
+                "ws": ws_res,
+                "ws_spot": ws_spot_res,
+                "recommended": recommended,
+                "proxy": effective_http_proxy(DEFAULT_SETTINGS, name),
+            }
+        )
+
+    active_proxy = effective_http_proxy(DEFAULT_SETTINGS, "generic")
+    reachable = sum(1 for s in sources if s["rest"].get("status") == "ok")
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "active_proxy": active_proxy,
+        "summary": {
+            "total": len(sources),
+            "rest_reachable": reachable,
+            "ws_live": sum(1 for s in sources if s["ws"] and s["ws"].get("live")),
+            "ws_spot_live": sum(
+                1 for s in sources if s["ws_spot"] and s["ws_spot"].get("live")
+            ),
+        },
+        "sources": sources,
+    }
 
 
 _WITHDRAWAL_FEES_PATH = _ROOT / "config" / "withdrawal_fees.json"
@@ -633,6 +759,36 @@ def withdrawal_fees() -> dict:
         return {"ok": True, **data}
     except (json.JSONDecodeError, OSError) as e:
         return {"ok": False, "error": str(e), "tokens": {}}
+
+
+@app.get("/api/coin-networks")
+def coin_networks(
+    coins: str = Query("", description="Список монет через запятую: BTC,ETH,SOL"),
+    force: bool = Query(False, description="Игнорировать кэш и запросить биржи заново"),
+) -> dict:
+    """Сети депозита/вывода по монетам с бирж с публичным currency-API.
+
+    Поддерживаются только Gate.io и Bitget (у остальных данные о с��тях
+    доступны лишь через подписанные эндпоинты). Ответ:
+    ``{coins: {BTC: {gateio: [{network, deposit, withdraw}], ...}}}``.
+    """
+    from mexc_monitor.coin_networks import (  # noqa: PLC0415
+        SUPPORTED_EXCHANGES,
+        get_coin_networks,
+    )
+
+    coin_list = [c for c in coins.split(",") if c.strip()]
+    if not coin_list:
+        return {"ok": True, "coins": {}, "supported_exchanges": list(SUPPORTED_EXCHANGES)}
+    try:
+        data = get_coin_networks(coin_list, force=force)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "coins": {}}
+    return {
+        "ok": True,
+        "coins": data,
+        "supported_exchanges": list(SUPPORTED_EXCHANGES),
+    }
 
 
 @app.get("/api/withdrawal-fees/calculate")
@@ -1292,7 +1448,7 @@ def klines_batch(
     exchange: str = Query("mexc", description="mexc, asterdex или lighter"),
 ) -> dict:
     """
-    Batch-загрузка klines для нескольких символов одним запросом.
+    Batch-загрузка klines для не��кольких символов одним запросом.
     Использует in-memory кэш (TTL 60s по умолчанию) и параллельные запросы.
     Поддерживает все биржи: mexc, asterdex, lighter.
     """
@@ -1385,6 +1541,17 @@ def orderbook_depth(
                     out = dict(cached)
                     out["cache_hit"] = True
                     return out
+    # WS-книга MEXC futures — приоритетный источник (без сети, обходит геоблок).
+    if m == "futures":
+        ws_book = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+        if ws_book and ws_book.get("bids") and ws_book.get("asks"):
+            out = dict(ws_book)
+            out["ok"] = True
+            out["cache_hit"] = False
+            if _DEPTH_CACHE_TTL_SEC > 0:
+                with _depth_cache_lock:
+                    _depth_cache[key] = (now + _DEPTH_CACHE_TTL_SEC, dict(out))
+            return out
     try:
         data = fetch_orderbook_depth(m, sym, limit=lim)
     except (MexcApiError, Exception) as e:
@@ -1463,12 +1630,9 @@ def density_walls(
     """Поиск стен в стакане — уровни с аномально крупными ордерами."""
     from mexc_monitor.density import detect_walls, wall_to_dict
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=100)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=100)
-        except Exception as e:
-            return {"ok": False, "error": str(e), "walls": []}
+        data = _get_depth_snapshot(market, symbol, limit=100)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "walls": []}
 
     walls = detect_walls(
         data.get("bids", []),
@@ -1483,6 +1647,7 @@ def density_walls(
         "multiplier": multiplier,
         "walls": [wall_to_dict(w) for w in walls],
         "count": len(walls),
+        "source": data.get("source"),
     }
 
 
@@ -1494,15 +1659,18 @@ def density_stats(
     """Статистика плотности стакана."""
     from mexc_monitor.density import compute_density_stats, stats_to_dict
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=100)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=100)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        data = _get_depth_snapshot(market, symbol, limit=100)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
     stats = compute_density_stats(data.get("bids", []), data.get("asks", []))
-    return {"ok": True, "symbol": symbol.strip().upper(), "market": market, **stats_to_dict(stats)}
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "market": market,
+        "source": data.get("source"),
+        **stats_to_dict(stats),
+    }
 
 
 @app.get("/api/density/compare")
@@ -1604,7 +1772,16 @@ def density_overview(
         )
 
     if not raw.get("ok") or not raw.get("rows"):
-        return {"ok": False, "error": raw.get("error", "No data"), "symbols": []}
+        err = raw.get("error", "No data")
+        # Bybit REST (список символов + объёмы) геоблокируется CloudFront 403 из
+        # песочницы. WS-книга при этом жива — нужен лишь прокси для REST.
+        if exchange == "bybit" and ("403" in str(err) or "CloudFront" in str(err)):
+            err = (
+                "Bybit REST геоблокирован (CloudFront 403): список символов и "
+                "объёмы недоступны. WS-книга работает — настройте прокси "
+                "(см. docs/PROXY_XRAY.md или страницу «Сеть / Прокси»)."
+            )
+        return {"ok": False, "error": err, "symbols": []}
 
     rows = raw["rows"]
     # Фильтр по объёму и сортировка
@@ -1612,10 +1789,36 @@ def density_overview(
         rows = [r for r in rows if (r.get("volume_24h_quote") or 0) >= min_volume]
     rows = rows[:limit]
 
+    # Часто просматриваемые символы подмешиваем в подписку WS-книги, чтобы при
+    # следующем reconcile density по ним считался из WS, а не Binance REST
+    # (который геоблокируется). MEXC — свой depth-фид, OKX/Bybit — общий l2-фид.
+    _row_symbols = [r.get("symbol", "") for r in rows]
+    if exchange == "mexc" and market in ("futures", "perp"):
+        try:
+            touch_futures_depth_book_watchlist(_row_symbols)
+            reconcile_futures_depth_book_ws(DEFAULT_SETTINGS)
+        except Exception:  # noqa: BLE001 — best-effort, не критично для ответа
+            pass
+    elif exchange in ("okx", "bybit") and market in ("futures", "perp"):
+        try:
+            touch_l2_depth_watchlist(exchange, _row_symbols)
+            reconcile_l2_depth(exchange)
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
     def _fetch_density(row: dict) -> dict:
         sym = row.get("symbol", "")
         try:
-            depth = _fetch_binance_depth(market, sym, limit=50)
+            # Сперва WS-книга (без сети, обходит геоблок): MEXC — свой фид,
+            # OKX/Bybit — общий l2-фид. Иначе — Binance REST.
+            depth = None
+            if market in ("futures", "perp"):
+                if exchange == "mexc":
+                    depth = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+                elif exchange in ("okx", "bybit"):
+                    depth = get_fresh_l2_depth_book(exchange, sym, max_age_sec=8.0)
+            if not depth:
+                depth = _fetch_binance_depth(market, sym, limit=50)
             bids = depth.get("bids", [])
             asks = depth.get("asks", [])
             stats = compute_density_stats(bids, asks)
@@ -1627,6 +1830,7 @@ def density_overview(
                 "spread_bps": row.get("spread_bps"),
                 "volume_24h_quote": row.get("volume_24h_quote", 0),
                 "density": stats_to_dict(stats),
+                "source": depth.get("source"),
                 "walls": wall_dicts[:5],  # top 5 стен
                 "wall_count": len(wall_dicts),
                 "largest_wall": wall_dicts[0] if wall_dicts else None,
@@ -1675,12 +1879,9 @@ def density_heatmap(
     снимки во времени и рендерит heatmap (X=время, Y=цена, цвет=нотация).
     """
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=levels)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=levels)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        data = _get_depth_snapshot(market, symbol, limit=levels)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
     bids_raw = data.get("bids", [])
     asks_raw = data.get("asks", [])
@@ -1722,6 +1923,7 @@ def density_heatmap(
         "best_ask": best_ask,
         "bids": bids,
         "asks": asks,
+        "source": data.get("source"),
     }
 
 
@@ -2588,7 +2790,7 @@ def spread_stream(
 ) -> StreamingResponse:
     """
     SSE (Server-Sent Events) поток обновлений спреда в реальном времени.
-    Клиент подключается и получает события при каждом изменении bid/ask.
+    Клиент подключается и получает с��бытия при каждом изменении bid/ask.
     """
     import asyncio
     import queue
@@ -2731,66 +2933,83 @@ def screener_config_get() -> dict:
 
 
 def _network_state() -> dict:
-    from mexc_monitor.http_utils import _RUNTIME_PROXY  # noqa: PLC0415
-
-    runtime = _RUNTIME_PROXY
+    snap = REGISTRY.snapshot()
     configured = DEFAULT_SETTINGS.http_proxy_url
-    active = effective_http_proxy(DEFAULT_SETTINGS)
-    source = (
-        "runtime" if runtime else ("config" if configured else ("env" if active else "none"))
-    )
+    default_active = effective_http_proxy(DEFAULT_SETTINGS, "generic")
+    # Per-exchange effective proxy for every known exchange (what would be used).
+    per_exchange_effective = {
+        ex: effective_http_proxy(DEFAULT_SETTINGS, ex) for ex in KNOWN_EXCHANGES
+    }
     return {
-        "http_proxy_url": configured,
-        "active_proxy": active,
-        "source": source,
-        "note": "Applies to exchange REST traffic only (MEXC etc.); MetaScalp (localhost) is direct.",
+        "default_proxy": snap["default"],
+        "per_exchange": snap["per_exchange"],
+        "per_exchange_effective": per_exchange_effective,
+        "config_proxy": configured,
+        "active_proxy": default_active,
+        "known_exchanges": list(KNOWN_EXCHANGES),
+        "note": (
+            "Per-exchange routing: override a venue to a proxy or 'direct'. "
+            "Empty inherits the default. MetaScalp (localhost) is always direct."
+        ),
     }
 
 
 @app.get("/api/network/config")
 def network_config_get() -> dict:
-    """Current exchange-proxy settings."""
+    """Current exchange-proxy settings (default + per-exchange overrides)."""
     return {"ok": True, **_network_state()}
 
 
 @app.patch("/api/network/config")
 def network_config_update(payload: dict = Body(...)) -> dict:
-    """Set/clear the exchange proxy at runtime.
+    """Set/clear proxies at runtime — default and/or per-exchange overrides.
 
-    Body: ``{"http_proxy_url": "http://127.0.0.1:7890"}`` (or ``""`` to clear).
-    Empty/None falls back to config/env (httpx trust_env).
+    Body (all fields optional):
+    - ``default_proxy``: str — общий прокси ("" сбрасывает);
+    - ``per_exchange``: {exchange: url|"direct"|""} — точечные переопределения;
+    - ``http_proxy_url``: str — устаревший алиас для ``default_proxy``.
+
+    Схемы: http/https/socks5/socks5h, либо "direct" для обхода прокси.
     """
-    url = str(payload.get("http_proxy_url", "") or "").strip() or None
-    set_runtime_http_proxy(url)
-    set_shared_http_proxy(url)
+    try:
+        if "default_proxy" in payload or "http_proxy_url" in payload:
+            raw = payload.get("default_proxy", payload.get("http_proxy_url", ""))
+            REGISTRY.set_default(str(raw or "").strip() or None)
+        per = payload.get("per_exchange")
+        if isinstance(per, dict):
+            for ex, val in per.items():
+                if ex.strip().lower() not in KNOWN_EXCHANGES:
+                    raise HTTPException(status_code=400, detail=f"Неизвестная биржа: {ex}")
+                REGISTRY.set_exchange(ex, str(val or "").strip() or None)
+    except ProxyValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # New proxies → recreate pooled clients + keep legacy runtime override in sync.
+    reset_clients()
+    set_runtime_http_proxy(REGISTRY.snapshot()["default"])
     return {"ok": True, **_network_state()}
 
 
 @app.get("/api/network/test")
-def network_test() -> dict:
-    """Probe MEXC REST through the current proxy and report timing/result."""
-    import time as _time  # noqa: PLC0415
+def network_test(exchange: str = Query("mexc")) -> dict:
+    """Probe one exchange's REST through its resolved proxy; report timing.
 
-    t0 = _time.perf_counter()
-    try:
-        with mexc_httpx_client(DEFAULT_SETTINGS, exchange="mexc") as c:
-            r = c.get(DEFAULT_SETTINGS.ticker_24hr_url, timeout=10.0)
-        ok = r.status_code == 200
-        return {
-            "ok": True,
-            "reachable": ok,
-            "status_code": r.status_code,
-            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
-            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
-        }
-    except Exception as e:
-        return {
-            "ok": True,
-            "reachable": False,
-            "error": f"{type(e).__name__}: {e}",
-            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
-            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
-        }
+    Uses the same lightweight probe endpoints as /api/diagnostics/sources, so
+    the result reflects exactly what smart routing does for that venue.
+    """
+    from mexc_monitor.source_probes import probe_one  # noqa: PLC0415
+
+    ex = exchange.strip().lower()
+    res = probe_one(ex, DEFAULT_SETTINGS)
+    return {
+        "ok": True,
+        "exchange": ex,
+        "reachable": res.get("status") == "ok",
+        "status": res.get("status"),
+        "status_code": res.get("status_code"),
+        "elapsed_ms": res.get("elapsed_ms"),
+        "error": res.get("error"),
+        "proxy": effective_http_proxy(DEFAULT_SETTINGS, ex),
+    }
 
 
 @app.patch("/api/screener/config")
@@ -2807,7 +3026,7 @@ def screener_config_update(
 
 
 
-# ─── Spread Capture Engine endpoints ───────────────────────────────────────────
+# ─── Spread Capture Engine endpoints ────────────────────────────���──────────────
 
 
 @app.get("/api/capture/status")
@@ -3103,7 +3322,7 @@ def aster_cross_spread(
     return result
 
 
-# ─── AsterDEX Private (Trading) endpoints ─────────────────────────────────────
+# ���── AsterDEX Private (Trading) endpoints ─────────────────────────────────────
 
 import os as _os
 _ASTER_API_KEY = _os.environ.get("ASTER_API_KEY", "").strip()
@@ -3387,7 +3606,7 @@ def aster_ws_unsubscribe(
     return {"ok": True, "symbol": sym, "subscribed_symbols": client.get_subscribed_symbols()}
 
 
-# ─── Cross-Exchange Arbitrage Engine endpoints ─────────────────────────────────
+# ─── Cross-Exchange Arbitrage Engine endpoints ─���───────────────────────────────
 
 from mexc_monitor.arbitrage.engine import ArbitrageEngine
 from mexc_monitor.arbitrage.models import ArbitrageSettings

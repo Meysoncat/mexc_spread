@@ -6,13 +6,14 @@ import {
   useState,
 } from "react";
 import { LineStyle } from "lightweight-charts";
-import type { IPriceLine, ISeriesApi } from "lightweight-charts";
+import type { IChartApi, IPriceLine } from "lightweight-charts";
 import { X } from "lucide-react";
 import { apiUrl } from "./config";
 import { readStoredVisual } from "./chartPreferences";
 import {
   TradingChart,
   type TradingChartRef,
+  type PriceSeries,
 } from "./components/charts";
 import type {
   ChartInterval,
@@ -85,10 +86,7 @@ interface AssetWorkspaceModalProps {
   ctx: WorkspaceOpenContext | null;
 }
 
-function clearPriceLines(
-  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null,
-  lines: IPriceLine[],
-) {
+function clearPriceLines(series: PriceSeries | null, lines: IPriceLine[]) {
   if (!series) return;
   for (const pl of lines) {
     try {
@@ -172,7 +170,7 @@ export function AssetWorkspaceModal({
 
   const applyLinesToSeries = useCallback(
     (
-      series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
+      series: PriceSeries,
       hits: { side: "bid" | "ask"; level: OrderbookLevel }[],
     ) => {
       clearPriceLines(series, densityLinesRef.current);
@@ -196,9 +194,7 @@ export function AssetWorkspaceModal({
     [showDensityLines],
   );
 
-  const chartSeriesRef = useRef<
-    ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null
-  >(null);
+  const chartSeriesRef = useRef<PriceSeries | null>(null);
 
   useEffect(() => {
     if (chartSeriesRef.current) {
@@ -207,10 +203,7 @@ export function AssetWorkspaceModal({
   }, [densityList, applyLinesToSeries]);
 
   const handleChartReady = useCallback(
-    (
-      _chart: any,
-      series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">,
-    ) => {
+    (_chart: IChartApi, series: PriceSeries) => {
       chartSeriesRef.current = series;
       applyLinesToSeries(series, densityList);
     },

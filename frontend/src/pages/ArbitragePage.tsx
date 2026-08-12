@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, Pause, Play, Shield } from "lucide-react";
 import { apiFetch } from "../config";
 import { Skeleton, SkeletonCard, SkeletonTableRows } from "../components/ui/Skeleton";
+import { TableEmptyState } from "../components/ui/EmptyState";
 import { SymbolPicker } from "../components/SymbolPicker";
 import { LiveModeWarning } from "../components/LiveModeWarning";
 import { useEngineCapabilities } from "../hooks/useEngineCapabilities";
@@ -226,14 +227,16 @@ export function ArbitragePage() {
               <tbody>
                 {initialLoading && !fetchFailed && <SkeletonTableRows rows={6} colSpan={8} />}
                 {!initialLoading && trades.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="px-2 py-8 text-center text-sm text-ink-muted">
-                      Сделок пока нет.{" "}
-                      {running
+                  <TableEmptyState
+                    colSpan={8}
+                    compact
+                    title="Сделок пока нет"
+                    description={
+                      running
                         ? "Движок работает и ждёт, когда базис превысит порог входа — сделки появятся здесь автоматически."
-                        : "Движок остановлен — нажмите «Старт» вверху, чтобы начать торговать (режим paper безопасен: сделки виртуальные)."}
-                    </td>
-                  </tr>
+                        : "Движок остановлен — нажмите «Старт» вверху, чтобы начать торговать (режим paper безопасен: сделки виртуальные)."
+                    }
+                  />
                 )}
                 {[...trades].reverse().map((t, i) => (
                   <tr key={i} className="border-b border-line/50 hover:bg-accent/5">

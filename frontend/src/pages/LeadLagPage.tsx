@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "../config";
 import { SkeletonCard } from "../components/ui/Skeleton";
+import { EmptyState } from "../components/ui/EmptyState";
 import { SymbolPicker } from "../components/SymbolPicker";
 import { useNavigationState } from "../hooks/useNavigationState";
 
@@ -228,9 +229,11 @@ function SignalFeed({ signals }: { signals: LeadLagSignal[] }) {
 function LagHeatmap({ estimates }: { estimates: LagEstimate[] }) {
   if (estimates.length === 0) {
     return (
-      <div className="flex items-center justify-center py-6 text-sm text-ink-muted">
-        Нет данных lag-оценок
-      </div>
+      <EmptyState
+        compact
+        title="Нет данных lag-оценок"
+        description="Запустите движок lead/lag, чтобы увидеть матрицу опережения бирж."
+      />
     );
   }
 
@@ -480,7 +483,7 @@ export function LeadLagPage() {
     } catch (e: any) {
       if (e.name !== "AbortError") {
         if (e.name === "TimeoutError" || Date.now() - lastSuccessRef.current > 10_000) {
-          setError("Ошибка соединения с backend");
+          setError("Ошибка соеди��ения с backend");
         } else {
           setError("Ошибка соединения с backend");
         }

@@ -110,7 +110,7 @@ class OkxPublicClient:
         """HTTP GET с обработкой ошибок OKX API."""
         url = f"{self._base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="okx", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise OkxApiError(
                 f"OKX API timeout after {self._timeout}s: {url}"

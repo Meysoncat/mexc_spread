@@ -122,7 +122,7 @@ class HtxPublicClient:
         """HTTP GET с обработкой ошибок HTX API."""
         url = f"{base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="htx", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise HtxApiError(
                 f"HTX API timeout after {self._timeout}s: {url}"

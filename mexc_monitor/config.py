@@ -39,6 +39,9 @@ class Settings:
     # (httpx всё ещё читает HTTP_PROXY/HTTPS_PROXY env через trust_env).
     # localhost (MetaScalp) через прокси НЕ ходит — только внешние API бирж.
     http_proxy_url: str = ""
+    # Per-exchange proxy overrides для smart routing: {exchange: url|"direct"}.
+    # Пусто/отсутствие = наследовать http_proxy_url. "direct" = обойти прокси.
+    http_proxy_per_exchange: tuple[tuple[str, str], ...] = ()
 
     # Spot WebSocket (bookTicker L1 для выбранных символов).
     spot_ws_url: str = "wss://wbs.mexc.com/ws"
@@ -686,6 +689,11 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         http_min_request_interval_sec=max(0.0, http_min_request_interval_sec),
         http_extra_headers=_parse_http_headers(mexc.get("http_headers")),
         http_proxy_url=str(mexc.get("http_proxy_url", d.http_proxy_url) or ""),
+        http_proxy_per_exchange=tuple(
+            (str(k).strip().lower(), str(v).strip())
+            for k, v in (mexc.get("http_proxy_per_exchange") or {}).items()
+            if str(v).strip()
+        ),
         futures_ws_url=str(mexc.get("futures_ws_url", d.futures_ws_url)),
         futures_ticker_source=futures_ticker_source,
         spot_ws_url=str(mexc.get("spot_ws_url", d.spot_ws_url)),
@@ -886,6 +894,21 @@ def _apply_env_overrides(s: Settings) -> Settings:
                 s.exec_reference_quote_notional,
             ),
         )
+    # Per-exchange proxy из env: MEXC_HTTP_PROXY_<EXCHANGE> (напр.
+    # MEXC_HTTP_PROXY_BINANCE=socks5h://host:1080, ..._OKX=direct). Удобно на
+    # Vercel/Docker — «вписал прокси» без правки JSON. Мержим поверх JSON-конфига;
+    # env имеет приоритет для тех же бирж.
+    from mexc_monitor.proxy_registry import KNOWN_EXCHANGES  # чистый модуль, без цикла
+
+    env_per_exchange: dict[str, str] = {}
+    for ex in KNOWN_EXCHANGES:
+        raw = os.environ.get(f"MEXC_HTTP_PROXY_{ex.upper()}")
+        if raw is not None and raw.strip():
+            env_per_exchange[ex] = raw.strip()
+    if env_per_exchange:
+        merged = dict(s.http_proxy_per_exchange)
+        merged.update(env_per_exchange)
+        kw["http_proxy_per_exchange"] = tuple(merged.items())
     return replace(s, **kw) if kw else s
 
 

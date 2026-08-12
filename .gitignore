@@ -14,6 +14,7 @@ data/
 .env
 .env.*
 !.env.example
+!.env.docker.example
 
 # Local tooling / IDE state.
 .zcode/
@@ -62,6 +63,10 @@ docs/HUMMINGBOT_*.md
 # One-off analysis / scrape scripts (see file headers).
 analyze_trades.py
 scrape_proboyscalp.py
+
+# Xray proxy bridge artifacts (binary + generated config with VLESS UUID/secret).
+# See scripts/xray_bridge.py / docs/PROXY_XRAY.md — never commit these.
+.xray/
 
 # Local config (machine-specific client config, skills index with absolute paths).
 conf/

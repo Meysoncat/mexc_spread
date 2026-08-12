@@ -16,6 +16,7 @@ import {
   ArrowDown,
 } from "lucide-react";
 import { apiUrl, apiFetch } from "../config";
+import { EmptyState } from "../components/ui/EmptyState";
 import { useNavigationState } from "../hooks/useNavigationState";
 import { baseFromSymbol } from "../lib/symbol";
 
@@ -684,48 +685,48 @@ export function ScreenerPage() {
       {/* Table / empty state */}
       <div className="min-h-0 flex-1 overflow-auto">
         {opps.length === 0 && !hasLoaded && !streamErrored ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
-            <Radar className="h-10 w-10 animate-pulse opacity-40" />
-            <p className="text-sm font-medium">Подключение к скринеру…</p>
-            <p className="max-w-md text-xs">
-              Устанавливаем поток данных и сканируем вселенную символов.
-            </p>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState
+              variant="loading"
+              icon={Radar}
+              title="Подключение к скринеру…"
+              description="Устанавливаем поток данных и сканируем вселенную символов."
+            />
           </div>
         ) : opps.length === 0 && streamErrored && !hasLoaded ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
-            <Radar className="h-10 w-10 opacity-30" />
-            <p className="text-sm font-medium text-red-500">
-              Нет соединения со скринером
-            </p>
-            <p className="max-w-md text-xs">
-              Поток данных недоступен. Проверьте, что бэкенд запущен и биржа
-              достижима из вашей сети, затем повторите.
-            </p>
-            <button
-              onClick={() => {
-                setStreamErrored(false);
-                setReconnectNonce((n) => n + 1);
-              }}
-              className="mt-1 rounded-md border border-accent bg-accent/10 px-4 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/20"
-            >
-              Повторить
-            </button>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState
+              variant="error"
+              title="Нет соединения со скринером"
+              description="Поток данных недоступен. Проверьте, что бэкенд запущен и биржа достижима из вашей сети, затем повторите."
+              action={
+                <button
+                  onClick={() => {
+                    setStreamErrored(false);
+                    setReconnectNonce((n) => n + 1);
+                  }}
+                  className="rounded-md border border-accent bg-accent/10 px-4 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/20"
+                >
+                  Повторить
+                </button>
+              }
+            />
           </div>
         ) : opps.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
-            <Radar className="h-10 w-10 opacity-30" />
-            <p className="text-sm font-medium">Сейчас возможностей нет</p>
-            <p className="max-w-md text-xs">
-              Ни одна монета не прошла все фильтры (net-спред, ликвидность,
-              объём, время удержания). Смягчите пороги или подождите — скринер
-              обновляется в реальном времени.
-            </p>
-            <button
-              onClick={() => applyPreset(PRESETS[2].patch)}
-              className="mt-1 rounded-md border border-line px-4 py-1.5 text-sm font-medium text-ink-muted transition hover:border-accent/50 hover:text-ink"
-            >
-              Смягчить пороги (Агрессивный)
-            </button>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState
+              icon={Radar}
+              title="Сейчас возможностей нет"
+              description="Ни одна монета не прошла все фильтры (net-спред, ликвидность, объём, время удержания). Смягчите пороги или подождите — скринер обновляется в реальном времени."
+              action={
+                <button
+                  onClick={() => applyPreset(PRESETS[2].patch)}
+                  className="rounded-md border border-line px-4 py-1.5 text-sm font-medium text-ink-muted transition hover:border-accent/50 hover:text-ink"
+                >
+                  Смягчить пороги (Агрессивный)
+                </button>
+              }
+            />
           </div>
         ) : (
           <table className="w-full border-collapse text-sm">
