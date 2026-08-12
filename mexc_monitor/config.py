@@ -894,6 +894,21 @@ def _apply_env_overrides(s: Settings) -> Settings:
                 s.exec_reference_quote_notional,
             ),
         )
+    # Per-exchange proxy из env: MEXC_HTTP_PROXY_<EXCHANGE> (напр.
+    # MEXC_HTTP_PROXY_BINANCE=socks5h://host:1080, ..._OKX=direct). Удобно на
+    # Vercel/Docker — «вписал прокси» без правки JSON. Мержим поверх JSON-конфига;
+    # env имеет приоритет для тех же бирж.
+    from mexc_monitor.proxy_registry import KNOWN_EXCHANGES  # чистый модуль, без цикла
+
+    env_per_exchange: dict[str, str] = {}
+    for ex in KNOWN_EXCHANGES:
+        raw = os.environ.get(f"MEXC_HTTP_PROXY_{ex.upper()}")
+        if raw is not None and raw.strip():
+            env_per_exchange[ex] = raw.strip()
+    if env_per_exchange:
+        merged = dict(s.http_proxy_per_exchange)
+        merged.update(env_per_exchange)
+        kw["http_proxy_per_exchange"] = tuple(merged.items())
     return replace(s, **kw) if kw else s
 
 
