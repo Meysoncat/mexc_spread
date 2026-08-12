@@ -33,7 +33,9 @@ from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_starte
 from mexc_monitor.ws_futures_depth_book import (
     ensure_futures_depth_book_ws_started,
     get_fresh_depth_book as get_fresh_futures_depth_book,
+    reconcile_futures_depth_book_ws,
     stop_futures_depth_book_ws,
+    touch_watchlist as touch_futures_depth_book_watchlist,
 )
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
@@ -379,6 +381,33 @@ def _fetch_binance_depth(market: str, symbol: str, *, limit: int = 100) -> dict:
     }
 
 
+def _get_depth_snapshot(market: str, symbol: str, *, limit: int = 100) -> dict:
+    """Единая точка получения L2-стакана для density-эндпоинтов.
+
+    Порядок источников:
+    1. WS-книга MEXC futures (``sub.depth.full``) — без сетевого запроса,
+       всегда свежая, работает даже когда REST геоблокирован;
+    2. REST MEXC (``fetch_orderbook_depth``);
+    3. Binance-fallback.
+
+    Возвращает dict со списками bids/asks (``{price, qty[, notional]}``) и
+    полем ``source`` (``ws`` / ``rest`` / ``binance_fallback``).
+    """
+    from mexc_monitor.orderbook import fetch_orderbook_depth
+
+    m = (market or "").strip().lower()
+    # 1. WS-книга: только MEXC USDT-перпы, для которых крутится depth-фид.
+    if m in ("futures", "perp"):
+        book = get_fresh_futures_depth_book(symbol, max_age_sec=8.0)
+        if book and book.get("bids") and book.get("asks"):
+            return book
+    # 2. REST MEXC → 3. Binance.
+    try:
+        return fetch_orderbook_depth(m or "spot", symbol, limit=limit)
+    except Exception:
+        return _fetch_binance_depth(m or "spot", symbol, limit=limit)
+
+
 def _run_with_timeout(fn, *, timeout_sec: float):
     """Выполнить fn() в отдельном ����отоке с таймаутом."""
     import concurrent.futures
@@ -634,8 +663,13 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     from mexc_monitor.ws_bookticker import feeds_health
+    from mexc_monitor.ws_futures_depth_book import depth_book_health
 
-    return {"status": "ok", "ws_feeds": feeds_health()}
+    return {
+        "status": "ok",
+        "ws_feeds": feeds_health(),
+        "orderbook_ws": {"mexc_futures_depth": depth_book_health()},
+    }
 
 
 @app.get("/api/diagnostics/sources")
@@ -1494,6 +1528,17 @@ def orderbook_depth(
                     out = dict(cached)
                     out["cache_hit"] = True
                     return out
+    # WS-книга MEXC futures — приоритетный источник (без сети, обходит геоблок).
+    if m == "futures":
+        ws_book = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+        if ws_book and ws_book.get("bids") and ws_book.get("asks"):
+            out = dict(ws_book)
+            out["ok"] = True
+            out["cache_hit"] = False
+            if _DEPTH_CACHE_TTL_SEC > 0:
+                with _depth_cache_lock:
+                    _depth_cache[key] = (now + _DEPTH_CACHE_TTL_SEC, dict(out))
+            return out
     try:
         data = fetch_orderbook_depth(m, sym, limit=lim)
     except (MexcApiError, Exception) as e:
@@ -1572,12 +1617,9 @@ def density_walls(
     """Поиск стен в стакане — уровни с аномально крупными ордерами."""
     from mexc_monitor.density import detect_walls, wall_to_dict
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=100)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=100)
-        except Exception as e:
-            return {"ok": False, "error": str(e), "walls": []}
+        data = _get_depth_snapshot(market, symbol, limit=100)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "walls": []}
 
     walls = detect_walls(
         data.get("bids", []),
@@ -1592,6 +1634,7 @@ def density_walls(
         "multiplier": multiplier,
         "walls": [wall_to_dict(w) for w in walls],
         "count": len(walls),
+        "source": data.get("source"),
     }
 
 
@@ -1603,15 +1646,18 @@ def density_stats(
     """Статистика плотности стакана."""
     from mexc_monitor.density import compute_density_stats, stats_to_dict
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=100)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=100)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        data = _get_depth_snapshot(market, symbol, limit=100)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
     stats = compute_density_stats(data.get("bids", []), data.get("asks", []))
-    return {"ok": True, "symbol": symbol.strip().upper(), "market": market, **stats_to_dict(stats)}
+    return {
+        "ok": True,
+        "symbol": symbol.strip().upper(),
+        "market": market,
+        "source": data.get("source"),
+        **stats_to_dict(stats),
+    }
 
 
 @app.get("/api/density/compare")
@@ -1721,10 +1767,24 @@ def density_overview(
         rows = [r for r in rows if (r.get("volume_24h_quote") or 0) >= min_volume]
     rows = rows[:limit]
 
+    # Часто просматриваемые MEXC-futures символы подмешиваем в подписку WS-книги,
+    # чтобы при следующем reconcile density по ним считался из WS, а не Binance.
+    if exchange == "mexc" and market in ("futures", "perp"):
+        try:
+            touch_futures_depth_book_watchlist([r.get("symbol", "") for r in rows])
+            reconcile_futures_depth_book_ws(DEFAULT_SETTINGS)
+        except Exception:  # noqa: BLE001 — best-effort, не критично для ответа
+            pass
+
     def _fetch_density(row: dict) -> dict:
         sym = row.get("symbol", "")
         try:
-            depth = _fetch_binance_depth(market, sym, limit=50)
+            # MEXC futures: сперва WS-книга (без сети). Иначе — Binance REST.
+            depth = None
+            if exchange == "mexc" and market in ("futures", "perp"):
+                depth = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+            if not depth:
+                depth = _fetch_binance_depth(market, sym, limit=50)
             bids = depth.get("bids", [])
             asks = depth.get("asks", [])
             stats = compute_density_stats(bids, asks)
@@ -1736,6 +1796,7 @@ def density_overview(
                 "spread_bps": row.get("spread_bps"),
                 "volume_24h_quote": row.get("volume_24h_quote", 0),
                 "density": stats_to_dict(stats),
+                "source": depth.get("source"),
                 "walls": wall_dicts[:5],  # top 5 стен
                 "wall_count": len(wall_dicts),
                 "largest_wall": wall_dicts[0] if wall_dicts else None,
@@ -1784,12 +1845,9 @@ def density_heatmap(
     снимки во времени и рендерит heatmap (X=время, Y=цена, цвет=нотация).
     """
     try:
-        data = fetch_orderbook_depth(market, symbol, limit=levels)
-    except Exception:
-        try:
-            data = _fetch_binance_depth(market, symbol, limit=levels)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        data = _get_depth_snapshot(market, symbol, limit=levels)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
     bids_raw = data.get("bids", [])
     asks_raw = data.get("asks", [])
@@ -1831,6 +1889,7 @@ def density_heatmap(
         "best_ask": best_ask,
         "bids": bids,
         "asks": asks,
+        "source": data.get("source"),
     }
 
 
