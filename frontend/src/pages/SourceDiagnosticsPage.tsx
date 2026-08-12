@@ -9,6 +9,7 @@ import {
   type DiagnosticsResponse,
   recommendedBadge,
   restBadge,
+  sortSources,
   wsBadge,
 } from "../lib/diagnostics";
 
@@ -165,7 +166,7 @@ export function SourceDiagnosticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.sources.map((row) => (
+                {sortSources(data.sources).map((row) => (
                   <tr
                     key={row.exchange}
                     className="border-t border-line/60 hover:bg-surface-elevated/50"

@@ -97,3 +97,26 @@ export function recommendedBadge(rec: Recommended): Badge {
       return { tone: "bad", label: "Недоступен" };
   }
 }
+
+/** Приоритет строки: чем меньше — тем «проблемнее» (поднимается наверх). */
+function healthRank(row: SourceRow): number {
+  if (row.recommended === "none") return 0; // недоступен вовсе
+  if (row.recommended === "rest") return 1; // только REST (нет живого WS)
+  return 2; // WebSocket онлайн — всё хорошо
+}
+
+/**
+ * Сортировка источников по проблемности: недоступные наверху, здоровые внизу.
+ * При равном здоровье — по возрастанию REST-латентности (медленные выше).
+ * Не мутирует исходный массив.
+ */
+export function sortSources(sources: SourceRow[]): SourceRow[] {
+  return [...sources].sort((a, b) => {
+    const rank = healthRank(a) - healthRank(b);
+    if (rank !== 0) return rank;
+    const la = a.rest.status === "ok" ? a.rest.elapsed_ms : Infinity;
+    const lb = b.rest.status === "ok" ? b.rest.elapsed_ms : Infinity;
+    if (la !== lb) return lb - la; // медленнее → выше
+    return a.exchange.localeCompare(b.exchange);
+  });
+}
