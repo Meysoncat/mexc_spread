@@ -12,6 +12,7 @@ import {
   Download,
   FlaskConical,
   Flame,
+  Globe,
   Layers,
   Radar,
   Shield,
@@ -64,6 +65,10 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: "/backtest", label: "Backtest", icon: FlaskConical },
       { path: "/alerts", label: "Алерты", icon: Bell },
     ],
+  },
+  {
+    label: "Система",
+    items: [{ path: "/network", label: "Сеть / Прокси", icon: Globe }],
   },
 ];
 

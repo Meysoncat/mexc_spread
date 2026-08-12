@@ -12,6 +12,29 @@ from mexc_monitor.clock_skew_middleware import ClockSkewClient
 from mexc_monitor.config import Settings
 
 
+# Runtime proxy override (set via /api/network/config PATCH). Takes precedence
+# over Settings.http_proxy_url and env. None = "not set" → fall back to config.
+_RUNTIME_PROXY: str | None = None
+
+
+def set_runtime_http_proxy(url: str | None) -> None:
+    """Set/clear the runtime proxy override for exchange HTTP traffic."""
+    global _RUNTIME_PROXY
+    _RUNTIME_PROXY = (url or "").strip() or None
+
+
+def effective_http_proxy(settings: Settings) -> str | None:
+    """Resolve the proxy URL to use: runtime override > config > None.
+
+    Returning None lets httpx fall back to its trust_env behaviour (reading
+    HTTP_PROXY/HTTPS_PROXY env) — so existing env-based setups keep working.
+    """
+    if _RUNTIME_PROXY is not None:
+        return _RUNTIME_PROXY
+    cfg_proxy = (getattr(settings, "http_proxy_url", "") or "").strip()
+    return cfg_proxy or None
+
+
 @contextmanager
 def mexc_httpx_client(settings: Settings, exchange: str = "generic") -> Iterator[httpx.Client]:
     """Контекстный httpx.Client с интеграцией clock skew detection.
@@ -31,6 +54,9 @@ def mexc_httpx_client(settings: Settings, exchange: str = "generic") -> Iterator
     kwargs: dict[str, Any] = {"timeout": settings.timeout_sec}
     if settings.http_extra_headers:
         kwargs["headers"] = dict(settings.http_extra_headers)
+    proxy = effective_http_proxy(settings)
+    if proxy:
+        kwargs["proxy"] = proxy
 
     with ClockSkewClient(**kwargs, exchange=exchange) as client:
         yield client

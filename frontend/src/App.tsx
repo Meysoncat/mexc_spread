@@ -69,6 +69,9 @@ const VSPage = lazy(() =>
 const ScreenerPage = lazy(() =>
   import("./pages/ScreenerPage").then((m) => ({ default: m.ScreenerPage })),
 );
+const NetworkPage = lazy(() =>
+  import("./pages/NetworkPage").then((m) => ({ default: m.NetworkPage })),
+);
 
 function PageFallback() {
   return (
@@ -106,6 +109,7 @@ function App() {
             <Route path="density" element={<DensityMonitorPage />} />
             <Route path="vs" element={<VSPage />} />
             <Route path="screener" element={<ScreenerPage />} />
+            <Route path="network" element={<NetworkPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

@@ -35,6 +35,10 @@ class Settings:
     http_min_request_interval_sec: float = 0.0
     # Доп. заголовки HTTP (перекрывают встроенные WAF-заголовки при совпадении имён).
     http_extra_headers: tuple[tuple[str, str], ...] = ()
+    # HTTP/HTTPS/SOCKS proxy для трафика бирж (MEXC и др.). Пусто = без прокси
+    # (httpx всё ещё читает HTTP_PROXY/HTTPS_PROXY env через trust_env).
+    # localhost (MetaScalp) через прокси НЕ ходит — только внешние API бирж.
+    http_proxy_url: str = ""
 
     # Spot WebSocket (bookTicker L1 для выбранных символов).
     spot_ws_url: str = "wss://wbs.mexc.com/ws"
@@ -681,6 +685,7 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         http_max_retry_wait_sec=max(0.05, http_max_retry_wait_sec),
         http_min_request_interval_sec=max(0.0, http_min_request_interval_sec),
         http_extra_headers=_parse_http_headers(mexc.get("http_headers")),
+        http_proxy_url=str(mexc.get("http_proxy_url", d.http_proxy_url) or ""),
         futures_ws_url=str(mexc.get("futures_ws_url", d.futures_ws_url)),
         futures_ticker_source=futures_ticker_source,
         spot_ws_url=str(mexc.get("spot_ws_url", d.spot_ws_url)),
@@ -737,6 +742,10 @@ def _apply_env_overrides(s: Settings) -> Settings:
             extra = [x for x in s.http_extra_headers if x[0].lower() != "user-agent"]
             extra.append(("User-Agent", ua))
             kw["http_extra_headers"] = tuple(extra)
+    if os.environ.get("MEXC_HTTP_PROXY"):
+        proxy = os.environ["MEXC_HTTP_PROXY"].strip()
+        if proxy:
+            kw["http_proxy_url"] = proxy
     if os.environ.get("MEXC_FUTURES_TICKER_SOURCE") is not None:
         v = os.environ["MEXC_FUTURES_TICKER_SOURCE"].strip().lower()
         if v in ("rest", "websocket"):

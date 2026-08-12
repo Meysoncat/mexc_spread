@@ -32,6 +32,8 @@ from mexc_monitor.ws_futures import ensure_started_from_settings
 from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_started
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
+from mexc_monitor.http_utils import effective_http_proxy, mexc_httpx_client, set_runtime_http_proxy
+from mexc_monitor.http_shared import set_shared_http_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +261,8 @@ def _startup_prefetch_futures_ws() -> None:
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_deals_ws_started(DEFAULT_SETTINGS)
+    # Apply the configured exchange proxy to the shared bookTicker REST client.
+    set_shared_http_proxy(effective_http_proxy(DEFAULT_SETTINGS))
     if DEFAULT_SETTINGS.history_enabled:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
@@ -2702,6 +2706,72 @@ def screener_stream() -> StreamingResponse:
 def screener_config_get() -> dict:
     """Current screener thresholds and scorer weights."""
     return {"ok": True, "config": _screener_engine.get_config()}
+
+
+# ─── Network / proxy (exchange egress) ───────────────────────────────────────
+
+
+def _network_state() -> dict:
+    from mexc_monitor.http_utils import _RUNTIME_PROXY  # noqa: PLC0415
+
+    runtime = _RUNTIME_PROXY
+    configured = DEFAULT_SETTINGS.http_proxy_url
+    active = effective_http_proxy(DEFAULT_SETTINGS)
+    source = (
+        "runtime" if runtime else ("config" if configured else ("env" if active else "none"))
+    )
+    return {
+        "http_proxy_url": configured,
+        "active_proxy": active,
+        "source": source,
+        "note": "Applies to exchange REST traffic only (MEXC etc.); MetaScalp (localhost) is direct.",
+    }
+
+
+@app.get("/api/network/config")
+def network_config_get() -> dict:
+    """Current exchange-proxy settings."""
+    return {"ok": True, **_network_state()}
+
+
+@app.patch("/api/network/config")
+def network_config_update(payload: dict = Body(...)) -> dict:
+    """Set/clear the exchange proxy at runtime.
+
+    Body: ``{"http_proxy_url": "http://127.0.0.1:7890"}`` (or ``""`` to clear).
+    Empty/None falls back to config/env (httpx trust_env).
+    """
+    url = str(payload.get("http_proxy_url", "") or "").strip() or None
+    set_runtime_http_proxy(url)
+    set_shared_http_proxy(url)
+    return {"ok": True, **_network_state()}
+
+
+@app.get("/api/network/test")
+def network_test() -> dict:
+    """Probe MEXC REST through the current proxy and report timing/result."""
+    import time as _time  # noqa: PLC0415
+
+    t0 = _time.perf_counter()
+    try:
+        with mexc_httpx_client(DEFAULT_SETTINGS, exchange="mexc") as c:
+            r = c.get(DEFAULT_SETTINGS.ticker_24hr_url, timeout=10.0)
+        ok = r.status_code == 200
+        return {
+            "ok": True,
+            "reachable": ok,
+            "status_code": r.status_code,
+            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
+            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
+        }
+    except Exception as e:
+        return {
+            "ok": True,
+            "reachable": False,
+            "error": f"{type(e).__name__}: {e}",
+            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
+            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
+        }
 
 
 @app.patch("/api/screener/config")
