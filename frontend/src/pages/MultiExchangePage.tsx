@@ -53,6 +53,68 @@ function fmt(n: number | null | undefined, digits = 4): string {
   });
 }
 
+/** Одна сеть монеты на конкретной бирже. */
+interface NetInfo {
+  network: string;
+  deposit: boolean;
+  withdraw: boolean;
+}
+/** base → exchange → список сетей. */
+type CoinNetworks = Record<string, Record<string, NetInfo[]>>;
+
+/** Биржи с публичным currency-API (см. backend/coin_networks.py). */
+const NET_SUPPORTED = new Set<Exchange>(["gateio", "bitget"]);
+
+type TransferStatus = "ok" | "none" | "partial" | "unknown";
+interface TransferInfo {
+  status: TransferStatus;
+  networks: string[];
+  note?: string;
+}
+
+/**
+ * Переводимость монеты по маршруту сделки: купить на bestAsk-бирже (вывести
+ * оттуда) → продать на bestBid-бирже (внести туда). «Переводимо» = есть общая
+ * сеть, где вывод с источника и депозит на приёмник одновременно доступны.
+ * Для бирж без публичных данных (Binance/Bybit/OKX/MEXC) показываем сети
+ * известной ноги и помечаем маршрут как непроверенный.
+ */
+function computeTransfer(row: CompareRow, nets: CoinNetworks): TransferInfo {
+  const src = row.bestAsk.exchange; // откуда выводим (где купили)
+  const dst = row.bestBid.exchange; // куда вносим (где продаём)
+  const per = nets[row.base];
+  if (!per) return { status: "unknown", networks: [] };
+
+  const srcData = NET_SUPPORTED.has(src) ? per[src] : undefined;
+  const dstData = NET_SUPPORTED.has(dst) ? per[dst] : undefined;
+  const srcNets = (srcData ?? [])
+    .filter((n) => n.withdraw)
+    .map((n) => n.network);
+  const dstNets = (dstData ?? []).filter((n) => n.deposit).map((n) => n.network);
+
+  if (srcData && dstData) {
+    const common = srcNets.filter((n) => dstNets.includes(n));
+    return common.length
+      ? { status: "ok", networks: common }
+      : { status: "none", networks: [] };
+  }
+  if (srcData) {
+    return {
+      status: "partial",
+      networks: srcNets,
+      note: `Вывод с ${label(src)}; депозит на ${label(dst)} не проверен`,
+    };
+  }
+  if (dstData) {
+    return {
+      status: "partial",
+      networks: dstNets,
+      note: `Депозит на ${label(dst)}; вывод с ${label(src)} не проверен`,
+    };
+  }
+  return { status: "unknown", networks: [] };
+}
+
 export function MultiExchangePage() {
   const [selected, setSelected] = useState<Exchange[]>([
     "mexc",
@@ -73,6 +135,8 @@ export function MultiExchangePage() {
   const [minCrossBps, setMinCrossBps] = useState(0);
   const [minVolM, setMinVolM] = useState(0);
   const [takerFeeBps, setTakerFeeBps] = useState(2);
+  const [onlyTransferable, setOnlyTransferable] = useState(false);
+  const [coinNetworks, setCoinNetworks] = useState<CoinNetworks>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const navigate = useNavigate();
 
@@ -194,6 +258,42 @@ export function MultiExchangePage() {
     return out;
   }, [byExchange, selected, takerFeeBps]);
 
+  // Список монет, для которых имеет смысл тянуть сети: обе ноги — разные биржи
+  // и хотя бы одна из них поддерживается (иначе результат заведомо «?»).
+  const netBasesKey = useMemo(() => {
+    const bases = rows
+      .filter(
+        (r) =>
+          r.bestAsk.exchange !== r.bestBid.exchange &&
+          (NET_SUPPORTED.has(r.bestAsk.exchange) ||
+            NET_SUPPORTED.has(r.bestBid.exchange)),
+      )
+      .slice(0, 300)
+      .map((r) => r.base);
+    return Array.from(new Set(bases)).sort().join(",");
+  }, [rows]);
+
+  useEffect(() => {
+    if (!netBasesKey) return;
+    const ac = new AbortController();
+    const q = new URLSearchParams({ coins: netBasesKey });
+    fetch(apiUrl(`/api/coin-networks?${q}`), { signal: ac.signal })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.ok && data.coins) setCoinNetworks(data.coins as CoinNetworks);
+      })
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+      });
+    return () => ac.abort();
+  }, [netBasesKey]);
+
+  const transferByBase = useMemo(() => {
+    const map = new Map<string, TransferInfo>();
+    for (const r of rows) map.set(r.base, computeTransfer(r, coinNetworks));
+    return map;
+  }, [rows, coinNetworks]);
+
   const filtered = useMemo(() => {
     const s = search.trim().toUpperCase();
     const minVol = minVolM * 1_000_000;
@@ -201,9 +301,11 @@ export function MultiExchangePage() {
       (r) =>
         (!s || r.base.includes(s)) &&
         (minCrossBps <= 0 || (r.crossSpreadBps ?? -Infinity) >= minCrossBps) &&
-        (minVol <= 0 || r.minLegVolume >= minVol),
+        (minVol <= 0 || r.minLegVolume >= minVol) &&
+        (!onlyTransferable ||
+          transferByBase.get(r.base)?.status === "ok"),
     );
-  }, [rows, search, minCrossBps, minVolM]);
+  }, [rows, search, minCrossBps, minVolM, onlyTransferable, transferByBase]);
 
   const anyLoading = selected.some((ex) => loading[ex]);
 
@@ -314,6 +416,15 @@ export function MultiExchangePage() {
             className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
           />
         </label>
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+          <input
+            type="checkbox"
+            checked={onlyTransferable}
+            onChange={(e) => setOnlyTransferable(e.target.checked)}
+            className="h-3.5 w-3.5 accent-accent"
+          />
+          Только переводимые
+        </label>
         <span className="text-xs text-ink-muted">
           Совпадений: <span className="font-mono">{filtered.length}</span>
         </span>
@@ -332,6 +443,7 @@ export function MultiExchangePage() {
               <th className="px-3 py-2">Объём ноги</th>
               <th className="px-3 py-2">Кросс-спред (bps)</th>
               <th className="px-3 py-2">Net (bps)</th>
+              <th className="px-3 py-2">Переводимо: сеть</th>
             </tr>
           </thead>
           <tbody>
@@ -339,6 +451,7 @@ export function MultiExchangePage() {
               <MultiExchangeRow
                 key={r.base}
                 row={r}
+                transfer={transferByBase.get(r.base)}
                 expanded={expanded === r.base}
                 onToggle={() =>
                   setExpanded((prev) => (prev === r.base ? null : r.base))
@@ -349,7 +462,7 @@ export function MultiExchangePage() {
             {filtered.length === 0 &&
               (anyLoading ? (
                 <TableEmptyState
-                  colSpan={7}
+                  colSpan={8}
                   variant="loading"
                   title="Загрузка…"
                   description="Собираем котировки с выбранных бирж."
@@ -357,17 +470,17 @@ export function MultiExchangePage() {
                 />
               ) : rows.length === 0 ? (
                 <TableEmptyState
-                  colSpan={7}
+                  colSpan={8}
                   title="Нет общих пар"
                   description="Ни одна пара не присутствует минимум на двух выбранных биржах. Добавьте биржи выше или нажмите «Обновить»."
                   compact
                 />
               ) : (
                 <TableEmptyState
-                  colSpan={7}
+                  colSpan={8}
                   variant="empty"
                   title="Ничего не найдено"
-                  description="Под фильтры не попала ни одна пара — ослабьте поиск или мин. кросс-спред."
+                  description="Под фильтры не попала ни одна пара — ослабьте поиск, мин. кросс-спред или снимите «Только переводимые»."
                   compact
                 />
               ))}
@@ -388,11 +501,13 @@ function fmtVol(n: number): string {
 
 function MultiExchangeRow({
   row,
+  transfer,
   expanded,
   onToggle,
   onOpenHub,
 }: {
   row: CompareRow;
+  transfer?: TransferInfo;
   expanded: boolean;
   onToggle: () => void;
   onOpenHub: () => void;

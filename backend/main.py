@@ -635,6 +635,36 @@ def withdrawal_fees() -> dict:
         return {"ok": False, "error": str(e), "tokens": {}}
 
 
+@app.get("/api/coin-networks")
+def coin_networks(
+    coins: str = Query("", description="Список монет через запятую: BTC,ETH,SOL"),
+    force: bool = Query(False, description="Игнорировать кэш и запросить биржи заново"),
+) -> dict:
+    """Сети депозита/вывода по монетам с бирж с публичным currency-API.
+
+    Поддерживаются только Gate.io и Bitget (у остальных данные о сетях
+    доступны лишь через подписанные эндпоинты). Ответ:
+    ``{coins: {BTC: {gateio: [{network, deposit, withdraw}], ...}}}``.
+    """
+    from mexc_monitor.coin_networks import (  # noqa: PLC0415
+        SUPPORTED_EXCHANGES,
+        get_coin_networks,
+    )
+
+    coin_list = [c for c in coins.split(",") if c.strip()]
+    if not coin_list:
+        return {"ok": True, "coins": {}, "supported_exchanges": list(SUPPORTED_EXCHANGES)}
+    try:
+        data = get_coin_networks(coin_list, force=force)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "coins": {}}
+    return {
+        "ok": True,
+        "coins": data,
+        "supported_exchanges": list(SUPPORTED_EXCHANGES),
+    }
+
+
 @app.get("/api/withdrawal-fees/calculate")
 def calculate_withdrawal_cost(
     token: str = Query("USDT", description="Токен: USDT, BTC, ETH, SOL, XRP"),
@@ -2807,7 +2837,7 @@ def screener_config_update(
 
 
 
-# ─── Spread Capture Engine endpoints ───────────────────────────────────────────
+# ─── Spread Capture Engine endpoints ────────────────────────────���──────────────
 
 
 @app.get("/api/capture/status")
@@ -3103,7 +3133,7 @@ def aster_cross_spread(
     return result
 
 
-# ─── AsterDEX Private (Trading) endpoints ─────────────────────────────────────
+# ���── AsterDEX Private (Trading) endpoints ─────────────────────────────────────
 
 import os as _os
 _ASTER_API_KEY = _os.environ.get("ASTER_API_KEY", "").strip()
@@ -3387,7 +3417,7 @@ def aster_ws_unsubscribe(
     return {"ok": True, "symbol": sym, "subscribed_symbols": client.get_subscribed_symbols()}
 
 
-# ─── Cross-Exchange Arbitrage Engine endpoints ─────────────────────────────────
+# ─── Cross-Exchange Arbitrage Engine endpoints ─���───────────────────────────────
 
 from mexc_monitor.arbitrage.engine import ArbitrageEngine
 from mexc_monitor.arbitrage.models import ArbitrageSettings
