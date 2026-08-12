@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { apiUrl, apiFetch } from "../config";
 import { useNavigationState } from "../hooks/useNavigationState";
+import { baseFromSymbol } from "../lib/symbol";
 
 // ─── Types (mirror backend ScreenerOpportunity / ScreenerConfig) ─────────────
 
@@ -483,6 +484,13 @@ export function ScreenerPage() {
     return arr;
   }, [opps, sortKey, sortDir]);
 
+  // Symbol name → coin hub (decision context without leaving the screener flow).
+  const openHub = (symbol: string) => {
+    const base = baseFromSymbol(symbol) ?? symbol.replace(/[_\-/]/g, "");
+    navigate(`/coin/${base}`);
+  };
+
+  // External-link icon → the classic Spread Monitor view.
   const openSymbol = (symbol: string) => {
     setSymbol(symbol);
     navigate("/");
@@ -809,8 +817,9 @@ export function ScreenerPage() {
                   <td className="px-3 py-2 text-ink-muted">{i + 1}</td>
                   <td className="px-3 py-2">
                     <button
-                      onClick={() => openSymbol(o.symbol)}
+                      onClick={() => openHub(o.symbol)}
                       className="font-mono font-medium text-ink hover:text-accent"
+                      title="Открыть страницу монеты"
                     >
                       {o.symbol}
                     </button>

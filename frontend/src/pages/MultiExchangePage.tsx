@@ -8,6 +8,7 @@ import {
   type MarketRow,
 } from "../types";
 import { WithdrawalFeeCalculator } from "../WithdrawalFeeCalculator";
+import { baseFromSymbol, humanizeError } from "../lib/symbol";
 
 /** Все биржи из переключателя (CEX + DEX). */
 const ALL_EXCHANGES: { value: Exchange; label: string }[] =
@@ -16,15 +17,6 @@ const ALL_EXCHANGES: { value: Exchange; label: string }[] =
 /** Метка биржи по строковому ключу (безопасно для произвольных строк). */
 function label(ex: string): string {
   return EXCHANGE_LABELS[ex as Exchange] ?? ex;
-}
-
-/** BTCUSDT / BTC_USDT / BTCUSD → BTC (общий ключ сопоставления между биржами). */
-function baseFromSymbol(symbol: string): string | null {
-  const s = symbol.trim().toUpperCase().replace(/[_\-/]/g, "");
-  for (const q of ["USDT", "USDC", "USD"]) {
-    if (s.endsWith(q) && s.length > q.length) return s.slice(0, -q.length);
-  }
-  return null;
 }
 
 interface ExchangeQuote {
@@ -45,25 +37,6 @@ interface CompareRow {
   bestAsk: ExchangeQuote;
   /** Купить по лучшему ask, продать по лучшему bid на другой бирже (bps). */
   crossSpreadBps: number | null;
-}
-
-/** 0.6: технические ошибки → понятное объяснение для пользователя. */
-function humanizeError(msg: string): string {
-  const m = msg.trim();
-  if (/HTTP 403/i.test(m))
-    return "биржа отклонила запрос (403) — возможна гео-блокировка, попробуйте VPN";
-  if (/HTTP 429/i.test(m))
-    return "слишком много запросов (429) — подождите минуту и обновите";
-  if (/HTTP 5\d\d/i.test(m))
-    return `биржа временно недоступна (${m}) — повторите позже`;
-  if (/HTTP 4\d\d/i.test(m)) return `запрос отклонён (${m})`;
-  if (/failed to fetch|networkerror|load failed/i.test(m))
-    return "нет связи с бэкендом — проверьте, что сервер запущен";
-  if (/timeout|timed?\s?out/i.test(m))
-    return "биржа не ответила вовремя — попробуйте обновить";
-  if (/нет данных/i.test(m))
-    return "биржа вернула пустой ответ — возможно, рынок не поддерживается";
-  return m;
 }
 
 function fmt(n: number | null | undefined, digits = 4): string {

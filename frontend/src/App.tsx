@@ -77,6 +77,9 @@ const ScreenerHistoryPage = lazy(() =>
 const NetworkPage = lazy(() =>
   import("./pages/NetworkPage").then((m) => ({ default: m.NetworkPage })),
 );
+const CoinHubPage = lazy(() =>
+  import("./pages/CoinHubPage").then((m) => ({ default: m.CoinHubPage })),
+);
 
 function PageFallback() {
   return (
@@ -114,6 +117,7 @@ function App() {
             <Route path="density" element={<DensityMonitorPage />} />
             <Route path="vs" element={<VSPage />} />
             <Route path="screener" element={<ScreenerPage />} />
+            <Route path="coin/:base" element={<CoinHubPage />} />
             <Route path="screener-history" element={<ScreenerHistoryPage />} />
             <Route path="network" element={<NetworkPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
