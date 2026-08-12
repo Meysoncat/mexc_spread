@@ -251,6 +251,9 @@ export function ScreenerPage() {
   const [percentile, setPercentile] = useState<number | null>(null);
   const [cutoff, setCutoff] = useState<number | null>(null);
   const [connected, setConnected] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [streamErrored, setStreamErrored] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const [panelOpen, setPanelOpen] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
@@ -277,6 +280,7 @@ export function ScreenerPage() {
           setScannedAt(data.scanned_at ?? null);
           setTotalUniverse(data.total_universe ?? 0);
           if (data.config) setConfig(data.config);
+          setHasLoaded(true);
         }
       } catch {
         /* SSE will fill in */
@@ -286,10 +290,15 @@ export function ScreenerPage() {
 
     const es = new EventSource(apiUrl("/api/screener/stream"));
     esRef.current = es;
-    es.onopen = () => !cancelled && setConnected(true);
+    es.onopen = () => {
+      if (cancelled) return;
+      setConnected(true);
+      setStreamErrored(false);
+    };
     es.onerror = () => {
       if (cancelled) return;
       setConnected(false);
+      setStreamErrored(true);
       // EventSource auto-reconnects; nothing else to do.
     };
     es.onmessage = (ev) => {
@@ -302,6 +311,8 @@ export function ScreenerPage() {
         setPercentile(p.spread_percentile ?? null);
         setCutoff(p.percentile_cutoff ?? null);
         setErr(null);
+        setHasLoaded(true);
+        setStreamErrored(false);
       } catch {
         /* ignore malformed */
       }
@@ -312,7 +323,7 @@ export function ScreenerPage() {
       es.close();
       esRef.current = null;
     };
-  }, []);
+  }, [reconnectNonce]);
 
   // Debounced PATCH when a filter field changes.
   const updateField = useCallback(
@@ -422,15 +433,23 @@ export function ScreenerPage() {
         <div className="flex items-center gap-4 text-xs text-ink-muted">
           <span
             className={`flex items-center gap-1.5 ${
-              connected ? "text-emerald-500" : "text-ink-muted"
+              connected
+                ? "text-emerald-500"
+                : streamErrored
+                  ? "text-red-500"
+                  : "text-ink-muted"
             }`}
           >
             <span
               className={`h-2 w-2 rounded-full ${
-                connected ? "bg-emerald-500" : "bg-ink-muted/50"
+                connected
+                  ? "bg-emerald-500"
+                  : streamErrored
+                    ? "bg-red-500"
+                    : "bg-ink-muted/50"
               }`}
             />
-            {connected ? "live" : "подключение…"}
+            {connected ? "live" : streamErrored ? "нет связи" : "подключение…"}
           </span>
           {scannedAt && (
             <span>
@@ -584,17 +603,49 @@ export function ScreenerPage() {
 
       {/* Table / empty state */}
       <div className="min-h-0 flex-1 overflow-auto">
-        {opps.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-ink-muted">
+        {opps.length === 0 && !hasLoaded && !streamErrored ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
+            <Radar className="h-10 w-10 animate-pulse opacity-40" />
+            <p className="text-sm font-medium">Подключение к скринеру…</p>
+            <p className="max-w-md text-xs">
+              Устанавливаем поток данных и сканируем вселенную символов.
+            </p>
+          </div>
+        ) : opps.length === 0 && streamErrored && !hasLoaded ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
             <Radar className="h-10 w-10 opacity-30" />
-            <p className="text-sm font-medium">
-              Сейчас возможностей нет
+            <p className="text-sm font-medium text-red-500">
+              Нет соединения со скринером
             </p>
             <p className="max-w-md text-xs">
-              Ни одна монета не прошла все фильтры (net-спред, ликвидность,
-              объём, время удержания). Расширьте пороги в панели фильтров или
-              подождите — скринер обновляется в реальном времени.
+              Поток данных недоступен. Проверьте, что бэкенд запущен и биржа
+              достижима из вашей сети, затем повторите.
             </p>
+            <button
+              onClick={() => {
+                setStreamErrored(false);
+                setReconnectNonce((n) => n + 1);
+              }}
+              className="mt-1 rounded-md border border-accent bg-accent/10 px-4 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/20"
+            >
+              Повторить
+            </button>
+          </div>
+        ) : opps.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
+            <Radar className="h-10 w-10 opacity-30" />
+            <p className="text-sm font-medium">Сейчас возможностей нет</p>
+            <p className="max-w-md text-xs">
+              Ни одна монета не прошла все фильтры (net-спред, ликвидность,
+              объём, время удержания). Смягчите пороги или подождите — скринер
+              обновляется в реальном времени.
+            </p>
+            <button
+              onClick={() => applyPreset(PRESETS[2].patch)}
+              className="mt-1 rounded-md border border-line px-4 py-1.5 text-sm font-medium text-ink-muted transition hover:border-accent/50 hover:text-ink"
+            >
+              Смягчить пороги (Агрессивный)
+            </button>
           </div>
         ) : (
           <table className="w-full border-collapse text-sm">
