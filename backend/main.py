@@ -1448,7 +1448,7 @@ def klines_batch(
     exchange: str = Query("mexc", description="mexc, asterdex или lighter"),
 ) -> dict:
     """
-    Batch-загрузка klines для нескольких символов одним запросом.
+    Batch-загрузка klines для не��кольких символов одним запросом.
     Использует in-memory кэш (TTL 60s по умолчанию) и параллельные запросы.
     Поддерживает все биржи: mexc, asterdex, lighter.
     """
@@ -1772,7 +1772,16 @@ def density_overview(
         )
 
     if not raw.get("ok") or not raw.get("rows"):
-        return {"ok": False, "error": raw.get("error", "No data"), "symbols": []}
+        err = raw.get("error", "No data")
+        # Bybit REST (список символов + объёмы) геоблокируется CloudFront 403 из
+        # песочницы. WS-книга при этом жива — нужен лишь прокси для REST.
+        if exchange == "bybit" and ("403" in str(err) or "CloudFront" in str(err)):
+            err = (
+                "Bybit REST геоблокирован (CloudFront 403): список символов и "
+                "объёмы недоступны. WS-книга работает — настройте прокси "
+                "(см. docs/PROXY_XRAY.md или страницу «Сеть / Прокси»)."
+            )
+        return {"ok": False, "error": err, "symbols": []}
 
     rows = raw["rows"]
     # Фильтр по объёму и сортировка
