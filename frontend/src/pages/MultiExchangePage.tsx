@@ -10,6 +10,12 @@ import {
 } from "../types";
 import { WithdrawalFeeCalculator } from "../WithdrawalFeeCalculator";
 import { TableEmptyState } from "../components/ui/EmptyState";
+import {
+  computeTransfer,
+  NET_SUPPORTED,
+  type CoinNetworks,
+  type TransferInfo,
+} from "../lib/networks";
 import { baseFromSymbol, humanizeError } from "../lib/symbol";
 
 /** Все биржи из переключателя (CEX + DEX). */
@@ -51,68 +57,6 @@ function fmt(n: number | null | undefined, digits = 4): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: digits,
   });
-}
-
-/** Одна сеть монеты на конкретной бирже. */
-interface NetInfo {
-  network: string;
-  deposit: boolean;
-  withdraw: boolean;
-}
-/** base → exchange → список сетей. */
-type CoinNetworks = Record<string, Record<string, NetInfo[]>>;
-
-/** Биржи с публичным currency-API (см. backend/coin_networks.py). */
-const NET_SUPPORTED = new Set<Exchange>(["gateio", "bitget"]);
-
-type TransferStatus = "ok" | "none" | "partial" | "unknown";
-interface TransferInfo {
-  status: TransferStatus;
-  networks: string[];
-  note?: string;
-}
-
-/**
- * Переводимость монеты по маршруту сделки: купить на bestAsk-бирже (вывести
- * оттуда) → продать на bestBid-бирже (внести туда). «Переводимо» = есть общая
- * сеть, где вывод с источника и депозит на приёмник одновременно доступны.
- * Для бирж без публичных данных (Binance/Bybit/OKX/MEXC) показываем сети
- * известной ноги и помечаем маршрут как непроверенный.
- */
-function computeTransfer(row: CompareRow, nets: CoinNetworks): TransferInfo {
-  const src = row.bestAsk.exchange; // откуда выводим (где купили)
-  const dst = row.bestBid.exchange; // куда вносим (где продаём)
-  const per = nets[row.base];
-  if (!per) return { status: "unknown", networks: [] };
-
-  const srcData = NET_SUPPORTED.has(src) ? per[src] : undefined;
-  const dstData = NET_SUPPORTED.has(dst) ? per[dst] : undefined;
-  const srcNets = (srcData ?? [])
-    .filter((n) => n.withdraw)
-    .map((n) => n.network);
-  const dstNets = (dstData ?? []).filter((n) => n.deposit).map((n) => n.network);
-
-  if (srcData && dstData) {
-    const common = srcNets.filter((n) => dstNets.includes(n));
-    return common.length
-      ? { status: "ok", networks: common }
-      : { status: "none", networks: [] };
-  }
-  if (srcData) {
-    return {
-      status: "partial",
-      networks: srcNets,
-      note: `Вывод с ${label(src)}; депозит на ${label(dst)} не проверен`,
-    };
-  }
-  if (dstData) {
-    return {
-      status: "partial",
-      networks: dstNets,
-      note: `Депозит на ${label(dst)}; вывод с ${label(src)} не проверен`,
-    };
-  }
-  return { status: "unknown", networks: [] };
 }
 
 export function MultiExchangePage() {
@@ -290,7 +234,17 @@ export function MultiExchangePage() {
 
   const transferByBase = useMemo(() => {
     const map = new Map<string, TransferInfo>();
-    for (const r of rows) map.set(r.base, computeTransfer(r, coinNetworks));
+    for (const r of rows)
+      map.set(
+        r.base,
+        computeTransfer(
+          r.base,
+          r.bestAsk.exchange,
+          r.bestBid.exchange,
+          coinNetworks,
+          label,
+        ),
+      );
     return map;
   }, [rows, coinNetworks]);
 
@@ -499,6 +453,63 @@ function fmtVol(n: number): string {
   return `$${n.toFixed(0)}`;
 }
 
+function TransferCell({ transfer }: { transfer?: TransferInfo }) {
+  if (!transfer || transfer.status === "unknown") {
+    return (
+      <span
+        className="cursor-help font-mono text-ink-muted"
+        title="Нет публичных данных о сетях для этих бирж (доступно только для Gate.io и Bitget)."
+      >
+        ?
+      </span>
+    );
+  }
+  if (transfer.status === "none") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-600 dark:text-red-400"
+        title="Нет общей сети, где вывод с одной биржи и депозит на другую одновременно доступны."
+      >
+        нет сети
+      </span>
+    );
+  }
+  const partial = transfer.status === "partial";
+  const shown = transfer.networks.slice(0, 3);
+  const rest = transfer.networks.length - shown.length;
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-1"
+      title={
+        partial
+          ? transfer.note
+          : `Общие сети (вывод → депозит): ${transfer.networks.join(", ")}`
+      }
+    >
+      {shown.map((n) => (
+        <span
+          key={n}
+          className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${
+            partial
+              ? "border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+              : "border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          }`}
+        >
+          {n}
+        </span>
+      ))}
+      {rest > 0 && (
+        <span className="text-xs text-ink-muted">+{rest}</span>
+      )}
+      {partial && (
+        <span className="cursor-help text-xs text-amber-600 dark:text-amber-400">
+          *
+        </span>
+      )}
+    </span>
+  );
+}
+
 function MultiExchangeRow({
   row,
   transfer,
@@ -566,10 +577,13 @@ function MultiExchangeRow({
         >
           {fmt(row.netCrossSpreadBps, 2)}
         </td>
+        <td className="px-3 py-2">
+          <TransferCell transfer={transfer} />
+        </td>
       </tr>
       {expanded && (
         <tr className="border-t border-line/40 bg-surface">
-          <td colSpan={7} className="px-3 py-2">
+          <td colSpan={8} className="px-3 py-2">
             <table className="w-full text-xs">
               <thead className="text-ink-muted">
                 <tr>
