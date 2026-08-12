@@ -63,6 +63,10 @@ docs/HUMMINGBOT_*.md
 analyze_trades.py
 scrape_proboyscalp.py
 
+# Xray proxy bridge artifacts (binary + generated config with VLESS UUID/secret).
+# See scripts/xray_bridge.py / docs/PROXY_XRAY.md — never commit these.
+.xray/
+
 # Local config (machine-specific client config, skills index with absolute paths).
 conf/
 .agents/skills.json
