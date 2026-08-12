@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { History, RefreshCw } from "lucide-react";
+import { EmptyState } from "../components/ui/EmptyState";
 
 interface HistEvent {
   id: number;
@@ -113,13 +114,12 @@ export function ScreenerHistoryPage() {
       {/* Table */}
       <div className="min-h-0 flex-1 overflow-auto">
         {events.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-ink-muted">
-            <History className="h-10 w-10 opacity-30" />
-            <p className="text-sm font-medium">История пуста</p>
-            <p className="max-w-md text-xs">
-              События появляются, когда монета впервые попадает в шорт-лист
-              скринера. Нужен включённый <code>history_enabled</code> в конфиге.
-            </p>
+          <div className="flex h-full items-center justify-center">
+            <EmptyState
+              icon={History}
+              title="История пуста"
+              description="События появляются, когда монета впервые попадает в шорт-лист скринера. Нужен включённый history_enabled в конфиге."
+            />
           </div>
         ) : (
           <table className="w-full border-collapse text-sm">

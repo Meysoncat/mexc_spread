@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Layers, RefreshCw, Search, TrendingUp, TrendingDown, ArrowUpCircle, ArrowDownCircle, List, LayoutGrid } from "lucide-react";
 import { apiUrl } from "../config";
+import { EmptyState } from "../components/ui/EmptyState";
 import type { Exchange } from "../types";
 import { EXCHANGE_LABELS } from "../types";
 import { DensityDots } from "../DensityDots";
@@ -123,7 +124,7 @@ export function DensityMonitorPage() {
 
   const filtered = useMemo(() => {
     const s = search.trim().toUpperCase();
-    let out = data.filter((r) => {
+    const out = data.filter((r) => {
       if (s && !r.symbol.includes(s)) return false;
       if (minWall > 0) {
         const maxN = r.largest_wall?.notional_usdt ?? 0;
@@ -434,9 +435,11 @@ export function DensityMonitorPage() {
             })}
           </div>
           {filtered.length === 0 && !loading && (
-            <div className="flex h-32 items-center justify-center text-sm text-ink-muted">
-              Нет данных. Нажмите «Обновить» или измените фильтры.
-            </div>
+            <EmptyState
+              compact
+              title="Нет данных"
+              description="Нажмите «Обновить» или измените фильтры."
+            />
           )}
         </div>
       ) : (
