@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Radar,
@@ -241,6 +248,70 @@ function SortHeader({ label, col, sortKey, sortDir, onSort }: SortHeaderProps) {
   );
 }
 
+// ─── Score breakdown (why a coin ranks where it does) ────────────────────────
+
+// Human labels for each scorer term (mirrors backend score_candidate).
+const SCORE_LABELS: Record<string, string> = {
+  ev: "EV (спред × активность)",
+  spread: "Спред (сырой)",
+  liquidity: "Ликвидность L1",
+  lifetime: "Время жизни",
+  stability: "Стабильность (% выше)",
+  volatility: "Волатильность σ",
+  staleness: "Устаревание тика",
+  zscore: "Z-score",
+  volume24h: "Объём 24ч",
+};
+
+// Order terms by absolute contribution so the biggest drivers read first.
+function ScoreBreakdown({ breakdown }: { breakdown: Record<string, number> }) {
+  const entries = Object.entries(breakdown).filter(([, v]) => Math.abs(v) > 1e-6);
+  if (entries.length === 0) {
+    return (
+      <p className="px-3 py-2 text-xs text-ink-muted">
+        Нет данных для разбивки score.
+      </p>
+    );
+  }
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const max = Math.max(...entries.map(([, v]) => Math.abs(v)));
+
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-3">
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        Из чего складывается score
+      </p>
+      {entries.map(([key, val]) => {
+        const positive = val >= 0;
+        const width = max > 0 ? (Math.abs(val) / max) * 100 : 0;
+        return (
+          <div key={key} className="flex items-center gap-2 text-xs">
+            <span className="w-44 shrink-0 truncate text-ink-muted">
+              {SCORE_LABELS[key] ?? key}
+            </span>
+            <div className="relative h-3 flex-1 rounded-sm bg-surface">
+              <div
+                className={`absolute top-0 h-3 rounded-sm ${
+                  positive ? "bg-emerald-500/70" : "bg-red-500/70"
+                }`}
+                style={{ width: `${width}%` }}
+              />
+            </div>
+            <span
+              className={`w-14 shrink-0 text-right font-mono ${
+                positive ? "text-emerald-500" : "text-red-500"
+              }`}
+            >
+              {positive ? "+" : ""}
+              {val.toFixed(2)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export function ScreenerPage() {
@@ -259,6 +330,7 @@ export function ScreenerPage() {
   const [showMetrics, setShowMetrics] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
@@ -732,10 +804,8 @@ export function ScreenerPage() {
             </thead>
             <tbody>
               {sortedOpps.map((o, i) => (
-                <tr
-                  key={o.symbol}
-                  className="border-t border-line/60 transition-colors hover:bg-accent/5"
-                >
+                <Fragment key={o.symbol}>
+                <tr className="border-t border-line/60 transition-colors hover:bg-accent/5">
                   <td className="px-3 py-2 text-ink-muted">{i + 1}</td>
                   <td className="px-3 py-2">
                     <button
@@ -793,13 +863,24 @@ export function ScreenerPage() {
                       </td>
                     </>
                   )}
-                  <td
-                    className="px-3 py-2 text-right font-mono font-semibold text-ink"
-                    title={Object.entries(o.score_breakdown)
-                      .map(([k, v]) => `${k}: ${v.toFixed(2)}`)
-                      .join("\n")}
-                  >
-                    {o.score.toFixed(2)}
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-ink">
+                    <button
+                      onClick={() =>
+                        setExpanded((cur) =>
+                          cur === o.symbol ? null : o.symbol,
+                        )
+                      }
+                      className="inline-flex items-center gap-1 hover:text-accent"
+                      title="Показать, из чего складывается score"
+                      aria-expanded={expanded === o.symbol}
+                    >
+                      {o.score.toFixed(2)}
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 transition-transform ${
+                          expanded === o.symbol ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
                   </td>
                   <td className="px-3 py-2 text-right">
                     <button
@@ -811,6 +892,14 @@ export function ScreenerPage() {
                     </button>
                   </td>
                 </tr>
+                {expanded === o.symbol && (
+                  <tr className="border-t border-line/40 bg-surface-elevated/40">
+                    <td colSpan={showMetrics ? 13 : 9} className="p-0">
+                      <ScoreBreakdown breakdown={o.score_breakdown} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
