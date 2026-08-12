@@ -620,6 +620,61 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "ws_feeds": feeds_health()}
 
 
+@app.get("/api/diagnostics/sources")
+def diagnostics_sources(
+    timeout_sec: float = Query(8.0, ge=1.0, le=30.0),
+) -> dict[str, Any]:
+    """Диагностика источников: REST-латентность + геоблок и свежесть WS-фида.
+
+    По каждой бирже возвращает:
+    - ``rest``: {status, status_code, elapsed_ms, url} — проба REST (через
+      прокси, если настроен);
+    - ``ws``: {running, live, symbols, last_message_age_sec} — состояние
+      WebSocket-фида (если для биржи он есть);
+    - ``recommended``: какой путь сейчас предпочтителен для снимка.
+    """
+    from mexc_monitor.source_probes import PROBES, probe_all
+    from mexc_monitor.ws_bookticker import feeds_health
+
+    rest = probe_all(DEFAULT_SETTINGS, timeout_sec=timeout_sec)
+    ws = feeds_health()
+
+    sources: list[dict[str, Any]] = []
+    for name in PROBES:
+        rest_res = rest.get(name, {})
+        ws_res = ws.get(name)
+        ws_live = bool(ws_res and ws_res.get("live"))
+        rest_ok = rest_res.get("status") == "ok"
+        if ws_live:
+            recommended = "ws"
+        elif rest_ok:
+            recommended = "rest"
+        else:
+            recommended = "none"
+        sources.append(
+            {
+                "exchange": name,
+                "rest": rest_res,
+                "ws": ws_res,
+                "recommended": recommended,
+            }
+        )
+
+    active_proxy = effective_http_proxy(DEFAULT_SETTINGS)
+    reachable = sum(1 for s in sources if s["rest"].get("status") == "ok")
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "active_proxy": active_proxy,
+        "summary": {
+            "total": len(sources),
+            "rest_reachable": reachable,
+            "ws_live": sum(1 for s in sources if s["ws"] and s["ws"].get("live")),
+        },
+        "sources": sources,
+    }
+
+
 _WITHDRAWAL_FEES_PATH = _ROOT / "config" / "withdrawal_fees.json"
 
 

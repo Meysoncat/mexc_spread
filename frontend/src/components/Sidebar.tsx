@@ -12,6 +12,7 @@ import {
   Download,
   FlaskConical,
   Flame,
+  Gauge,
   Globe,
   History,
   Layers,
@@ -70,7 +71,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "Система",
-    items: [{ path: "/network", label: "Сеть / Прокси", icon: Globe }],
+    items: [
+      { path: "/diagnostics", label: "Диагностика источников", icon: Gauge },
+      { path: "/network", label: "Сеть / Прокси", icon: Globe },
+    ],
   },
 ];
 
