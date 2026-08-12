@@ -1,0 +1,59 @@
+# MEXC Spread Monitor — production compose for a VPS / single host.
+#
+#   docker compose up -d --build      # start (build image on first run)
+#   docker compose logs -f            # follow logs
+#   docker compose down               # stop
+#
+# Copy .env.docker.example -> .env and set ADMIN_TOKEN before first start.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mexc-spread-monitor:latest
+    container_name: mexc-spread-monitor
+    restart: unless-stopped
+
+    # Host:container. Change the host side (left) to expose a different port,
+    # e.g. "127.0.0.1:8006:8006" to bind localhost-only behind a reverse proxy.
+    ports:
+      - "${APP_PORT:-8006}:8006"
+
+    env_file:
+      - .env
+
+    environment:
+      # Auth token for admin/trading endpoints. MUST be set in .env — otherwise
+      # the app tries to write a generated one to /app/.env, which fails on the
+      # read-only image filesystem.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env (see .env.docker.example)}
+      # SQLite lives on the mounted volume so history survives restarts.
+      MEXC_HISTORY_DB_PATH: /app/data/spread_history.sqlite
+      # Optional egress proxy for geo-blocked exchanges (Binance/MEXC/Bybit REST).
+      # Leave unset if the host's region can reach the exchanges directly.
+      # See docs/PROXY_XRAY.md for turning a VLESS link into a SOCKS5 endpoint.
+      MEXC_HTTP_PROXY: ${MEXC_HTTP_PROXY:-}
+
+    volumes:
+      # Persistent runtime state (SQLite DBs, JSONL event logs, capture state).
+      - app-data:/app/data
+      # Editable config without rebuilding the image (read-only mount).
+      - ./config:/app/config:ro
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8006/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+    # Sensible resource guardrails for a small VPS; tune to your host.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+volumes:
+  app-data:
+    driver: local
