@@ -39,6 +39,9 @@ class Settings:
     # (httpx всё ещё читает HTTP_PROXY/HTTPS_PROXY env через trust_env).
     # localhost (MetaScalp) через прокси НЕ ходит — только внешние API бирж.
     http_proxy_url: str = ""
+    # Per-exchange proxy overrides для smart routing: {exchange: url|"direct"}.
+    # Пусто/отсутствие = наследовать http_proxy_url. "direct" = обойти прокси.
+    http_proxy_per_exchange: tuple[tuple[str, str], ...] = ()
 
     # Spot WebSocket (bookTicker L1 для выбранных символов).
     spot_ws_url: str = "wss://wbs.mexc.com/ws"
@@ -686,6 +689,11 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         http_min_request_interval_sec=max(0.0, http_min_request_interval_sec),
         http_extra_headers=_parse_http_headers(mexc.get("http_headers")),
         http_proxy_url=str(mexc.get("http_proxy_url", d.http_proxy_url) or ""),
+        http_proxy_per_exchange=tuple(
+            (str(k).strip().lower(), str(v).strip())
+            for k, v in (mexc.get("http_proxy_per_exchange") or {}).items()
+            if str(v).strip()
+        ),
         futures_ws_url=str(mexc.get("futures_ws_url", d.futures_ws_url)),
         futures_ticker_source=futures_ticker_source,
         spot_ws_url=str(mexc.get("spot_ws_url", d.spot_ws_url)),

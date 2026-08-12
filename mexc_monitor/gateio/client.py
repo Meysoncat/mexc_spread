@@ -114,7 +114,7 @@ class GateioPublicClient:
         """HTTP GET с обработкой ошибок."""
         url = f"{base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="gateio", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise GateioApiError(
                 f"Gate.io API timeout after {self._timeout}s: {url}"

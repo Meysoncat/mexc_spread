@@ -10,27 +10,31 @@ import httpx
 
 from mexc_monitor.clock_skew_middleware import ClockSkewClient
 from mexc_monitor.config import Settings
-
-
-# Runtime proxy override (set via /api/network/config PATCH). Takes precedence
-# over Settings.http_proxy_url and env. None = "not set" → fall back to config.
-_RUNTIME_PROXY: str | None = None
+from mexc_monitor.proxy_registry import REGISTRY
 
 
 def set_runtime_http_proxy(url: str | None) -> None:
-    """Set/clear the runtime proxy override for exchange HTTP traffic."""
-    global _RUNTIME_PROXY
-    _RUNTIME_PROXY = (url or "").strip() or None
+    """Set/clear the runtime *default* proxy override for exchange traffic.
 
-
-def effective_http_proxy(settings: Settings) -> str | None:
-    """Resolve the proxy URL to use: runtime override > config > None.
-
-    Returning None lets httpx fall back to its trust_env behaviour (reading
-    HTTP_PROXY/HTTPS_PROXY env) — so existing env-based setups keep working.
+    Backwards-compatible shim: routes to the shared ProxyRegistry default.
+    Per-exchange overrides are managed via the registry directly.
     """
-    if _RUNTIME_PROXY is not None:
-        return _RUNTIME_PROXY
+    REGISTRY.set_default(url)
+
+
+def effective_http_proxy(settings: Settings, exchange: str = "generic") -> str | None:
+    """Resolve the proxy URL for ``exchange``: per-exchange > default > config.
+
+    Resolution order:
+    1. ProxyRegistry per-exchange override (incl. explicit direct → None);
+    2. ProxyRegistry default proxy;
+    3. Settings.http_proxy_url (static config);
+    4. None → httpx trust_env (HTTP_PROXY/HTTPS_PROXY) or direct.
+    """
+    resolved = REGISTRY.resolve(exchange)
+    if resolved is not None:
+        return resolved
+    # Registry has no opinion for this exchange → fall back to static config.
     cfg_proxy = (getattr(settings, "http_proxy_url", "") or "").strip()
     return cfg_proxy or None
 
@@ -54,7 +58,7 @@ def mexc_httpx_client(settings: Settings, exchange: str = "generic") -> Iterator
     kwargs: dict[str, Any] = {"timeout": settings.timeout_sec}
     if settings.http_extra_headers:
         kwargs["headers"] = dict(settings.http_extra_headers)
-    proxy = effective_http_proxy(settings)
+    proxy = effective_http_proxy(settings, exchange)
     if proxy:
         kwargs["proxy"] = proxy
 

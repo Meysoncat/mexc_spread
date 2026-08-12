@@ -424,6 +424,7 @@ def _htx_contract_codes() -> list[str]:
 
     r = shared_get(
         "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info",
+        exchange="htx",
         timeout=15,
     )
     data = r.json() if r.status_code == 200 else {}

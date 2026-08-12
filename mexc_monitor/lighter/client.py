@@ -123,7 +123,7 @@ class LighterPublicClient:
         """HTTP GET с обработкой ошибок."""
         url = f"{self._base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="lighter", params=params, timeout=self._timeout)
         except httpx.HTTPError as e:
             raise LighterApiError(f"HTTP error: {type(e).__name__}: {e}") from e
         if r.status_code >= 400:

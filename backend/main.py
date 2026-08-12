@@ -32,8 +32,9 @@ from mexc_monitor.ws_futures import ensure_started_from_settings
 from mexc_monitor.ws_futures_orderbook import ensure_futures_orderbook_ws_started
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
-from mexc_monitor.http_utils import effective_http_proxy, mexc_httpx_client, set_runtime_http_proxy
-from mexc_monitor.http_shared import set_shared_http_proxy
+from mexc_monitor.http_utils import effective_http_proxy, set_runtime_http_proxy
+from mexc_monitor.http_shared import reset_clients, set_proxy_resolver
+from mexc_monitor.proxy_registry import REGISTRY, KNOWN_EXCHANGES, ProxyValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -267,8 +268,18 @@ def _startup_prefetch_futures_ws() -> None:
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_orderbook_ws_started(DEFAULT_SETTINGS)
     ensure_spot_deals_ws_started(DEFAULT_SETTINGS)
-    # Apply the configured exchange proxy to the shared bookTicker REST client.
-    set_shared_http_proxy(effective_http_proxy(DEFAULT_SETTINGS))
+    # Seed the proxy registry default from static config, then wire the
+    # per-exchange resolver into the shared REST client pool so smart routing
+    # applies to every exchange client via shared_get(exchange=...).
+    try:
+        REGISTRY.replace_all(
+            default=DEFAULT_SETTINGS.http_proxy_url or None,
+            per_exchange=dict(DEFAULT_SETTINGS.http_proxy_per_exchange),
+        )
+    except ProxyValidationError as e:
+        logger.warning("Invalid proxy in config, ignoring: %s", e)
+    set_proxy_resolver(lambda ex: effective_http_proxy(DEFAULT_SETTINGS, ex))
+    reset_clients()
     if DEFAULT_SETTINGS.history_enabled:
         init_db(resolve_history_db_path(DEFAULT_SETTINGS))
     start_history_worker()
@@ -657,10 +668,11 @@ def diagnostics_sources(
                 "rest": rest_res,
                 "ws": ws_res,
                 "recommended": recommended,
+                "proxy": effective_http_proxy(DEFAULT_SETTINGS, name),
             }
         )
 
-    active_proxy = effective_http_proxy(DEFAULT_SETTINGS)
+    active_proxy = effective_http_proxy(DEFAULT_SETTINGS, "generic")
     reachable = sum(1 for s in sources if s["rest"].get("status") == "ok")
     return {
         "ok": True,
@@ -2816,66 +2828,83 @@ def screener_config_get() -> dict:
 
 
 def _network_state() -> dict:
-    from mexc_monitor.http_utils import _RUNTIME_PROXY  # noqa: PLC0415
-
-    runtime = _RUNTIME_PROXY
+    snap = REGISTRY.snapshot()
     configured = DEFAULT_SETTINGS.http_proxy_url
-    active = effective_http_proxy(DEFAULT_SETTINGS)
-    source = (
-        "runtime" if runtime else ("config" if configured else ("env" if active else "none"))
-    )
+    default_active = effective_http_proxy(DEFAULT_SETTINGS, "generic")
+    # Per-exchange effective proxy for every known exchange (what would be used).
+    per_exchange_effective = {
+        ex: effective_http_proxy(DEFAULT_SETTINGS, ex) for ex in KNOWN_EXCHANGES
+    }
     return {
-        "http_proxy_url": configured,
-        "active_proxy": active,
-        "source": source,
-        "note": "Applies to exchange REST traffic only (MEXC etc.); MetaScalp (localhost) is direct.",
+        "default_proxy": snap["default"],
+        "per_exchange": snap["per_exchange"],
+        "per_exchange_effective": per_exchange_effective,
+        "config_proxy": configured,
+        "active_proxy": default_active,
+        "known_exchanges": list(KNOWN_EXCHANGES),
+        "note": (
+            "Per-exchange routing: override a venue to a proxy or 'direct'. "
+            "Empty inherits the default. MetaScalp (localhost) is always direct."
+        ),
     }
 
 
 @app.get("/api/network/config")
 def network_config_get() -> dict:
-    """Current exchange-proxy settings."""
+    """Current exchange-proxy settings (default + per-exchange overrides)."""
     return {"ok": True, **_network_state()}
 
 
 @app.patch("/api/network/config")
 def network_config_update(payload: dict = Body(...)) -> dict:
-    """Set/clear the exchange proxy at runtime.
+    """Set/clear proxies at runtime — default and/or per-exchange overrides.
 
-    Body: ``{"http_proxy_url": "http://127.0.0.1:7890"}`` (or ``""`` to clear).
-    Empty/None falls back to config/env (httpx trust_env).
+    Body (all fields optional):
+    - ``default_proxy``: str — общий прокси ("" сбрасывает);
+    - ``per_exchange``: {exchange: url|"direct"|""} — точечные переопределения;
+    - ``http_proxy_url``: str — устаревший алиас для ``default_proxy``.
+
+    Схемы: http/https/socks5/socks5h, либо "direct" для обхода прокси.
     """
-    url = str(payload.get("http_proxy_url", "") or "").strip() or None
-    set_runtime_http_proxy(url)
-    set_shared_http_proxy(url)
+    try:
+        if "default_proxy" in payload or "http_proxy_url" in payload:
+            raw = payload.get("default_proxy", payload.get("http_proxy_url", ""))
+            REGISTRY.set_default(str(raw or "").strip() or None)
+        per = payload.get("per_exchange")
+        if isinstance(per, dict):
+            for ex, val in per.items():
+                if ex.strip().lower() not in KNOWN_EXCHANGES:
+                    raise HTTPException(status_code=400, detail=f"Неизвестная биржа: {ex}")
+                REGISTRY.set_exchange(ex, str(val or "").strip() or None)
+    except ProxyValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # New proxies → recreate pooled clients + keep legacy runtime override in sync.
+    reset_clients()
+    set_runtime_http_proxy(REGISTRY.snapshot()["default"])
     return {"ok": True, **_network_state()}
 
 
 @app.get("/api/network/test")
-def network_test() -> dict:
-    """Probe MEXC REST through the current proxy and report timing/result."""
-    import time as _time  # noqa: PLC0415
+def network_test(exchange: str = Query("mexc")) -> dict:
+    """Probe one exchange's REST through its resolved proxy; report timing.
 
-    t0 = _time.perf_counter()
-    try:
-        with mexc_httpx_client(DEFAULT_SETTINGS, exchange="mexc") as c:
-            r = c.get(DEFAULT_SETTINGS.ticker_24hr_url, timeout=10.0)
-        ok = r.status_code == 200
-        return {
-            "ok": True,
-            "reachable": ok,
-            "status_code": r.status_code,
-            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
-            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
-        }
-    except Exception as e:
-        return {
-            "ok": True,
-            "reachable": False,
-            "error": f"{type(e).__name__}: {e}",
-            "elapsed_ms": round((_time.perf_counter() - t0) * 1000, 0),
-            "proxy": effective_http_proxy(DEFAULT_SETTINGS),
-        }
+    Uses the same lightweight probe endpoints as /api/diagnostics/sources, so
+    the result reflects exactly what smart routing does for that venue.
+    """
+    from mexc_monitor.source_probes import probe_one  # noqa: PLC0415
+
+    ex = exchange.strip().lower()
+    res = probe_one(ex, DEFAULT_SETTINGS)
+    return {
+        "ok": True,
+        "exchange": ex,
+        "reachable": res.get("status") == "ok",
+        "status": res.get("status"),
+        "status_code": res.get("status_code"),
+        "elapsed_ms": res.get("elapsed_ms"),
+        "error": res.get("error"),
+        "proxy": effective_http_proxy(DEFAULT_SETTINGS, ex),
+    }
 
 
 @app.patch("/api/screener/config")

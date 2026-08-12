@@ -114,7 +114,7 @@ class BitgetPublicClient:
         """HTTP GET с обработкой ошибок и проверкой Bitget response code."""
         url = f"{self._base_url}{path}"
         try:
-            r = shared_get(url, params=params, timeout=self._timeout)
+            r = shared_get(url, exchange="bitget", params=params, timeout=self._timeout)
         except httpx.TimeoutException as e:
             raise BitgetApiError(
                 f"Bitget API timeout after {self._timeout}s: {url}"
