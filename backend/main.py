@@ -37,6 +37,13 @@ from mexc_monitor.ws_futures_depth_book import (
     stop_futures_depth_book_ws,
     touch_watchlist as touch_futures_depth_book_watchlist,
 )
+from mexc_monitor.ws_l2_depth import (
+    get_fresh_depth_book as get_fresh_l2_depth_book,
+    l2_depth_health,
+    reconcile as reconcile_l2_depth,
+    stop_all as stop_l2_depth_ws,
+    touch_watchlist as touch_l2_depth_watchlist,
+)
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
 from mexc_monitor.http_utils import effective_http_proxy, set_runtime_http_proxy
@@ -324,6 +331,7 @@ def _shutdown_workers() -> None:
     _registry.shutdown_all()
     stop_history_worker()
     stop_futures_depth_book_ws()
+    stop_l2_depth_ws()
     stop_spot_orderbook_ws()
     stop_spot_deals_ws()
     _metascalp_poller.stop()
@@ -665,10 +673,15 @@ def health() -> dict[str, Any]:
     from mexc_monitor.ws_bookticker import feeds_health
     from mexc_monitor.ws_futures_depth_book import depth_book_health
 
+    l2 = l2_depth_health()
     return {
         "status": "ok",
         "ws_feeds": feeds_health(),
-        "orderbook_ws": {"mexc_futures_depth": depth_book_health()},
+        "orderbook_ws": {
+            "mexc_futures_depth": depth_book_health(),
+            "okx_l2_depth": l2.get("okx"),
+            "bybit_l2_depth": l2.get("bybit"),
+        },
     }
 
 
@@ -755,7 +768,7 @@ def coin_networks(
 ) -> dict:
     """Сети депозита/вывода по монетам с бирж с публичным currency-API.
 
-    Поддерживаются только Gate.io и Bitget (у остальных данные о сетях
+    Поддерживаются только Gate.io и Bitget (у остальных данные о с��тях
     доступны лишь через подписанные эндпоинты). Ответ:
     ``{coins: {BTC: {gateio: [{network, deposit, withdraw}], ...}}}``.
     """
@@ -1767,22 +1780,34 @@ def density_overview(
         rows = [r for r in rows if (r.get("volume_24h_quote") or 0) >= min_volume]
     rows = rows[:limit]
 
-    # Часто просматриваемые MEXC-futures символы подмешиваем в подписку WS-книги,
-    # чтобы при следующем reconcile density по ним считался из WS, а не Binance.
+    # Часто просматриваемые символы подмешиваем в подписку WS-книги, чтобы при
+    # следующем reconcile density по ним считался из WS, а не Binance REST
+    # (который геоблокируется). MEXC — свой depth-фид, OKX/Bybit — общий l2-фид.
+    _row_symbols = [r.get("symbol", "") for r in rows]
     if exchange == "mexc" and market in ("futures", "perp"):
         try:
-            touch_futures_depth_book_watchlist([r.get("symbol", "") for r in rows])
+            touch_futures_depth_book_watchlist(_row_symbols)
             reconcile_futures_depth_book_ws(DEFAULT_SETTINGS)
         except Exception:  # noqa: BLE001 — best-effort, не критично для ответа
+            pass
+    elif exchange in ("okx", "bybit") and market in ("futures", "perp"):
+        try:
+            touch_l2_depth_watchlist(exchange, _row_symbols)
+            reconcile_l2_depth(exchange)
+        except Exception:  # noqa: BLE001 — best-effort
             pass
 
     def _fetch_density(row: dict) -> dict:
         sym = row.get("symbol", "")
         try:
-            # MEXC futures: сперва WS-книга (без сети). Иначе — Binance REST.
+            # Сперва WS-книга (без сети, обходит геоблок): MEXC — свой фид,
+            # OKX/Bybit — общий l2-фид. Иначе — Binance REST.
             depth = None
-            if exchange == "mexc" and market in ("futures", "perp"):
-                depth = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+            if market in ("futures", "perp"):
+                if exchange == "mexc":
+                    depth = get_fresh_futures_depth_book(sym, max_age_sec=8.0)
+                elif exchange in ("okx", "bybit"):
+                    depth = get_fresh_l2_depth_book(exchange, sym, max_age_sec=8.0)
             if not depth:
                 depth = _fetch_binance_depth(market, sym, limit=50)
             bids = depth.get("bids", [])
@@ -2756,7 +2781,7 @@ def spread_stream(
 ) -> StreamingResponse:
     """
     SSE (Server-Sent Events) поток обновлений спреда в реальном времени.
-    Клиент подключается и получает события при каждом изменении bid/ask.
+    Клиент подключается и получает с��бытия при каждом изменении bid/ask.
     """
     import asyncio
     import queue
