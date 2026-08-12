@@ -10,7 +10,7 @@ import httpx
 
 from mexc_monitor.clock_skew_middleware import ClockSkewClient
 from mexc_monitor.config import Settings
-from mexc_monitor.proxy_registry import REGISTRY
+from mexc_monitor.proxy_registry import DIRECT, REGISTRY
 
 
 def set_runtime_http_proxy(url: str | None) -> None:
@@ -26,12 +26,17 @@ def effective_http_proxy(settings: Settings, exchange: str = "generic") -> str |
     """Resolve the proxy URL for ``exchange``: per-exchange > default > config.
 
     Resolution order:
-    1. ProxyRegistry per-exchange override (incl. explicit direct → None);
+    1. ProxyRegistry per-exchange override — a URL, or DIRECT (force direct);
     2. ProxyRegistry default proxy;
     3. Settings.http_proxy_url (static config);
     4. None → httpx trust_env (HTTP_PROXY/HTTPS_PROXY) or direct.
+
+    A DIRECT override returns None WITHOUT falling back to config — otherwise
+    an explicit "direct" would be silently overridden by a static proxy.
     """
     resolved = REGISTRY.resolve(exchange)
+    if resolved == DIRECT:
+        return None  # explicit direct — never fall back to config
     if resolved is not None:
         return resolved
     # Registry has no opinion for this exchange → fall back to static config.

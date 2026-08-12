@@ -122,14 +122,15 @@ class ProxyRegistry:
     def resolve(self, exchange: str) -> str | None:
         """Вернуть прокси для биржи: override > default > None.
 
-        ``DIRECT`` override возвращает ``None`` (прямой доступ), сознательно
-        перекрывая общий default.
+        Возвращает URL прокси, либо ``DIRECT`` для явного прямого доступа, либо
+        ``None`` если у реестра нет мнения (пусть вызывающий решает — обычно
+        падение на статический config). Различие DIRECT vs None критично: при
+        DIRECT нельзя падать на config, иначе override игнорируется.
         """
         ex = (exchange or "").strip().lower()
         with self._lock:
             if ex in self._per_exchange:
-                val = self._per_exchange[ex]
-                return None if val == DIRECT else val
+                return self._per_exchange[ex]  # URL или DIRECT
             return self._default
 
     def snapshot(self) -> dict[str, object]:
