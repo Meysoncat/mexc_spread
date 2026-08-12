@@ -3,29 +3,53 @@
 @tailwind utilities;
 
 :root {
-  --surface: 248 250 252;
+  --surface: 250 250 249;
   --surface-elevated: 255 255 255;
-  --ink: 15 23 42;
-  --ink-muted: 100 116 139;
-  --accent: 14 165 233;
-  --accent-dim: 125 211 252;
-  --line: 226 232 240;
+  --ink: 24 24 27;
+  --ink-muted: 113 113 122;
+  --accent: 217 119 6;
+  --accent-dim: 245 168 38;
+  --on-accent: 24 24 27;
+  --line: 228 228 231;
 }
 
 .dark {
-  --surface: 15 23 42;
-  --surface-elevated: 30 41 59;
-  --ink: 248 250 252;
-  --ink-muted: 148 163 184;
-  --accent: 56 189 248;
-  --accent-dim: 14 116 144;
-  --line: 51 65 85;
+  /* Near-black terminal surface with a warm-gold accent (wintrading-style). */
+  --surface: 10 10 12;
+  --surface-elevated: 20 20 24;
+  --ink: 244 244 245;
+  --ink-muted: 140 140 150;
+  --accent: 245 168 38;
+  --accent-dim: 161 98 7;
+  --on-accent: 18 18 20;
+  --line: 38 38 44;
 }
 
 @layer base {
   body {
     @apply bg-surface font-sans text-ink antialiased;
   }
+
+  /* Atmospheric depth: a faint warm glow anchored top-center, dark theme only. */
+  .dark body {
+    background-image: radial-gradient(
+      1200px 500px at 50% -10%,
+      rgb(245 168 38 / 0.06),
+      transparent 70%
+    );
+    background-attachment: fixed;
+  }
+
+  /* Gold text selection to match the accent. */
+  ::selection {
+    background: rgb(var(--accent) / 0.28);
+    color: rgb(var(--ink));
+  }
+}
+
+/* Small uppercase section eyebrow used across pages (e.g. "— SCREENER —"). */
+.eyebrow {
+  @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-accent;
 }
 
 /* Тонкая прокрутка таблицы */

@@ -223,7 +223,7 @@ function SymbolPickerModal({
                 <button
                   key={ex}
                   onClick={() => setExchange(ex)}
-                  className={`px-2 py-1 text-[10px] font-medium ${exchange === ex ? "bg-accent text-white" : "text-ink-muted"}`}
+                  className={`px-2 py-1 text-[10px] font-medium ${exchange === ex ? "bg-accent text-accent-foreground" : "text-ink-muted"}`}
                 >
                   {EXCHANGE_LABELS[ex] ?? ex}
                 </button>
@@ -234,7 +234,7 @@ function SymbolPickerModal({
                 <button
                   key={m}
                   onClick={() => setMarket(m)}
-                  className={`px-2 py-1 text-[10px] font-medium ${market === m ? "bg-accent text-white" : "text-ink-muted"}`}
+                  className={`px-2 py-1 text-[10px] font-medium ${market === m ? "bg-accent text-accent-foreground" : "text-ink-muted"}`}
                 >
                   {m === "spot" ? "Спот" : "Фьюч"}
                 </button>
@@ -349,7 +349,7 @@ export function VSPage() {
               <button
                 key={iv.value}
                 onClick={() => setInterval(iv.value)}
-                className={`px-2 py-1 text-xs font-medium transition ${interval === iv.value ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+                className={`px-2 py-1 text-xs font-medium transition ${interval === iv.value ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
               >
                 {iv.label}
               </button>

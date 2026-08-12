@@ -325,7 +325,7 @@ export function SpreadSniperPage() {
                 onClick={() => setInterval(iv)}
                 className={`rounded px-2 py-0.5 text-xs font-medium transition ${
                   interval === iv
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink-muted hover:bg-accent/10 hover:text-ink"
                 }`}
               >
@@ -341,7 +341,7 @@ export function SpreadSniperPage() {
                 onClick={() => setVisual(v)}
                 className={`rounded px-2 py-0.5 text-xs font-medium transition ${
                   visual === v
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink-muted hover:bg-accent/10 hover:text-ink"
                 }`}
               >
@@ -355,7 +355,7 @@ export function SpreadSniperPage() {
               onClick={() => setChartMode("price")}
               className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition ${
                 chartMode === "price"
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:bg-accent/10 hover:text-ink"
               }`}
             >
@@ -365,7 +365,7 @@ export function SpreadSniperPage() {
               onClick={() => setChartMode("basis")}
               className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition ${
                 chartMode === "basis"
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:bg-accent/10 hover:text-ink"
               }`}
             >

@@ -47,7 +47,7 @@ export function ExchangeSwitcher({
                 title={label}
                 className={`rounded px-1.5 py-0.5 text-[11px] font-medium transition ${
                   isActive
-                    ? "bg-accent text-white"
+                    ? "bg-accent text-accent-foreground"
                     : "text-ink-muted hover:text-ink"
                 } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
               >
@@ -82,7 +82,7 @@ export function ExchangeSwitcher({
                   }
                   className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition ${
                     isActive
-                      ? "bg-accent text-white shadow"
+                      ? "bg-accent text-accent-foreground shadow"
                       : "text-ink-muted hover:text-ink"
                   } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
@@ -91,7 +91,7 @@ export function ExchangeSwitcher({
                     <span
                       className={`rounded-full px-1 text-[9px] font-semibold leading-4 ${
                         isActive
-                          ? "bg-white/25 text-white"
+                          ? "bg-black/20 text-accent-foreground"
                           : "bg-ink-muted/15 text-ink-muted"
                       }`}
                     >

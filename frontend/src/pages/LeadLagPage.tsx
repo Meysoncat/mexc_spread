@@ -682,7 +682,7 @@ export function LeadLagPage() {
             type="button"
             onClick={handleStart}
             disabled={starting}
-            className="ml-auto rounded-md bg-accent px-3 py-1 text-xs font-medium text-white transition hover:bg-accent/80 disabled:opacity-50"
+            className="ml-auto rounded-md bg-accent px-3 py-1 text-xs font-medium text-accent-foreground transition hover:bg-accent/80 disabled:opacity-50"
           >
             {starting ? "Запуск..." : "Запустить"}
           </button>

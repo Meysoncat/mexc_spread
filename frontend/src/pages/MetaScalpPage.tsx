@@ -493,7 +493,7 @@ export function MetaScalpPage() {
           </button>
           <button
             onClick={fetchAll}
-            className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+            className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:bg-accent/90"
           >
             <RefreshCw className="h-3.5 w-3.5" />
             Обновить
@@ -593,7 +593,7 @@ export function MetaScalpPage() {
             <button
               onClick={scanNow}
               disabled={densitySignalsLoading}
-              className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent/90 disabled:opacity-50"
+              className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-xs text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
             >
               <Target className="h-3 w-3" />
               Сканировать
@@ -1110,7 +1110,7 @@ export function MetaScalpPage() {
           <div className="flex items-end">
             <button
               onClick={handleTestTrigger}
-              className="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+              className="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:bg-accent/90"
             >
               <ArrowUpCircle className="h-3.5 w-3.5" />
               Тест триггера
@@ -1154,7 +1154,7 @@ export function MetaScalpPage() {
           <div className="flex items-end">
             <button
               onClick={handlePlaceSignal}
-              className="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+              className="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:bg-accent/90"
             >
               <Plus className="h-3.5 w-3.5" />
               Установить

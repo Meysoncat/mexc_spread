@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { apiUrl } from "../config";
 import { EXCHANGE_GROUPS } from "../ExchangeSwitcher";
@@ -8,6 +9,7 @@ import {
   type MarketRow,
 } from "../types";
 import { WithdrawalFeeCalculator } from "../WithdrawalFeeCalculator";
+import { baseFromSymbol, humanizeError } from "../lib/symbol";
 
 /** Все биржи из переключателя (CEX + DEX). */
 const ALL_EXCHANGES: { value: Exchange; label: string }[] =
@@ -16,15 +18,6 @@ const ALL_EXCHANGES: { value: Exchange; label: string }[] =
 /** Метка биржи по строковому ключу (безопасно для произвольных строк). */
 function label(ex: string): string {
   return EXCHANGE_LABELS[ex as Exchange] ?? ex;
-}
-
-/** BTCUSDT / BTC_USDT / BTCUSD → BTC (общий ключ сопоставления между биржами). */
-function baseFromSymbol(symbol: string): string | null {
-  const s = symbol.trim().toUpperCase().replace(/[_\-/]/g, "");
-  for (const q of ["USDT", "USDC", "USD"]) {
-    if (s.endsWith(q) && s.length > q.length) return s.slice(0, -q.length);
-  }
-  return null;
 }
 
 interface ExchangeQuote {
@@ -45,25 +38,10 @@ interface CompareRow {
   bestAsk: ExchangeQuote;
   /** Купить по лучшему ask, продать по лучшему bid на другой бирже (bps). */
   crossSpreadBps: number | null;
-}
-
-/** 0.6: технические ошибки → понятное объяснение для пользователя. */
-function humanizeError(msg: string): string {
-  const m = msg.trim();
-  if (/HTTP 403/i.test(m))
-    return "биржа отклонила запрос (403) — возможна гео-блокировка, попробуйте VPN";
-  if (/HTTP 429/i.test(m))
-    return "слишком много запросов (429) — подождите минуту и обновите";
-  if (/HTTP 5\d\d/i.test(m))
-    return `биржа временно недоступна (${m}) — повторите позже`;
-  if (/HTTP 4\d\d/i.test(m)) return `запрос отклонён (${m})`;
-  if (/failed to fetch|networkerror|load failed/i.test(m))
-    return "нет связи с бэкендом — проверьте, что сервер запущен";
-  if (/timeout|timed?\s?out/i.test(m))
-    return "биржа не ответила вовремя — попробуйте обновить";
-  if (/нет данных/i.test(m))
-    return "биржа вернула пустой ответ — возможно, рынок не поддерживается";
-  return m;
+  /** Кросс-спред за вычетом тейкер-комиссии обеих ног (bps). */
+  netCrossSpreadBps: number | null;
+  /** Меньший 24ч-объём из двух ног (bottleneck ликвидности), USDT. */
+  minLegVolume: number;
 }
 
 function fmt(n: number | null | undefined, digits = 4): string {
@@ -92,7 +70,10 @@ export function MultiExchangePage() {
   );
   const [search, setSearch] = useState("");
   const [minCrossBps, setMinCrossBps] = useState(0);
+  const [minVolM, setMinVolM] = useState(0);
+  const [takerFeeBps, setTakerFeeBps] = useState(2);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const load = useCallback(
     (exchanges: Exchange[], signal: AbortSignal) => {
@@ -187,22 +168,41 @@ export function MultiExchangePage() {
         sameAsset && bestAsk.ask > 0 && bestBid.exchange !== bestAsk.exchange
           ? (10_000 * (bestBid.bid - bestAsk.ask)) / bestAsk.ask
           : null;
-      out.push({ base, quotes, bestBid, bestAsk, crossSpreadBps });
+      // Обе ноги пересекаем тейкером → вычитаем 2× комиссию (buy ask + sell bid).
+      const netCrossSpreadBps =
+        crossSpreadBps == null ? null : crossSpreadBps - 2 * takerFeeBps;
+      // Узкое место ликвидности — меньший объём из двух исполняемых ног.
+      const minLegVolume = Math.min(
+        bestBid.volume_24h_quote || 0,
+        bestAsk.volume_24h_quote || 0,
+      );
+      out.push({
+        base,
+        quotes,
+        bestBid,
+        bestAsk,
+        crossSpreadBps,
+        netCrossSpreadBps,
+        minLegVolume,
+      });
     }
     out.sort(
-      (a, b) => (b.crossSpreadBps ?? -Infinity) - (a.crossSpreadBps ?? -Infinity),
+      (a, b) =>
+        (b.netCrossSpreadBps ?? -Infinity) - (a.netCrossSpreadBps ?? -Infinity),
     );
     return out;
-  }, [byExchange, selected]);
+  }, [byExchange, selected, takerFeeBps]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toUpperCase();
+    const minVol = minVolM * 1_000_000;
     return rows.filter(
       (r) =>
         (!s || r.base.includes(s)) &&
-        (minCrossBps <= 0 || (r.crossSpreadBps ?? -Infinity) >= minCrossBps),
+        (minCrossBps <= 0 || (r.crossSpreadBps ?? -Infinity) >= minCrossBps) &&
+        (minVol <= 0 || r.minLegVolume >= minVol),
     );
-  }, [rows, search, minCrossBps]);
+  }, [rows, search, minCrossBps, minVolM]);
 
   const anyLoading = selected.some((ex) => loading[ex]);
 
@@ -210,11 +210,12 @@ export function MultiExchangePage() {
     <div className="flex min-h-0 flex-1 flex-col gap-4 p-3 md:p-6">
       <div>
         <h1 className="text-lg font-semibold text-ink">
-          Мультибиржа: сравнение по символу
+          Кросс-биржевой скринер
         </h1>
         <p className="mt-1 text-xs text-ink-muted">
-          Фьючерсные пары, присутствующие минимум на двух биржах. Кросс-спред =
-          купить по лучшему ask и продать по лучшему bid на другой бирже.
+          Фьючерсные пары минимум на двух биржах, отсортированные по net
+          кросс-спреду. Кросс-спред = купить по лучшему ask и продать п�� лучшему
+          bid на другой бирже; net = за вычетом тейкер-комиссии обеих ног.
         </p>
       </div>
 
@@ -232,7 +233,7 @@ export function MultiExchangePage() {
               }
               className={`rounded-md px-2 py-1 text-xs font-medium transition ${
                 isOn
-                  ? "bg-accent text-white shadow"
+                  ? "bg-accent text-accent-foreground shadow"
                   : "bg-surface text-ink-muted ring-1 ring-line hover:text-ink"
               }`}
             >
@@ -290,6 +291,28 @@ export function MultiExchangePage() {
             className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
           />
         </label>
+        <label className="flex items-center gap-2 text-xs text-ink-muted">
+          Мин. объём ноги ($M)
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={minVolM || ""}
+            onChange={(e) => setMinVolM(Number(e.target.value) || 0)}
+            className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-xs text-ink-muted">
+          Тейкер-комиссия (bps/сторона)
+          <input
+            type="number"
+            min={0}
+            step={0.5}
+            value={takerFeeBps || ""}
+            onChange={(e) => setTakerFeeBps(Number(e.target.value) || 0)}
+            className="w-20 rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-ink outline-none focus:ring-2 focus:ring-accent"
+          />
+        </label>
         <span className="text-xs text-ink-muted">
           Совпадений: <span className="font-mono">{filtered.length}</span>
         </span>
@@ -305,7 +328,9 @@ export function MultiExchangePage() {
               <th className="px-3 py-2">Бирж</th>
               <th className="px-3 py-2">Лучший bid</th>
               <th className="px-3 py-2">Лучший ask</th>
+              <th className="px-3 py-2">Объём ноги</th>
               <th className="px-3 py-2">Кросс-спред (bps)</th>
+              <th className="px-3 py-2">Net (bps)</th>
             </tr>
           </thead>
           <tbody>
@@ -317,11 +342,12 @@ export function MultiExchangePage() {
                 onToggle={() =>
                   setExpanded((prev) => (prev === r.base ? null : r.base))
                 }
+                onOpenHub={() => navigate(`/coin/${r.base}`)}
               />
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-center text-ink-muted">
+                <td colSpan={7} className="px-3 py-8 text-center text-ink-muted">
                   {anyLoading
                     ? "Загрузка…"
                     : rows.length === 0
@@ -337,23 +363,45 @@ export function MultiExchangePage() {
   );
 }
 
+function fmtVol(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
 function MultiExchangeRow({
   row,
   expanded,
   onToggle,
+  onOpenHub,
 }: {
   row: CompareRow;
   expanded: boolean;
   onToggle: () => void;
+  onOpenHub: () => void;
 }) {
   const positive = (row.crossSpreadBps ?? 0) > 0;
+  const netPositive = (row.netCrossSpreadBps ?? 0) > 0;
   return (
     <>
       <tr
         onClick={onToggle}
         className="cursor-pointer border-t border-line/60 transition hover:bg-accent/5"
       >
-        <td className="px-3 py-2 font-mono font-medium text-ink">{row.base}</td>
+        <td className="px-3 py-2 font-mono font-medium text-ink">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenHub();
+            }}
+            className="hover:text-accent"
+            title="Открыть страницу монеты"
+          >
+            {row.base}
+          </button>
+        </td>
         <td className="px-3 py-2 font-mono text-ink-muted">
           {row.quotes.length}
         </td>
@@ -369,19 +417,29 @@ function MultiExchangeRow({
             {label(row.bestAsk.exchange)}
           </span>
         </td>
+        <td className="px-3 py-2 font-mono text-ink-muted">
+          {fmtVol(row.minLegVolume)}
+        </td>
         <td
-          className={`px-3 py-2 font-mono font-semibold ${
-            positive
-              ? "text-emerald-600 dark:text-emerald-400"
-              : "text-ink-muted"
+          className={`px-3 py-2 font-mono ${
+            positive ? "text-ink" : "text-ink-muted"
           }`}
         >
           {fmt(row.crossSpreadBps, 2)}
         </td>
+        <td
+          className={`px-3 py-2 font-mono font-semibold ${
+            netPositive
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-red-600 dark:text-red-400"
+          }`}
+        >
+          {fmt(row.netCrossSpreadBps, 2)}
+        </td>
       </tr>
       {expanded && (
         <tr className="border-t border-line/40 bg-surface">
-          <td colSpan={5} className="px-3 py-2">
+          <td colSpan={7} className="px-3 py-2">
             <table className="w-full text-xs">
               <thead className="text-ink-muted">
                 <tr>

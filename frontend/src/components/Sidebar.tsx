@@ -53,7 +53,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Арбитраж",
     items: [
       { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
-      { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
+      { path: "/multi-exchange", label: "Кросс-скринер", icon: Columns3 },
       { path: "/futures-arb", label: "Spread Sniper", icon: Crosshair },
       { path: "/asterdex", label: "AsterDEX", icon: Zap },
     ],
@@ -95,9 +95,12 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
     >
       {/* Header with collapse toggle */}
       <div className="flex h-12 shrink-0 items-center border-b border-line px-3">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent font-mono text-sm font-bold text-accent-foreground">
+          M
+        </span>
         {!collapsed && (
-          <span className="ml-1 truncate text-sm font-semibold text-ink">
-            MEXC Monitor
+          <span className="ml-2 truncate text-sm font-bold uppercase tracking-wide text-ink">
+            MEXC<span className="text-accent"> Monitor</span>
           </span>
         )}
         <button
@@ -156,7 +159,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
                           ? "bg-red-500 text-white"
                           : badges[item.path].level === "warning"
                           ? "bg-amber-500 text-white"
-                          : "bg-accent text-white"
+                          : "bg-accent text-accent-foreground"
                       } ${collapsed ? "absolute -right-0 -top-0" : ""}`}
                     >
                       {badges[item.path].count}

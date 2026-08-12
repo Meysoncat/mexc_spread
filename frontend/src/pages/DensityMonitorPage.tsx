@@ -194,13 +194,13 @@ export function DensityMonitorPage() {
           <div className="flex rounded-lg border border-line">
             <button
               onClick={() => setViewMode("list")}
-              className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "list" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+              className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "list" ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={() => setViewMode("tiles")}
-              className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "tiles" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+              className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "tiles" ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
             >
               <LayoutGrid className="h-3.5 w-3.5" />
             </button>
@@ -271,7 +271,7 @@ export function DensityMonitorPage() {
               onClick={() => setMarket(m)}
               className={`px-3 py-1.5 text-xs font-medium transition ${
                 market === m
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:bg-surface"
               }`}
             >
@@ -286,7 +286,7 @@ export function DensityMonitorPage() {
               onClick={() => setExchange(ex)}
               className={`px-2.5 py-1.5 text-xs font-medium transition ${
                 exchange === ex
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:bg-surface"
               }`}
             >
@@ -329,7 +329,7 @@ export function DensityMonitorPage() {
               onClick={() => setFilterSide(v)}
               className={`px-2 py-1.5 text-xs font-medium transition ${
                 filterSide === v
-                  ? v === "bid" ? "bg-emerald-500 text-white" : v === "ask" ? "bg-rose-500 text-white" : "bg-accent text-white"
+                  ? v === "bid" ? "bg-emerald-500 text-white" : v === "ask" ? "bg-rose-500 text-white" : "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:bg-surface"
               }`}
             >
@@ -343,7 +343,7 @@ export function DensityMonitorPage() {
               key={v}
               onClick={() => setFilterImbalance(v)}
               className={`px-2 py-1.5 text-xs font-medium transition ${
-                filterImbalance === v ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"
+                filterImbalance === v ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"
               }`}
             >
               {v === "all" ? "Любой" : v === "bid_heavy" ? "Bid-heavy" : "Ask-heavy"}

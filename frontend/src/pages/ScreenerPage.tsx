@@ -1,8 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
-import { Radar, SlidersHorizontal, ExternalLink } from "lucide-react";
+import {
+  Radar,
+  SlidersHorizontal,
+  ExternalLink,
+  ChevronDown,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react";
 import { apiUrl, apiFetch } from "../config";
 import { useNavigationState } from "../hooks/useNavigationState";
+import { baseFromSymbol } from "../lib/symbol";
 
 // ─── Types (mirror backend ScreenerOpportunity / ScreenerConfig) ─────────────
 
@@ -120,6 +135,184 @@ const ADAPTIVE_FIELDS: FieldSpec[] = [
   { key: "target_opportunity_max", label: "Target max", step: 1 },
 ];
 
+// ─── Threshold presets (one-click gate calibration) ──────────────────────────
+
+type PresetPatch = Partial<ScreenerConfig>;
+
+interface Preset {
+  id: string;
+  label: string;
+  hint: string;
+  patch: PresetPatch;
+}
+
+const PRESETS: Preset[] = [
+  {
+    id: "conservative",
+    label: "Консервативный",
+    hint: "Только надёжные: широкий спред, глубокая ликвидность, долгое удержание",
+    patch: {
+      min_net_spread_bps: 8,
+      min_l1_notional_usdt: 500,
+      min_volume_24h_usdt: 500000,
+      min_lifetime_sec: 5,
+      adaptive_mode: false,
+    },
+  },
+  {
+    id: "balanced",
+    label: "Сбалансированный",
+    hint: "Разумный компромисс между качеством и количеством сигналов",
+    patch: {
+      min_net_spread_bps: 4,
+      min_l1_notional_usdt: 200,
+      min_volume_24h_usdt: 100000,
+      min_lifetime_sec: 2,
+      adaptive_mode: false,
+    },
+  },
+  {
+    id: "aggressive",
+    label: "Агрессивный",
+    hint: "Больше кандидатов, включая тонкую ликвидность и короткое удержание",
+    patch: {
+      min_net_spread_bps: 2,
+      min_l1_notional_usdt: 50,
+      min_volume_24h_usdt: 20000,
+      min_lifetime_sec: 0,
+      adaptive_mode: false,
+    },
+  },
+];
+
+// ─── Sortable columns ────────────────────────────────────────────────────────
+
+type SortKey =
+  | "net_spread_bps"
+  | "l1_notional"
+  | "lifetime_sec"
+  | "volume_24h_quote"
+  | "pct_time_above"
+  | "spread_std"
+  | "spread_zscore"
+  | "book_update_rate_per_min"
+  | "ev"
+  | "score";
+
+const sortValue = (o: ScreenerOpportunity, key: SortKey): number => {
+  if (key === "ev") return o.score_breakdown?.ev ?? -Infinity;
+  const v = o[key as keyof ScreenerOpportunity];
+  return typeof v === "number" ? v : -Infinity;
+};
+
+// Color the net-spread cell by how far it clears the gate: below → muted,
+// modest (< 2×) → amber, strong (≥ 2×) → emerald.
+const netSpreadColor = (net: number | null, gate: number): string => {
+  if (net == null) return "text-ink-muted";
+  if (gate > 0 && net < gate) return "text-ink-muted";
+  if (gate > 0 && net < gate * 2) return "text-amber-500";
+  return "text-emerald-500";
+};
+
+// ─── Sortable table header ───────────────────────────────────────────────────
+
+interface SortHeaderProps {
+  label: string;
+  col: SortKey;
+  sortKey: SortKey;
+  sortDir: "asc" | "desc";
+  onSort: (key: SortKey) => void;
+}
+
+function SortHeader({ label, col, sortKey, sortDir, onSort }: SortHeaderProps) {
+  const active = sortKey === col;
+  return (
+    <th className="px-3 py-2 text-right font-medium">
+      <button
+        onClick={() => onSort(col)}
+        className={`inline-flex items-center gap-1 hover:text-ink ${
+          active ? "text-ink" : ""
+        }`}
+      >
+        {label}
+        {active ? (
+          sortDir === "desc" ? (
+            <ArrowDown className="h-3 w-3" />
+          ) : (
+            <ArrowUp className="h-3 w-3" />
+          )
+        ) : (
+          <span className="h-3 w-3" />
+        )}
+      </button>
+    </th>
+  );
+}
+
+// ─── Score breakdown (why a coin ranks where it does) ────────────────────────
+
+// Human labels for each scorer term (mirrors backend score_candidate).
+const SCORE_LABELS: Record<string, string> = {
+  ev: "EV (спред × активность)",
+  spread: "Спред (сырой)",
+  liquidity: "Ликвидность L1",
+  lifetime: "Время жизни",
+  stability: "Стабильность (% выше)",
+  volatility: "Волатильность σ",
+  staleness: "Устаревание тика",
+  zscore: "Z-score",
+  volume24h: "Объём 24ч",
+};
+
+// Order terms by absolute contribution so the biggest drivers read first.
+function ScoreBreakdown({ breakdown }: { breakdown: Record<string, number> }) {
+  const entries = Object.entries(breakdown).filter(([, v]) => Math.abs(v) > 1e-6);
+  if (entries.length === 0) {
+    return (
+      <p className="px-3 py-2 text-xs text-ink-muted">
+        Нет данных для разбивки score.
+      </p>
+    );
+  }
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const max = Math.max(...entries.map(([, v]) => Math.abs(v)));
+
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-3">
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        Из чего складывается score
+      </p>
+      {entries.map(([key, val]) => {
+        const positive = val >= 0;
+        const width = max > 0 ? (Math.abs(val) / max) * 100 : 0;
+        return (
+          <div key={key} className="flex items-center gap-2 text-xs">
+            <span className="w-44 shrink-0 truncate text-ink-muted">
+              {SCORE_LABELS[key] ?? key}
+            </span>
+            <div className="relative h-3 flex-1 rounded-sm bg-surface">
+              <div
+                className={`absolute top-0 h-3 rounded-sm ${
+                  positive ? "bg-emerald-500/70" : "bg-red-500/70"
+                }`}
+                style={{ width: `${width}%` }}
+              />
+            </div>
+            <span
+              className={`w-14 shrink-0 text-right font-mono ${
+                positive ? "text-emerald-500" : "text-red-500"
+              }`}
+            >
+              {positive ? "+" : ""}
+              {val.toFixed(2)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export function ScreenerPage() {
@@ -130,7 +323,15 @@ export function ScreenerPage() {
   const [percentile, setPercentile] = useState<number | null>(null);
   const [cutoff, setCutoff] = useState<number | null>(null);
   const [connected, setConnected] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [streamErrored, setStreamErrored] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("score");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
@@ -152,6 +353,7 @@ export function ScreenerPage() {
           setScannedAt(data.scanned_at ?? null);
           setTotalUniverse(data.total_universe ?? 0);
           if (data.config) setConfig(data.config);
+          setHasLoaded(true);
         }
       } catch {
         /* SSE will fill in */
@@ -161,10 +363,15 @@ export function ScreenerPage() {
 
     const es = new EventSource(apiUrl("/api/screener/stream"));
     esRef.current = es;
-    es.onopen = () => !cancelled && setConnected(true);
+    es.onopen = () => {
+      if (cancelled) return;
+      setConnected(true);
+      setStreamErrored(false);
+    };
     es.onerror = () => {
       if (cancelled) return;
       setConnected(false);
+      setStreamErrored(true);
       // EventSource auto-reconnects; nothing else to do.
     };
     es.onmessage = (ev) => {
@@ -177,6 +384,8 @@ export function ScreenerPage() {
         setPercentile(p.spread_percentile ?? null);
         setCutoff(p.percentile_cutoff ?? null);
         setErr(null);
+        setHasLoaded(true);
+        setStreamErrored(false);
       } catch {
         /* ignore malformed */
       }
@@ -187,7 +396,7 @@ export function ScreenerPage() {
       es.close();
       esRef.current = null;
     };
-  }, []);
+  }, [reconnectNonce]);
 
   // Debounced PATCH when a filter field changes.
   const updateField = useCallback(
@@ -228,6 +437,60 @@ export function ScreenerPage() {
     [],
   );
 
+  // Apply a whole preset in a single PATCH.
+  const applyPreset = useCallback((patch: PresetPatch) => {
+    setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
+    apiFetch("/api/screener/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.config) setConfig(d.config);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  // Which preset (if any) matches the current gate config exactly.
+  const activePreset = useMemo(() => {
+    if (!config) return null;
+    return (
+      PRESETS.find((p) =>
+        Object.entries(p.patch).every(
+          ([k, v]) => config[k as keyof ScreenerConfig] === v,
+        ),
+      )?.id ?? null
+    );
+  }, [config]);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSortKey((prevKey) => {
+      if (prevKey === key) {
+        setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+        return key;
+      }
+      setSortDir("desc");
+      return key;
+    });
+  }, []);
+
+  const sortedOpps = useMemo(() => {
+    const arr = [...opps];
+    arr.sort((a, b) => {
+      const diff = sortValue(a, sortKey) - sortValue(b, sortKey);
+      return sortDir === "desc" ? -diff : diff;
+    });
+    return arr;
+  }, [opps, sortKey, sortDir]);
+
+  // Symbol name → coin hub (decision context without leaving the screener flow).
+  const openHub = (symbol: string) => {
+    const base = baseFromSymbol(symbol) ?? symbol.replace(/[_\-/]/g, "");
+    navigate(`/coin/${base}`);
+  };
+
+  // External-link icon → the classic Spread Monitor view.
   const openSymbol = (symbol: string) => {
     setSymbol(symbol);
     navigate("/");
@@ -250,15 +513,23 @@ export function ScreenerPage() {
         <div className="flex items-center gap-4 text-xs text-ink-muted">
           <span
             className={`flex items-center gap-1.5 ${
-              connected ? "text-emerald-500" : "text-ink-muted"
+              connected
+                ? "text-emerald-500"
+                : streamErrored
+                  ? "text-red-500"
+                  : "text-ink-muted"
             }`}
           >
             <span
               className={`h-2 w-2 rounded-full ${
-                connected ? "bg-emerald-500" : "bg-ink-muted/50"
+                connected
+                  ? "bg-emerald-500"
+                  : streamErrored
+                    ? "bg-red-500"
+                    : "bg-ink-muted/50"
               }`}
             />
-            {connected ? "live" : "подключение…"}
+            {connected ? "live" : streamErrored ? "нет связи" : "подключение…"}
           </span>
           {scannedAt && (
             <span>
@@ -269,6 +540,15 @@ export function ScreenerPage() {
             найдено: <span className="font-semibold text-ink">{opps.length}</span>{" "}
             / {totalUniverse}
           </span>
+          <button
+            onClick={() => setShowMetrics((v) => !v)}
+            className={`flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent/10 hover:text-accent ${
+              showMetrics ? "text-accent" : ""
+            }`}
+            title="Показать аналитические колонки (σ, z-score, активность, EV)"
+          >
+            {showMetrics ? "Скрыть метрики" : "Метрики"}
+          </button>
           <button
             onClick={() => setPanelOpen((v) => !v)}
             className="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent/10 hover:text-accent"
@@ -282,28 +562,30 @@ export function ScreenerPage() {
       {/* Filter panel */}
       {panelOpen && config && (
         <div className="shrink-0 border-b border-line bg-surface-elevated px-4 py-3">
-          {/* Adaptive controls */}
-          <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2">
-            <label className="flex items-center gap-2 text-xs text-ink">
-              <input
-                type="checkbox"
-                checked={config.adaptive_mode}
-                onChange={(e) => updateBool("adaptive_mode", e.target.checked)}
-                className="h-3.5 w-3.5 accent-accent"
-              />
-              <span className="font-medium">Адаптивный режим</span>
-            </label>
-            <label className="flex items-center gap-2 text-xs text-ink">
-              <input
-                type="checkbox"
-                checked={config.use_spread_zscore}
-                onChange={(e) => updateBool("use_spread_zscore", e.target.checked)}
-                className="h-3.5 w-3.5 accent-accent"
-              />
-              <span className="font-medium">Z-score gate</span>
-            </label>
+          {/* Presets */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+              Пресет
+            </span>
+            {PRESETS.map((p) => {
+              const active = activePreset === p.id;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => applyPreset(p.patch)}
+                  title={p.hint}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                    active
+                      ? "border-accent bg-accent/15 text-accent"
+                      : "border-line text-ink-muted hover:border-accent/50 hover:text-ink"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
             {config.adaptive_mode && (
-              <span className="rounded-md bg-accent/10 px-2 py-1 text-[11px] text-accent">
+              <span className="ml-auto rounded-md bg-accent/10 px-2 py-1 text-[11px] text-accent">
                 авто-калибровка: P{percentile ?? config.spread_percentile}
                 {cutoff != null && ` → срез ${cutoff.toFixed(1)} bps`} (цель{" "}
                 {config.target_opportunity_min}–{config.target_opportunity_max})
@@ -311,12 +593,9 @@ export function ScreenerPage() {
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3 md:grid-cols-3 lg:grid-cols-6">
-            {[
-              ...ADAPTIVE_FIELDS,
-              ...GATE_FIELDS,
-              ...WEIGHT_FIELDS,
-            ].map((f) => (
+          {/* Gate thresholds — the everyday controls */}
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
+            {GATE_FIELDS.map((f) => (
               <label key={f.key} className="flex flex-col gap-1">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                   {f.label}
@@ -334,6 +613,68 @@ export function ScreenerPage() {
               </label>
             ))}
           </div>
+
+          {/* Advanced — scoring weights + adaptive tuning, collapsed by default */}
+          <button
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="mt-3 flex items-center gap-1.5 text-xs font-medium text-ink-muted hover:text-ink"
+          >
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${
+                advancedOpen ? "rotate-180" : ""
+              }`}
+            />
+            Продвинутое: веса ранжирования и адаптивная калибровка
+          </button>
+
+          {advancedOpen && (
+            <div className="mt-3 border-t border-line/60 pt-3">
+              <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+                <label className="flex items-center gap-2 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={config.adaptive_mode}
+                    onChange={(e) =>
+                      updateBool("adaptive_mode", e.target.checked)
+                    }
+                    className="h-3.5 w-3.5 accent-accent"
+                  />
+                  <span className="font-medium">Адаптивный режим</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={config.use_spread_zscore}
+                    onChange={(e) =>
+                      updateBool("use_spread_zscore", e.target.checked)
+                    }
+                    className="h-3.5 w-3.5 accent-accent"
+                  />
+                  <span className="font-medium">Z-score gate</span>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+                {[...ADAPTIVE_FIELDS, ...WEIGHT_FIELDS].map((f) => (
+                  <label key={f.key} className="flex flex-col gap-1">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                      {f.label}
+                      {f.hint ? ` (${f.hint})` : ""}
+                    </span>
+                    <input
+                      type="number"
+                      step={f.step}
+                      value={config[f.key]}
+                      onChange={(e) =>
+                        updateField(f.key, parseFloat(e.target.value) || 0)
+                      }
+                      className="rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           {err && (
             <p className="mt-2 text-xs text-red-500">Ошибка обновления: {err}</p>
           )}
@@ -342,53 +683,153 @@ export function ScreenerPage() {
 
       {/* Table / empty state */}
       <div className="min-h-0 flex-1 overflow-auto">
-        {opps.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-ink-muted">
+        {opps.length === 0 && !hasLoaded && !streamErrored ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
+            <Radar className="h-10 w-10 animate-pulse opacity-40" />
+            <p className="text-sm font-medium">Подключение к скринеру…</p>
+            <p className="max-w-md text-xs">
+              Устанавливаем поток данных и сканируем вселенную символов.
+            </p>
+          </div>
+        ) : opps.length === 0 && streamErrored && !hasLoaded ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
             <Radar className="h-10 w-10 opacity-30" />
-            <p className="text-sm font-medium">
-              Сейчас возможностей нет
+            <p className="text-sm font-medium text-red-500">
+              Нет соединения со скринером
             </p>
             <p className="max-w-md text-xs">
-              Ни одна монета не прошла все фильтры (net-спред, ликвидность,
-              объём, время удержания). Расширьте пороги в панели фильтров или
-              подождите — скринер обновляется в реальном времени.
+              Поток данных недоступен. Проверьте, что бэкенд запущен и биржа
+              достижима из вашей сети, затем повторите.
             </p>
+            <button
+              onClick={() => {
+                setStreamErrored(false);
+                setReconnectNonce((n) => n + 1);
+              }}
+              className="mt-1 rounded-md border border-accent bg-accent/10 px-4 py-1.5 text-sm font-medium text-accent transition hover:bg-accent/20"
+            >
+              Повторить
+            </button>
+          </div>
+        ) : opps.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-ink-muted">
+            <Radar className="h-10 w-10 opacity-30" />
+            <p className="text-sm font-medium">Сейчас возможностей нет</p>
+            <p className="max-w-md text-xs">
+              Ни одна монета не прошла все фильтры (net-спред, ликвидность,
+              объём, время удержания). Смягчите пороги или подождите — скринер
+              обновляется в реальном времени.
+            </p>
+            <button
+              onClick={() => applyPreset(PRESETS[2].patch)}
+              className="mt-1 rounded-md border border-line px-4 py-1.5 text-sm font-medium text-ink-muted transition hover:border-accent/50 hover:text-ink"
+            >
+              Смягчить пороги (Агрессивный)
+            </button>
           </div>
         ) : (
           <table className="w-full border-collapse text-sm">
             <thead className="sticky top-0 z-10 bg-surface-elevated text-xs uppercase tracking-wide text-ink-muted">
               <tr>
-                <th className="px-3 py-2 text-left">#</th>
-                <th className="px-3 py-2 text-left">Символ</th>
-                <th className="px-3 py-2 text-right">Net bps</th>
-                <th className="px-3 py-2 text-right">L1 $</th>
-                <th className="px-3 py-2 text-right">Lifetime</th>
-                <th className="px-3 py-2 text-right">Vol 24h</th>
-                <th className="px-3 py-2 text-right">% выше</th>
-                <th className="px-3 py-2 text-right">σ bps</th>
-                <th className="px-3 py-2 text-right">z</th>
-                <th className="px-3 py-2 text-right">updt/мин</th>
-                <th className="px-3 py-2 text-right">EV</th>
-                <th className="px-3 py-2 text-right">Score</th>
+                <th className="px-3 py-2 text-left font-medium">#</th>
+                <th className="px-3 py-2 text-left font-medium">Символ</th>
+                <SortHeader
+                  label="Net bps"
+                  col="net_spread_bps"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+                <SortHeader
+                  label="L1 $"
+                  col="l1_notional"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+                <SortHeader
+                  label="Lifetime"
+                  col="lifetime_sec"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+                <SortHeader
+                  label="Vol 24h"
+                  col="volume_24h_quote"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+                <SortHeader
+                  label="% выше"
+                  col="pct_time_above"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
+                {showMetrics && (
+                  <>
+                    <SortHeader
+                      label="σ bps"
+                      col="spread_std"
+                      sortKey={sortKey}
+                      sortDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortHeader
+                      label="z"
+                      col="spread_zscore"
+                      sortKey={sortKey}
+                      sortDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortHeader
+                      label="updt/мин"
+                      col="book_update_rate_per_min"
+                      sortKey={sortKey}
+                      sortDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortHeader
+                      label="EV"
+                      col="ev"
+                      sortKey={sortKey}
+                      sortDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                  </>
+                )}
+                <SortHeader
+                  label="Score"
+                  col="score"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggleSort}
+                />
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
-              {opps.map((o, i) => (
-                <tr
-                  key={o.symbol}
-                  className="border-t border-line/60 transition-colors hover:bg-accent/5"
-                >
+              {sortedOpps.map((o, i) => (
+                <Fragment key={o.symbol}>
+                <tr className="border-t border-line/60 transition-colors hover:bg-accent/5">
                   <td className="px-3 py-2 text-ink-muted">{i + 1}</td>
                   <td className="px-3 py-2">
                     <button
-                      onClick={() => openSymbol(o.symbol)}
+                      onClick={() => openHub(o.symbol)}
                       className="font-mono font-medium text-ink hover:text-accent"
+                      title="Открыть страницу монеты"
                     >
                       {o.symbol}
                     </button>
                   </td>
-                  <td className="px-3 py-2 text-right font-mono font-semibold text-emerald-500">
+                  <td
+                    className={`px-3 py-2 text-right font-mono font-semibold ${netSpreadColor(
+                      o.net_spread_bps,
+                      config?.min_net_spread_bps ?? 0,
+                    )}`}
+                  >
                     {fmtBps(o.net_spread_bps)}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-ink">
@@ -403,35 +844,52 @@ export function ScreenerPage() {
                   <td className="px-3 py-2 text-right font-mono text-ink-muted">
                     {fmtPct(o.pct_time_above)}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-ink-muted">
-                    {o.spread_std == null ? "—" : o.spread_std.toFixed(1)}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-ink-muted">
-                    {o.spread_zscore == null ? "—" : o.spread_zscore.toFixed(2)}
-                  </td>
-                  <td
-                    className="px-3 py-2 text-right font-mono text-ink-muted"
-                    title="bookTicker updates/min — real-time activity proxy (≥60 ≈ active)"
-                  >
-                    {o.book_update_rate_per_min == null
-                      ? "—"
-                      : o.book_update_rate_per_min.toFixed(0)}
-                  </td>
-                  <td
-                    className="px-3 py-2 text-right font-mono text-ink"
-                    title="Realizable edge ≈ net_spread × activity_factor (from score_breakdown.ev)"
-                  >
-                    {o.score_breakdown?.ev == null
-                      ? "—"
-                      : o.score_breakdown.ev.toFixed(2)}
-                  </td>
-                  <td
-                    className="px-3 py-2 text-right font-mono font-semibold text-ink"
-                    title={Object.entries(o.score_breakdown)
-                      .map(([k, v]) => `${k}: ${v.toFixed(2)}`)
-                      .join("\n")}
-                  >
-                    {o.score.toFixed(2)}
+                  {showMetrics && (
+                    <>
+                      <td className="px-3 py-2 text-right font-mono text-ink-muted">
+                        {o.spread_std == null ? "—" : o.spread_std.toFixed(1)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-ink-muted">
+                        {o.spread_zscore == null
+                          ? "—"
+                          : o.spread_zscore.toFixed(2)}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-right font-mono text-ink-muted"
+                        title="bookTicker updates/min — real-time activity proxy (≥60 ≈ active)"
+                      >
+                        {o.book_update_rate_per_min == null
+                          ? "—"
+                          : o.book_update_rate_per_min.toFixed(0)}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-right font-mono text-ink"
+                        title="Realizable edge ≈ net_spread × activity_factor (from score_breakdown.ev)"
+                      >
+                        {o.score_breakdown?.ev == null
+                          ? "—"
+                          : o.score_breakdown.ev.toFixed(2)}
+                      </td>
+                    </>
+                  )}
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-ink">
+                    <button
+                      onClick={() =>
+                        setExpanded((cur) =>
+                          cur === o.symbol ? null : o.symbol,
+                        )
+                      }
+                      className="inline-flex items-center gap-1 hover:text-accent"
+                      title="Показать, из чего складывается score"
+                      aria-expanded={expanded === o.symbol}
+                    >
+                      {o.score.toFixed(2)}
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 transition-transform ${
+                          expanded === o.symbol ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
                   </td>
                   <td className="px-3 py-2 text-right">
                     <button
@@ -443,6 +901,14 @@ export function ScreenerPage() {
                     </button>
                   </td>
                 </tr>
+                {expanded === o.symbol && (
+                  <tr className="border-t border-line/40 bg-surface-elevated/40">
+                    <td colSpan={showMetrics ? 13 : 9} className="p-0">
+                      <ScoreBreakdown breakdown={o.score_breakdown} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

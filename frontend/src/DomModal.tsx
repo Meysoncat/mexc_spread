@@ -196,21 +196,21 @@ export function DomModal({ open, onClose, market, symbol, initialView = "table" 
               <button
                 type="button"
                 onClick={() => setViewMode("table")}
-                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "table" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "table" ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
               >
                 <ListOrdered className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode("chart")}
-                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "chart" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "chart" ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
               >
                 <BarChart3 className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode("density")}
-                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "density" ? "bg-accent text-white" : "text-ink-muted hover:bg-surface"}`}
+                className={`px-2 py-1.5 text-xs font-medium transition ${viewMode === "density" ? "bg-accent text-accent-foreground" : "text-ink-muted hover:bg-surface"}`}
                 title="Density Analysis"
               >
                 <Layers className="h-3.5 w-3.5" />

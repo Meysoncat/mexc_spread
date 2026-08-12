@@ -153,7 +153,7 @@ export function WithdrawalFeeCalculator({
             type="button"
             onClick={calculate}
             disabled={loading}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/90 disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 disabled:opacity-50"
           >
             {loading ? "Расчёт…" : "Рассчитать"}
           </button>

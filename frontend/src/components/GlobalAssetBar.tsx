@@ -39,7 +39,7 @@ export function GlobalAssetBar({ showMarket = true }: GlobalAssetBarProps) {
               onClick={() => setMarket(m)}
               className={`rounded px-1.5 py-0.5 text-[11px] font-medium transition ${
                 market === m
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-accent-foreground"
                   : "text-ink-muted hover:text-ink"
               }`}
             >

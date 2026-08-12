@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Allow tunnelled/preview hosts (e.g. *.vercel.run) to reach the dev server.
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8006",

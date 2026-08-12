@@ -104,7 +104,7 @@ export function ScreenerHistoryPage() {
         </label>
         <button
           onClick={load}
-          className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-white hover:bg-accent/90"
+          className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-accent-foreground hover:bg-accent/90"
         >
           Применить
         </button>

@@ -75,7 +75,7 @@ export function WelcomeBanner() {
         <button
           type="button"
           onClick={dismiss}
-          className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent/90"
+          className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition hover:bg-accent/90"
         >
           Понятно
         </button>
