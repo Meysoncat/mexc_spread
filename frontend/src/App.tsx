@@ -69,6 +69,11 @@ const VSPage = lazy(() =>
 const ScreenerPage = lazy(() =>
   import("./pages/ScreenerPage").then((m) => ({ default: m.ScreenerPage })),
 );
+const ScreenerHistoryPage = lazy(() =>
+  import("./pages/ScreenerHistoryPage").then((m) => ({
+    default: m.ScreenerHistoryPage,
+  })),
+);
 const NetworkPage = lazy(() =>
   import("./pages/NetworkPage").then((m) => ({ default: m.NetworkPage })),
 );
@@ -109,6 +114,7 @@ function App() {
             <Route path="density" element={<DensityMonitorPage />} />
             <Route path="vs" element={<VSPage />} />
             <Route path="screener" element={<ScreenerPage />} />
+            <Route path="screener-history" element={<ScreenerHistoryPage />} />
             <Route path="network" element={<NetworkPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

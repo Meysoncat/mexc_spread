@@ -57,3 +57,35 @@ class CrossSpreadSnapshot(Base):
     basis_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     observed_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ScreenerOpportunityEvent(Base):
+    """Событие «монета найдена скринером» (момент входа в шорт-лист).
+
+    Записывается при переходе символa нет→да в шорт-листе; обновляется
+    ``exited_at``/``duration_sec`` при выходе. ``score_breakdown`` хранит
+    JSON разбивки скорера — «почему» монета попала (EV, liquidity, …).
+    """
+
+    __tablename__ = "screener_opportunity_events"
+    __table_args__ = (
+        Index("idx_screener_evt_found", "found_at_ms"),
+        Index("idx_screener_evt_sym_found", "symbol", "found_at_ms"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    found_at: Mapped[str] = mapped_column(Text, nullable=False)  # ISO8601
+    found_at_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    exited_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # metrics snapshot at discovery
+    net_spread_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spread_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    l1_notional: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_24h_quote: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lifetime_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spread_zscore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    book_update_rate_per_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_breakdown: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON

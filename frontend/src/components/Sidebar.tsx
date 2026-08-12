@@ -13,6 +13,7 @@ import {
   FlaskConical,
   Flame,
   Globe,
+  History,
   Layers,
   Radar,
   Shield,
@@ -40,6 +41,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: "/", label: "Spread Monitor", icon: Activity },
       { path: "/screener", label: "Spread Screener", icon: Radar },
+      { path: "/screener-history", label: "История скринера", icon: History },
       { path: "/density", label: "Density Screener", icon: Layers },
       { path: "/vs", label: "VS Сравнение", icon: SplitSquareHorizontal },
       { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },

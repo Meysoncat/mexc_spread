@@ -25,12 +25,19 @@ import time
 from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mexc_monitor.pipeline import safe_load_snapshot
 from mexc_monitor.ws_spot_orderbook import (
     get_book_update_rate,
     reconcile_spot_orderbook_ws,
     touch_watchlist,
+)
+from mexc_monitor.screener.history_store import (
+    close_all_open,
+    query_events as query_history_events,
+    record_enter,
+    record_exit,
 )
 from mexc_monitor.screener.config import (
     ScreenerConfig,
@@ -123,10 +130,17 @@ def _calibrate_step(
 
 
 class ScreenerEngine:
-    def __init__(self, config: ScreenerConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ScreenerConfig | None = None,
+        *,
+        history_db_path: "Path | None" = None,
+    ) -> None:
         self._cfg = config or load_screener_config()
         self._cfg_lock = threading.Lock()
         self._state = ScreenerState(self._cfg.rolling_window)
+        self._history_db_path = history_db_path
+        self._prev_opp_symbols: set[str] = set()
         self._opps: list[dict] = []
         self._scanned_at_iso: str | None = None
         self._total_universe = 0
@@ -150,6 +164,18 @@ class ScreenerEngine:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        # Close any opportunity events left open by a previous run.
+        if self._history_db_path is not None:
+            try:
+                now_ms = int(time.time() * 1000.0)
+                close_all_open(
+                    self._history_db_path,
+                    now_iso=datetime.now(timezone.utc).isoformat(),
+                    now_ms=now_ms,
+                )
+            except Exception:
+                logger.warning("Screener: close_all_open history failed", exc_info=True)
+        self._prev_opp_symbols = set()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="spread-screener"
@@ -184,6 +210,58 @@ class ScreenerEngine:
         if limit is not None and limit > 0:
             opps = opps[:limit]
         return opps
+
+    def get_history(
+        self, *, limit: int = 100, symbol: str | None = None, only_open: bool = False
+    ) -> list[dict]:
+        """Recent opportunity discovery events from the persistent history."""
+        if self._history_db_path is None:
+            return []
+        try:
+            return query_history_events(
+                self._history_db_path,
+                limit=limit,
+                symbol=symbol,
+                only_open=only_open,
+            )
+        except Exception:
+            logger.debug("Screener: history query failed", exc_info=True)
+            return []
+
+    def _record_history(self, opportunities: list[dict], scanned_at_iso: str) -> None:
+        """Log enter/exit events: a coin entering the shortlist is 'found';
+        on exit we record duration. Dedup'd — no row while it stays."""
+        if self._history_db_path is None:
+            return
+        try:
+            now_ms = int(time.time() * 1000.0)
+            current = {str(o.get("symbol", "")).upper() for o in opportunities}
+            opp_by_sym = {
+                str(o.get("symbol", "")).upper(): o for o in opportunities
+            }
+            entered = current - self._prev_opp_symbols
+            exited = self._prev_opp_symbols - current
+            for sym in entered:
+                opp = opp_by_sym.get(sym)
+                if not opp:
+                    continue
+                record_enter(
+                    self._history_db_path,
+                    symbol=sym,
+                    found_at_iso=scanned_at_iso,
+                    found_at_ms=now_ms,
+                    opp=opp,
+                )
+            for sym in exited:
+                record_exit(
+                    self._history_db_path,
+                    symbol=sym,
+                    exited_at_iso=scanned_at_iso,
+                    exited_at_ms=now_ms,
+                )
+            self._prev_opp_symbols = current
+        except Exception:
+            logger.debug("Screener: history record failed", exc_info=True)
 
     def get_status(self) -> dict:
         with self._lock:
@@ -380,6 +458,8 @@ class ScreenerEngine:
             self._total_universe = len(active)
             self._percentile_cutoff = percentile_cutoff
             self._count_history.append(len(opportunities))
+
+        self._record_history(opportunities, scanned_at)
 
         self._notify_subs(
             {

@@ -237,7 +237,13 @@ class _TradingAdapter:
 _portfolio_risk = PortfolioRiskManager(PortfolioRiskSettings())
 
 from mexc_monitor.screener import ScreenerEngine
-_screener_engine = ScreenerEngine()
+_screener_engine = ScreenerEngine(
+    history_db_path=(
+        resolve_history_db_path(DEFAULT_SETTINGS)
+        if DEFAULT_SETTINGS.history_enabled
+        else None
+    )
+)
 
 
 def _resolve_engine(
@@ -2700,6 +2706,19 @@ def screener_stream() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/screener/history")
+def screener_history(
+    limit: int = Query(100, ge=1, le=1000),
+    symbol: str | None = Query(None),
+    only_open: bool = Query(False),
+) -> dict:
+    """Persistent log of coins 'found' by the screener (enter events)."""
+    events = _screener_engine.get_history(
+        limit=limit, symbol=symbol, only_open=only_open
+    )
+    return {"ok": True, "count": len(events), "events": events}
 
 
 @app.get("/api/screener/config")
