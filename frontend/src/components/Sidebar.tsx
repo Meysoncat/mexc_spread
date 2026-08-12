@@ -53,7 +53,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Арбитраж",
     items: [
       { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
-      { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
+      { path: "/multi-exchange", label: "Кросс-скринер", icon: Columns3 },
       { path: "/futures-arb", label: "Spread Sniper", icon: Crosshair },
       { path: "/asterdex", label: "AsterDEX", icon: Zap },
     ],
