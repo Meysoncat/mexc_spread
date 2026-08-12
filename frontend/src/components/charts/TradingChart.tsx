@@ -120,11 +120,13 @@ export const TradingChart = forwardRef<TradingChartRef, TradingChartProps>(
 
           if (visual === "line") {
             const series = chart.addSeries(LineSeries, {
-              color: chartColors.up,
+              color: chartColors.accent,
               lineWidth: 2,
               priceFormat: priceFmt,
               priceLineVisible: true,
               lastValueVisible: true,
+              crosshairMarkerVisible: true,
+              crosshairMarkerRadius: 4,
             });
             series.setData(
               raw.map((c) => ({

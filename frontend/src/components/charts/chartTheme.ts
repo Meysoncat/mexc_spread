@@ -35,35 +35,75 @@ function tokenOr(name: string, fallback: string): string {
 }
 
 /**
+ * Same as tokenVar but with an alpha channel, e.g. `rgba(R G B / 0.35)`.
+ * Used for subtle grid/crosshair lines that shouldn't compete with the series.
+ */
+function tokenAlpha(name: string, alpha: number, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
+  if (!raw) return fallback;
+  return `rgba(${raw} / ${alpha})`;
+}
+
+/**
  * Build lightweight-charts `ChartOptions` from the active app theme tokens.
  * Background/text/grid/border follow `surface-elevated` / `ink` / `line`, so a
  * chart stays in sync with the light/dark toggle without per-instance config.
  */
 export function resolveChartOptions(): DeepPartial<ChartOptions> {
   const background = tokenOr("--surface-elevated", "#1e293b");
-  const text = tokenOr("--ink", "#e2e8f0");
-  const grid = tokenOr("--line", "#334155");
+  const text = tokenOr("--ink-muted", "#94a3b8");
+  const gridLine = tokenAlpha("--line", 0.35, "rgba(51, 65, 85, 0.35)");
+  const border = tokenAlpha("--line", 0.6, "rgba(51, 65, 85, 0.6)");
+  const crosshairLine = tokenAlpha("--ink-muted", 0.5, "rgba(148, 163, 184, 0.5)");
   return {
     layout: {
       background: { type: ColorType.Solid, color: background },
       textColor: text,
+      // Match the app's UI font; drop the TradingView attribution watermark.
+      fontFamily:
+        "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+      fontSize: 11,
+      attributionLogo: false,
     },
     grid: {
-      vertLines: { color: grid },
-      horzLines: { color: grid },
+      // Horizontal guides only — vertical lines add noise on a price chart.
+      vertLines: { visible: false },
+      horzLines: { color: gridLine, style: 0 },
     },
     rightPriceScale: {
-      borderColor: grid,
+      borderColor: border,
+      borderVisible: false,
       autoScale: true,
-      scaleMargins: { top: 0.12, bottom: 0.12 },
-      entireTextOnly: false,
+      scaleMargins: { top: 0.15, bottom: 0.15 },
+      entireTextOnly: true,
     },
     timeScale: {
-      borderColor: grid,
+      borderColor: border,
+      borderVisible: false,
       timeVisible: true,
       secondsVisible: false,
+      fixLeftEdge: true,
+      fixRightEdge: true,
     },
-    crosshair: { mode: 0 },
+    crosshair: {
+      // Magnet mode snaps the crosshair to series values — easier to read.
+      mode: 1,
+      vertLine: {
+        color: crosshairLine,
+        width: 1,
+        style: 3,
+        labelBackgroundColor: border,
+      },
+      horzLine: {
+        color: crosshairLine,
+        width: 1,
+        style: 3,
+        labelBackgroundColor: border,
+      },
+    },
   };
 }
 
