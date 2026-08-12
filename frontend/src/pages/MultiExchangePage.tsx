@@ -9,6 +9,7 @@ import {
   type MarketRow,
 } from "../types";
 import { WithdrawalFeeCalculator } from "../WithdrawalFeeCalculator";
+import { TableEmptyState } from "../components/ui/EmptyState";
 import { baseFromSymbol, humanizeError } from "../lib/symbol";
 
 /** Все биржи из переключателя (CEX + DEX). */
@@ -345,17 +346,31 @@ export function MultiExchangePage() {
                 onOpenHub={() => navigate(`/coin/${r.base}`)}
               />
             ))}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-ink-muted">
-                  {anyLoading
-                    ? "Загрузка…"
-                    : rows.length === 0
-                      ? "Нет пар, присутствующих минимум на двух из выбранных бирж — добавьте биржи выше или нажмите «Обновить»"
-                      : "Под фильтры не попала ни одна пара — ослабьте поиск или мин. кросс-спред"}
-                </td>
-              </tr>
-            )}
+            {filtered.length === 0 &&
+              (anyLoading ? (
+                <TableEmptyState
+                  colSpan={7}
+                  variant="loading"
+                  title="Загрузка…"
+                  description="Собираем котировки с выбранных бирж."
+                  compact
+                />
+              ) : rows.length === 0 ? (
+                <TableEmptyState
+                  colSpan={7}
+                  title="Нет общих пар"
+                  description="Ни одна пара не присутствует минимум на двух выбранных биржах. Добавьте биржи выше или нажмите «Обновить»."
+                  compact
+                />
+              ) : (
+                <TableEmptyState
+                  colSpan={7}
+                  variant="empty"
+                  title="Ничего не найдено"
+                  description="Под фильтры не попала ни одна пара — ослабьте поиск или мин. кросс-спред."
+                  compact
+                />
+              ))}
           </tbody>
         </table>
       </div>

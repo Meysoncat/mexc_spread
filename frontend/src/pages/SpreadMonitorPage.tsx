@@ -27,6 +27,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  SearchX,
   Star,
   HelpCircle,
   Sun,
@@ -76,6 +77,7 @@ import { ExchangeSwitcher, MULTI_MARKET_EXCHANGES } from "../ExchangeSwitcher";
 import { useVirtualRows } from "../useVirtualRows";
 import { useNavigationState } from "../hooks/useNavigationState";
 import { SkeletonTableRows, SkeletonCard } from "../components/ui/Skeleton";
+import { EmptyState } from "../components/ui/EmptyState";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -3444,26 +3446,28 @@ export function SpreadMonitorPage() {
               !error &&
               !isFetching &&
               (rows.length > 0 ? (
-                <div className="flex flex-col items-center gap-3 p-8 text-center">
-                  <p className="text-ink-muted">
-                    0 совпадений: под фильтры не попала ни одна пара из{" "}
-                    <span className="font-mono">{rows.length}</span> в снимке{" "}
-                    {EXCHANGE_LABELS[exchange]}.
-                  </p>
-                  {hasActiveFilters && (
-                    <button
-                      type="button"
-                      onClick={resetFilters}
-                      className="rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/20"
-                    >
-                      Сбросить фильтры
-                    </button>
-                  )}
-                </div>
+                <EmptyState
+                  variant="empty"
+                  icon={SearchX}
+                  title="0 совпадений"
+                  description={`Под фильтры не попала ни одна пара из ${rows.length} в снимке ${EXCHANGE_LABELS[exchange]}.`}
+                  action={
+                    hasActiveFilters ? (
+                      <button
+                        type="button"
+                        onClick={resetFilters}
+                        className="rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/20"
+                      >
+                        Сбросить фильтры
+                      </button>
+                    ) : undefined
+                  }
+                />
               ) : (
-                <p className="p-8 text-center text-ink-muted">
-                  Нет данных для {EXCHANGE_LABELS[exchange]}
-                </p>
+                <EmptyState
+                  title={`Нет данных для ${EXCHANGE_LABELS[exchange]}`}
+                  description="Снимок пуст или биржа сейчас недоступна. Попробуйте обновить позже."
+                />
               ))}
           </div>
         </div>
