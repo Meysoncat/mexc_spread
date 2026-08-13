@@ -75,6 +75,11 @@ class Settings:
     futures_rest_l1_qty_max_symbols: int = 500
     futures_rest_l1_qty_max_workers: int = 24
     futures_rest_l1_qty_depth_limit: int = 5
+    # Тайм-бюджет на depth-enrichment (с). Фон запросов (каждый ~2-3с на MEXC
+    # futures contract/depth) легко съедает минуту при max_symbols=500 и рвёт
+    # таймаут сборки снапшота. По превышении бюджет функция возвращает что успела
+    # — снапшот остаётся быстрым, depth-qty дозаполняется на следующем тике.
+    futures_rest_l1_qty_max_seconds: float = 6.0
 
     spot_symbols_whitelist: tuple[str, ...] = ()
     spot_symbols_blacklist: tuple[str, ...] = ()
@@ -687,6 +692,16 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
     except (TypeError, ValueError):
         futures_rest_l1_qty_depth_limit = d.futures_rest_l1_qty_depth_limit
     futures_rest_l1_qty_depth_limit = max(5, futures_rest_l1_qty_depth_limit)
+    try:
+        futures_rest_l1_qty_max_seconds = float(
+            mexc.get(
+                "futures_rest_l1_qty_max_seconds",
+                d.futures_rest_l1_qty_max_seconds,
+            ),
+        )
+    except (TypeError, ValueError):
+        futures_rest_l1_qty_max_seconds = d.futures_rest_l1_qty_max_seconds
+    futures_rest_l1_qty_max_seconds = max(1.0, futures_rest_l1_qty_max_seconds)
 
     fts_raw = str(mexc.get("futures_ticker_source", d.futures_ticker_source)).lower()
     if fts_raw in ("rest", "websocket"):
@@ -760,6 +775,7 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         futures_rest_l1_qty_max_symbols=futures_rest_l1_qty_max_symbols,
         futures_rest_l1_qty_max_workers=futures_rest_l1_qty_max_workers,
         futures_rest_l1_qty_depth_limit=futures_rest_l1_qty_depth_limit,
+        futures_rest_l1_qty_max_seconds=futures_rest_l1_qty_max_seconds,
         spot_symbols_whitelist=spot_wl,
         spot_symbols_blacklist=spot_bl,
         futures_symbols_whitelist=fut_wl,
@@ -924,6 +940,14 @@ def _apply_env_overrides(s: Settings) -> Settings:
             _int_env(
                 "MEXC_FUTURES_REST_L1_QTY_DEPTH_LIMIT",
                 s.futures_rest_l1_qty_depth_limit,
+            ),
+        )
+    if os.environ.get("MEXC_FUTURES_REST_L1_QTY_MAX_SECONDS") is not None:
+        kw["futures_rest_l1_qty_max_seconds"] = max(
+            1.0,
+            _float_env(
+                "MEXC_FUTURES_REST_L1_QTY_MAX_SECONDS",
+                s.futures_rest_l1_qty_max_seconds,
             ),
         )
     if os.environ.get("MEXC_HISTORY_ENABLED") is not None:

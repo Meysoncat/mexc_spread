@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -20,6 +21,11 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
 ) -> list[BookTickerRow]:
     """
     Дополняет bid_qty / ask_qty с лучшего уровня contract/depth (тикер часто без L1 qty).
+
+    Жёстко ограничена по времени ``settings.futures_rest_l1_qty_max_seconds``:
+    каждый contract/depth идёт ~2-3с, при max_symbols=500 фон запросов рвёт
+    таймаут сборки снапшота. По превышении бюджет функция возвращает что успела
+    — снапшот остаётся быстрым, depth-qty дозаполняется на следующем тике.
     """
     if not settings.futures_rest_l1_qty_enrich or not rows:
         return rows
@@ -45,6 +51,7 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
         1,
         min(int(settings.futures_rest_l1_qty_max_workers), len(uniq)),
     )
+    deadline = time.monotonic() + max(1.0, float(getattr(settings, "futures_rest_l1_qty_max_seconds", 6.0)))
     qty_by_symbol: dict[str, tuple[float, float] | None] = {}
 
     def _one(sym: str) -> tuple[str, tuple[float, float] | None]:
@@ -65,9 +72,19 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = [pool.submit(_one, s) for s in uniq]
-        for fut in as_completed(futs):
-            sym, pair = fut.result()
-            qty_by_symbol[sym] = pair
+        # Ждём только до deadline; невыполненные future отменяем и забываем.
+        try:
+            for fut in as_completed(futs, timeout=max(0.1, deadline - time.monotonic())):
+                sym, pair = fut.result()
+                qty_by_symbol[sym] = pair
+                if time.monotonic() >= deadline:
+                    break
+        except TimeoutError:
+            # Часть future не успела — это нормально, вернём что есть.
+            pass
+        finally:
+            for fut in futs:
+                fut.cancel()
 
     out: list[BookTickerRow] = []
     for r in rows:
@@ -78,3 +95,4 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
             bq, aq = pair
             out.append(replace(r, bid_qty=bq, ask_qty=aq))
     return out
+
