@@ -14,9 +14,12 @@
 FROM node:20-slim AS frontend
 WORKDIR /app/frontend
 
-# Install deps from the lockfile first for better layer caching.
+# Install deps. Try `npm ci` first (strict, fast, cacheable); if package-lock is
+# out of sync with package.json (e.g. transitive resolutions differ across npm
+# versions, like esbuild@0.21 vs 0.28), fall back to `npm install` which
+# regenerates the lock for this environment.
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN npm ci || npm install --no-audit --no-fund
 
 # Build the production bundle.
 COPY frontend/ ./
