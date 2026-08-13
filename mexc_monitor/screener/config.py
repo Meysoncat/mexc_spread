@@ -99,6 +99,9 @@ class ScreenerConfig:
     # the EV scorer uses this neutral factor in [0, 1] (0.5 = half credit, so an
     # unconfirmed wide-spread coin can still surface and get promoted to the WS).
     activity_unknown_factor: float = 0.5
+    # Real trades (REST trades poller) — the preferred activity signal when
+    # available (honest fill density). trades_per_min ≥ this → factor 1.0.
+    min_trades_per_min: float = 3.0
 
 
 DEFAULT_CONFIG = ScreenerConfig()

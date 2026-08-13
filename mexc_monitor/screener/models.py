@@ -31,6 +31,10 @@ class Candidate:
     spread_zscore: float | None  # per-symbol z-score of current spread
     # real-time activity (tier 1.5): bookTicker pushes/min, None if not subscribed
     book_update_rate_per_min: float | None = None
+    # real-time trades (REST trades poller → trade_buffer): None if not polled.
+    trades_per_min: float | None = None
+    buy_sell_ratio: float | None = None  # buy_quote / sell_quote (>1 = buy pressure)
+    trade_volume_quote_60s: float | None = None  # USDT turnover in the stats window
     # filled by scorer
     score: float = 0.0
     score_breakdown: dict[str, float] | None = None
@@ -53,6 +57,9 @@ class ScreenerOpportunity:
     spread_std: float | None
     spread_zscore: float | None
     book_update_rate_per_min: float | None
+    trades_per_min: float | None
+    buy_sell_ratio: float | None
+    trade_volume_quote_60s: float | None
     tick_age_ms: float
     score: float
     score_breakdown: dict[str, float]
@@ -74,6 +81,9 @@ def candidate_to_opportunity(c: Candidate) -> ScreenerOpportunity:
         spread_std=c.spread_std,
         spread_zscore=c.spread_zscore,
         book_update_rate_per_min=c.book_update_rate_per_min,
+        trades_per_min=c.trades_per_min,
+        buy_sell_ratio=c.buy_sell_ratio,
+        trade_volume_quote_60s=c.trade_volume_quote_60s,
         tick_age_ms=c.tick_age_ms,
         score=c.score,
         score_breakdown=c.score_breakdown or {},
@@ -101,6 +111,17 @@ def opportunity_to_dict(o: ScreenerOpportunity) -> dict:
         "book_update_rate_per_min": (
             round(o.book_update_rate_per_min, 1)
             if o.book_update_rate_per_min is not None
+            else None
+        ),
+        "trades_per_min": (
+            round(o.trades_per_min, 1) if o.trades_per_min is not None else None
+        ),
+        "buy_sell_ratio": (
+            round(o.buy_sell_ratio, 2) if o.buy_sell_ratio is not None else None
+        ),
+        "trade_volume_quote_60s": (
+            round(o.trade_volume_quote_60s, 2)
+            if o.trade_volume_quote_60s is not None
             else None
         ),
         "tick_age_ms": round(o.tick_age_ms, 0),

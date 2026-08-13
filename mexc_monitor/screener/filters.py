@@ -105,16 +105,28 @@ def passes_gates(
     return (len(reasons) == 0, reasons)
 
 
-def _activity_factor(c: Candidate, cfg: ScreenerConfig) -> float:
-    """Real-time activity factor in [0, 1] from bookTicker update rate.
+def _activity_factor(c: Candidate, cfg: ScreenerConfig) -> tuple[float, str]:
+    """Real-time activity factor in [0, 1] + the source it came from.
 
-    None (symbol not subscribed) → ``activity_unknown_factor`` (neutral), so an
-    unconfirmed wide-spread coin can still surface and get promoted to the WS.
+    Preference order (first available wins):
+      1. **trades_per_min** — honest fill density from the REST trades poller
+         (the strongest signal: actual trades, not quote churn).
+      2. **book_update_rate_per_min** — bookTicker push rate (quote activity;
+         used when trades aren't polled for the symbol yet).
+      3. **unknown** → ``activity_unknown_factor`` (neutral, so an unconfirmed
+         wide-spread coin can still surface and get promoted to the feeds).
+    Returns (factor, source) so the scorer can expose *why* in the breakdown.
     """
-    if c.book_update_rate_per_min is None:
-        return cfg.activity_unknown_factor
-    floor = max(cfg.min_book_update_rate_per_min, 1e-6)
-    return min(max(c.book_update_rate_per_min / floor, 0.0), 1.0)
+    # 1) trades density
+    if c.trades_per_min is not None:
+        floor = max(cfg.min_trades_per_min, 1e-6)
+        return min(max(c.trades_per_min / floor, 0.0), 1.0), "trades"
+    # 2) bookTicker rate
+    if c.book_update_rate_per_min is not None:
+        floor = max(cfg.min_book_update_rate_per_min, 1e-6)
+        return min(max(c.book_update_rate_per_min / floor, 0.0), 1.0), "book"
+    # 3) unknown
+    return cfg.activity_unknown_factor, "unknown"
 
 
 def score_candidate(
@@ -124,12 +136,12 @@ def score_candidate(
     so the UI can show *why* a coin ranks where it does."""
     net = c.net_spread_bps if c.net_spread_bps is not None else 0.0
     z = c.spread_zscore if c.spread_zscore is not None else 0.0
-    activity = _activity_factor(c, cfg)
+    activity, activity_source = _activity_factor(c, cfg)
 
     spread_eff = min(max(net, 0.0), cfg.spread_cap_bps)
     # EV — the realizable $-edge/time proxy: net spread discounted by how active
-    # the book is right now. This is the dominant term (a wide-but-dead spread
-    # scores low because activity_factor ≈ 0).
+    # the market is right now (trades density preferred over quote churn). This
+    # is the dominant term (a wide-but-dead spread scores low: activity_factor≈0).
     ev_term = cfg.w_ev * spread_eff * activity
     # Raw spread magnitude (opt-in; superseded by EV — default weight 0).
     spread_term = cfg.w_spread * spread_eff
@@ -154,6 +166,7 @@ def score_candidate(
         "staleness": stale_term,
         "zscore": z_term,
         "volume24h": vol24_term,
+        "activity_factor": round(activity, 3),
     }
     score = (
         ev_term

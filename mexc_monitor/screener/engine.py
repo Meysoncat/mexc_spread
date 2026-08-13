@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mexc_monitor.pipeline import safe_load_snapshot
+from mexc_monitor import trade_buffer
 from mexc_monitor.ws_spot_orderbook import (
     get_book_update_rate,
     reconcile_spot_orderbook_ws,
@@ -390,6 +391,14 @@ class ScreenerEngine:
                 book_rate = get_book_update_rate(sym)
             except Exception:
                 book_rate = None
+            # Real-time trades (REST trades poller → trade_buffer). None if not polled.
+            try:
+                tstat = trade_buffer.get_stats(sym)
+            except Exception:
+                tstat = None
+            trades_per_min = tstat.trades_per_min if tstat else None
+            buy_sell_ratio = tstat.buy_sell_ratio if tstat else None
+            trade_vol_60 = tstat.volume_quote if tstat else None
 
             c = Candidate(
                 symbol=sym,
@@ -407,6 +416,9 @@ class ScreenerEngine:
                 spread_std=spread_std,
                 spread_zscore=zscore,
                 book_update_rate_per_min=book_rate,
+                trades_per_min=trades_per_min,
+                buy_sell_ratio=buy_sell_ratio,
+                trade_volume_quote_60s=trade_vol_60,
             )
             candidates.append(c)
             if net is not None:

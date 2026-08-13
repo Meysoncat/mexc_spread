@@ -242,6 +242,7 @@ def test_score_breakdown_has_all_terms():
         "staleness",
         "zscore",
         "volume24h",
+        "activity_factor",
     }
     assert breakdown["volatility"] <= 0
     assert breakdown["staleness"] <= 0
@@ -307,6 +308,25 @@ def test_active_wide_spread_beats_dead_wide_spread():
     dead = _candidate(net_spread_bps=80.0, book_update_rate_per_min=2.0)
     cfg = _cfg(w_ev=1.0, min_book_update_rate_per_min=60.0)
     assert score_candidate(active, cfg)[0] > score_candidate(dead, cfg)[0]
+
+
+def test_trades_activity_preferred_over_book_rate():
+    # Real trades density should drive EV (preferred source), and a coin with
+    # trades should beat one relying on bookTicker-only at the same spread.
+    with_trades = _candidate(net_spread_bps=80.0, trades_per_min=6.0)
+    book_only = _candidate(net_spread_bps=80.0, book_update_rate_per_min=60.0)
+    cfg = _cfg(w_ev=1.0, min_trades_per_min=3.0, min_book_update_rate_per_min=60.0)
+    assert score_candidate(with_trades, cfg)[0] >= score_candidate(book_only, cfg)[0]
+    # activity_factor saturates at 1.0 for both (trades 6/3=2→1.0, book 60/60=1.0)
+    assert score_candidate(with_trades, cfg)[1]["activity_factor"] == 1.0
+
+
+def test_dead_trades_sink_ev():
+    # Wide spread but (nearly) no trades → low EV even though spread is big.
+    hot = _candidate(net_spread_bps=80.0, trades_per_min=10.0)
+    dead = _candidate(net_spread_bps=80.0, trades_per_min=0.1)
+    cfg = _cfg(w_ev=1.0, min_trades_per_min=3.0)
+    assert score_candidate(hot, cfg)[0] > score_candidate(dead, cfg)[0]
 
 
 def test_unknown_activity_uses_neutral_factor():
