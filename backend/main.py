@@ -47,6 +47,7 @@ from mexc_monitor.ws_l2_depth import (
 from mexc_monitor.ws_spot_orderbook import ensure_spot_orderbook_ws_started, stop_spot_orderbook_ws
 from mexc_monitor.ws_spot_deals import ensure_spot_deals_ws_started, stop_spot_deals_ws
 from mexc_monitor.http_utils import effective_http_proxy, set_runtime_http_proxy
+from mexc_monitor.rest_trades_poller import RestTradesPoller
 from mexc_monitor.http_shared import reset_clients, set_proxy_resolver
 from mexc_monitor.proxy_registry import REGISTRY, KNOWN_EXCHANGES, ProxyValidationError
 
@@ -88,6 +89,8 @@ from mexc_monitor.metascalp.signal_worker import SignalWorker
 _metascalp_client = MetaScalpClient()
 _metascalp_cache = MetaScalpCache(default_ttl_sec=10.0)
 _metascalp_poller = MetaScalpPoller(cache=_metascalp_cache, client=_metascalp_client, interval_sec=5.0)
+# REST trades poller → trade_buffer (working trade-feed; spot deals WS is blocked).
+_rest_trades_poller = RestTradesPoller(DEFAULT_SETTINGS)
 # ParticipantDetector — shared между WS bridge (принимает trades) и SignalWorker (читает сигналы)
 _metascalp_participant_detector = ParticipantDetector()
 _metascalp_ws_bridge = MetaScalpWSBridge(
@@ -257,7 +260,8 @@ _screener_engine = ScreenerEngine(
         resolve_history_db_path(DEFAULT_SETTINGS)
         if DEFAULT_SETTINGS.history_enabled
         else None
-    )
+    ),
+    rest_trades_poller=_rest_trades_poller,
 )
 
 
@@ -300,6 +304,8 @@ def _startup_prefetch_futures_ws() -> None:
     start_history_worker()
     _portfolio_risk.start()
     _screener_engine.start()
+    if DEFAULT_SETTINGS.rest_trades_poller_enabled:
+        _rest_trades_poller.start()
     _metascalp_poller.start()
     _metascalp_ws_bridge.start()
     _metascalp_auto_trader.start()
@@ -334,6 +340,7 @@ def _shutdown_workers() -> None:
     stop_l2_depth_ws()
     stop_spot_orderbook_ws()
     stop_spot_deals_ws()
+    _rest_trades_poller.stop()
     _metascalp_poller.stop()
     _metascalp_ws_bridge.stop()
     _metascalp_auto_trader.stop()
@@ -2676,6 +2683,12 @@ def spread_tracked_symbols() -> dict:
 
 
 # ─── Trade stats (spot deals WS → trade_buffer) ──────────────────────────────
+
+
+@app.get("/api/rest-trades/status")
+def rest_trades_status() -> dict:
+    """REST trades poller status + trade_buffer coverage."""
+    return {"ok": True, "status": _rest_trades_poller.status()}
 
 
 @app.get("/api/trades/symbols")

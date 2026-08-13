@@ -131,6 +131,48 @@ def fetch_24hr_volume_map(
         return _do_parse(c)
 
 
+def fetch_recent_trades(
+    symbol: str,
+    settings: Settings | None = None,
+    *,
+    limit: int = 500,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer | None = None,
+) -> list[dict[str, Any]]:
+    """
+    GET /api/v3/trades?symbol=<SYMBOL>&limit=<N> → recent trades list.
+
+    Each item: ``{price, qty, quoteQty, time, isBuyerMaker, tradeType, ...}``.
+    Respects the per-exchange proxy via :func:`mexc_httpx_client`. ``limit`` is
+    clamped to [1, 1000]. Reuse a shared ``client``/``pacer`` when polling many
+    symbols in one session.
+    """
+    cfg = settings or DEFAULT_SETTINGS
+    url = cfg.trades_url
+    lim = max(1, min(int(limit), 1000))
+    p = pacer if pacer is not None else RequestPacer(cfg.http_min_request_interval_sec)
+    params = {"symbol": str(symbol).strip().upper(), "limit": lim}
+
+    def _do(c: httpx.Client) -> list[dict[str, Any]]:
+        r = get_with_retry(c, cfg, url, pacer=p, params=params)
+        r.raise_for_status()
+        try:
+            data = r.json()
+        except json.JSONDecodeError as e:
+            raise MexcApiError("Invalid JSON from trades") from e
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            return [x for x in data["data"] if isinstance(x, dict)]
+        return []
+
+    if client is not None:
+        return _do(client)
+
+    with mexc_httpx_client(cfg) as c:
+        return _do(c)
+
+
 def fetch_merged_snapshot_rows(
     settings: Settings | None = None,
     *,

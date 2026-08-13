@@ -22,6 +22,7 @@ class Settings:
     ticker_24hr_path: str = "/api/v3/ticker/24hr"
     spot_klines_path: str = "/api/v3/klines"
     spot_depth_path: str = "/api/v3/depth"
+    trades_path: str = "/api/v3/trades"  # recent trades (REST) — feeds trade_buffer
     # MEXC futures REST uses api.mexc.com (update-log 2026-01-19).
     futures_base_url: str = "https://api.mexc.com"
     contract_ticker_path: str = "/api/v1/contract/ticker"
@@ -52,6 +53,13 @@ class Settings:
     # Spot deals (trades) WS — feeds trade_buffer (density, imbalance, VWAP).
     spot_deals_ws_enabled: bool = False
     spot_deals_ws_symbols: tuple[str, ...] = ()
+
+    # REST trades poller — polls /api/v3/trades per symbol (the working trade
+    # source: spot deals WS is server-side blocked; this works through the proxy).
+    rest_trades_poller_enabled: bool = False
+    rest_trades_poller_interval_sec: float = 5.0
+    rest_trades_poller_limit: int = 500
+    rest_trades_poller_max_symbols: int = 30
 
     futures_ws_url: str = "wss://contract.mexc.com/edge"
     futures_ticker_source: FuturesTickerSource = "rest"
@@ -97,6 +105,10 @@ class Settings:
     @property
     def spot_depth_url(self) -> str:
         return f"{self.base_url.rstrip('/')}{self.spot_depth_path}"
+
+    @property
+    def trades_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}{self.trades_path}"
 
     @property
     def spot_ws_url_resolved(self) -> str:
@@ -596,6 +608,35 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         for x in _parse_str_tuple(mexc.get("spot_deals_ws_symbols"))
     )
 
+    # REST trades poller
+    rest_trades_poller_enabled = bool(
+        mexc.get("rest_trades_poller_enabled", d.rest_trades_poller_enabled),
+    )
+    try:
+        rest_trades_poller_interval_sec = float(
+            mexc.get(
+                "rest_trades_poller_interval_sec", d.rest_trades_poller_interval_sec
+            ),
+        )
+    except (TypeError, ValueError):
+        rest_trades_poller_interval_sec = d.rest_trades_poller_interval_sec
+    try:
+        rest_trades_poller_limit = int(
+            mexc.get("rest_trades_poller_limit", d.rest_trades_poller_limit)
+        )
+    except (TypeError, ValueError):
+        rest_trades_poller_limit = d.rest_trades_poller_limit
+    try:
+        rest_trades_poller_max_symbols = int(
+            mexc.get(
+                "rest_trades_poller_max_symbols", d.rest_trades_poller_max_symbols
+            )
+        )
+    except (TypeError, ValueError):
+        rest_trades_poller_max_symbols = d.rest_trades_poller_max_symbols
+    rest_trades_poller_limit = max(1, min(rest_trades_poller_limit, 1000))
+    rest_trades_poller_max_symbols = max(0, rest_trades_poller_max_symbols)
+
     futures_orderbook_ws_enabled = bool(
         mexc.get("futures_orderbook_ws_enabled", d.futures_orderbook_ws_enabled),
     )
@@ -672,6 +713,7 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         ticker_24hr_path=str(spot.get("ticker_24hr_path", d.ticker_24hr_path)),
         spot_klines_path=str(spot.get("klines_path", d.spot_klines_path)),
         spot_depth_path=str(spot.get("depth_path", d.spot_depth_path)),
+        trades_path=str(spot.get("trades_path", d.trades_path)),
         futures_base_url=str(fut.get("base_url", d.futures_base_url)),
         contract_ticker_path=str(
             fut.get("contract_ticker_path", d.contract_ticker_path),
@@ -702,6 +744,10 @@ def _settings_from_json_dict(raw: dict[str, Any]) -> Settings | None:
         spot_orderbook_ws_stale_after_sec=max(0.5, spot_orderbook_ws_stale_after_sec),
         spot_deals_ws_enabled=spot_deals_ws_enabled,
         spot_deals_ws_symbols=sd_syms,
+        rest_trades_poller_enabled=rest_trades_poller_enabled,
+        rest_trades_poller_interval_sec=max(1.0, rest_trades_poller_interval_sec),
+        rest_trades_poller_limit=rest_trades_poller_limit,
+        rest_trades_poller_max_symbols=rest_trades_poller_max_symbols,
         futures_ws_stale_after_sec=max(2.0, futures_ws_stale_after_sec),
         futures_ws_bootstrap_wait_sec=futures_ws_bootstrap_wait_sec,
         futures_orderbook_ws_enabled=futures_orderbook_ws_enabled,
@@ -803,6 +849,33 @@ def _apply_env_overrides(s: Settings) -> Settings:
     ct_deals = _comma_tuple_from_env("MEXC_SPOT_DEALS_WS_SYMBOLS")
     if ct_deals is not None:
         kw["spot_deals_ws_symbols"] = tuple(_norm_spot_symbol(x) for x in ct_deals)
+
+    # REST trades poller
+    if os.environ.get("MEXC_REST_TRADES_POLLER_ENABLED") is not None:
+        kw["rest_trades_poller_enabled"] = _bool_env(
+            "MEXC_REST_TRADES_POLLER_ENABLED",
+            s.rest_trades_poller_enabled,
+        )
+    if os.environ.get("MEXC_REST_TRADES_POLLER_INTERVAL_SEC") is not None:
+        kw["rest_trades_poller_interval_sec"] = max(
+            1.0,
+            _float_env(
+                "MEXC_REST_TRADES_POLLER_INTERVAL_SEC",
+                s.rest_trades_poller_interval_sec,
+            ),
+        )
+    if os.environ.get("MEXC_REST_TRADES_POLLER_LIMIT") is not None:
+        kw["rest_trades_poller_limit"] = max(
+            1, min(_int_env("MEXC_REST_TRADES_POLLER_LIMIT", s.rest_trades_poller_limit), 1000)
+        )
+    if os.environ.get("MEXC_REST_TRADES_POLLER_MAX_SYMBOLS") is not None:
+        kw["rest_trades_poller_max_symbols"] = max(
+            0, _int_env("MEXC_REST_TRADES_POLLER_MAX_SYMBOLS", s.rest_trades_poller_max_symbols)
+        )
+    if os.environ.get("MEXC_TRADES_PATH") is not None:
+        p = os.environ["MEXC_TRADES_PATH"].strip()
+        if p:
+            kw["trades_path"] = p
     if os.environ.get("MEXC_FUTURES_ORDERBOOK_WS_ENABLED") is not None:
         kw["futures_orderbook_ws_enabled"] = _bool_env(
             "MEXC_FUTURES_ORDERBOOK_WS_ENABLED",

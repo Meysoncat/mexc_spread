@@ -135,11 +135,13 @@ class ScreenerEngine:
         config: ScreenerConfig | None = None,
         *,
         history_db_path: "Path | None" = None,
+        rest_trades_poller: "RestTradesPoller | None" = None,
     ) -> None:
         self._cfg = config or load_screener_config()
         self._cfg_lock = threading.Lock()
         self._state = ScreenerState(self._cfg.rolling_window)
         self._history_db_path = history_db_path
+        self._rest_trades_poller = rest_trades_poller
         self._prev_opp_symbols: set[str] = set()
         self._opps: list[dict] = []
         self._scanned_at_iso: str | None = None
@@ -444,6 +446,14 @@ class ScreenerEngine:
             touch_watchlist([c.symbol for _, c in top])
         except Exception:
             logger.debug("Screener: bookTicker watchlist reconcile skipped", exc_info=True)
+
+        # Feed the same shortlist to the REST trades poller (→ trade_buffer:
+        # buy/sell imbalance, trades/min, VWAP).
+        if self._rest_trades_poller is not None:
+            try:
+                self._rest_trades_poller.set_watch_symbols([c.symbol for _, c in top])
+            except Exception:
+                logger.debug("Screener: rest-trades watch set skipped", exc_info=True)
 
         from mexc_monitor.screener.models import opportunity_to_dict
 
