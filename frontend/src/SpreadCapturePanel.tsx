@@ -127,6 +127,27 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
     }
   }, [settings?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Объявлено до эффекта ниже, который вызывает updateSetting: иначе обращение
+  // к переменной раньше её инициализации (no-use-before-define).
+  const updateSetting = async (patch: Record<string, any>) => {
+    try {
+      const r = await apiFetch("/api/capture/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.ok) {
+          setSettings(data.settings);
+          setPosition(data.position);
+          setStats(data.stats);
+          setRunning(data.running);
+        }
+      }
+    } catch { /* ignore */ }
+  };
+
   // Глобальный символ → settings.symbol (PATCH на бэкенд).
   useEffect(() => {
     if (!settings) return;
@@ -202,25 +223,6 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, pageMode]);
 
-  const updateSetting = async (patch: Record<string, any>) => {
-    try {
-      const r = await apiFetch("/api/capture/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      if (r.ok) {
-        const data = await r.json();
-        if (data.ok) {
-          setSettings(data.settings);
-          setPosition(data.position);
-          setStats(data.stats);
-          setRunning(data.running);
-        }
-      }
-    } catch { /* ignore */ }
-  };
-
   const doStart = async () => {
     await apiFetch("/api/capture/start", {
       method: "POST",
@@ -251,9 +253,11 @@ export function SpreadCapturePanel({ open = true, onClose, pageMode = false }: {
     fetchTrades();
   };
 
-  if (!open && !pageMode) return null;
-
+  // Хук обязан вызываться до любого раннего return, иначе при закрытии панели
+  // меняется порядок хуков (react-hooks/rules-of-hooks).
   const captureCap = useEngineCapabilities("capture");
+
+  if (!open && !pageMode) return null;
 
   const content = (
     <>
