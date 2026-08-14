@@ -2,12 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 
 from mexc_monitor.orm.base import Base
 
 _engines: dict[str, Engine] = {}
+
+# Ждём освобождения блокировки до 5 с вместо мгновенного "database is locked":
+# писателей много (history worker, скринер, capture-движок, WS-воркеры), а
+# SQLite пускает одного за раз.
+_BUSY_TIMEOUT_MS = 5000
+
+
+def _apply_sqlite_pragmas(dbapi_conn, _record) -> None:
+    """WAL + busy_timeout для каждого нового соединения.
+
+    В WAL читатели не блокируются на писателе — при десятках фоновых потоков
+    это единственный режим, в котором SQLite ведёт себя предсказуемо.
+    Ставим на connect: journal_mode персистентен, а busy_timeout — нет.
+    """
+    cur = dbapi_conn.cursor()
+    try:
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    finally:
+        cur.close()
 
 
 def _migrate_spread_snapshots_columns(engine: Engine) -> None:
@@ -37,11 +58,13 @@ def get_engine(path: Path) -> Engine:
     key = str(path.resolve())
     if key not in _engines:
         url = f"sqlite:///{path.resolve().as_posix()}"
-        _engines[key] = create_engine(
+        engine = create_engine(
             url,
             echo=False,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": _BUSY_TIMEOUT_MS / 1000},
         )
+        event.listen(engine, "connect", _apply_sqlite_pragmas)
+        _engines[key] = engine
     return _engines[key]
 
 

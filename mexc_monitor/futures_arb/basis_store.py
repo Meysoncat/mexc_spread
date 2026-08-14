@@ -98,7 +98,11 @@ class BasisHistoryStore:
     def _init_db(self) -> None:
         """Initialize the SQLite database and create table if needed."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=5.0)
+        # WAL + busy_timeout: соединение живёт в фоновом потоке параллельно с
+        # другими писателями, без этого получаем "database is locked".
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(_CREATE_INDEX_SQL)
         conn.commit()

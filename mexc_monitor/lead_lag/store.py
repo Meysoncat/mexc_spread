@@ -172,8 +172,9 @@ class LeadLagStore:
         """Initialize the SQLite database and create table/indexes."""
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=5.0)
             conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
             conn.execute(_CREATE_TABLE_SQL)
             conn.execute(_CREATE_INDEX_STATUS_SQL)
             conn.execute(_CREATE_INDEX_SYMBOL_SQL)
@@ -436,8 +437,9 @@ class LeadLagStore:
             if self._conn is None:
                 try:
                     self._db_path.parent.mkdir(parents=True, exist_ok=True)
-                    conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+                    conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=5.0)
                     conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute("PRAGMA busy_timeout=5000;")
                     conn.execute(_CREATE_TABLE_SQL)
                     conn.execute(_CREATE_INDEX_STATUS_SQL)
                     conn.execute(_CREATE_INDEX_SYMBOL_SQL)
