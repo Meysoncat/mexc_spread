@@ -88,7 +88,9 @@ export MEXC_HTTP_PROXY_MEXC="socks5h://127.0.0.1:10808"
 python scripts/xray_bridge.py --test
 
 # через API приложения (после того как прописали прокси бирже)
-curl "http://127.0.0.1:8006/api/network/test?exchange=binance"
+# /api/network/* — admin only, ответ содержит прокси-URL
+curl -H "X-Admin-Token: $ADMIN_TOKEN" \
+  "http://127.0.0.1:8006/api/network/test?exchange=binance"
 # → {"reachable": true, "status": 200, "proxy": "socks5h://127.0.0.1:10808", ...}
 
 # реальный путь данных — снапшот должен ожить и вернуть source, а не пустоту

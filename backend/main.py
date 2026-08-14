@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -15,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.gzip import GZipMiddleware
 
 from mexc_monitor.client import MexcApiError
@@ -524,6 +526,40 @@ def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> No
         raise HTTPException(status_code=401, detail="invalid admin token")
 
 
+# Заголовки, которые ставят reverse-proxy (nginx/traefik/cloudflare). Если хоть
+# один присутствует — запрос пришёл НЕ напрямую с этой машины, даже если
+# request.client.host выглядит как 127.0.0.1 (nginx → 127.0.0.1:8006).
+_FORWARDED_HEADERS = (
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+)
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1"})
+
+
+def _local_bootstrap_allowed(request: Request) -> bool:
+    """True, если токен можно отдать этому запросу.
+
+    Три условия одновременно:
+      1. Bootstrap не выключен через ``ADMIN_TOKEN_LOCAL_BOOTSTRAP=0`` (прод).
+      2. Клиент — петля (uvicorn видит 127.0.0.1/::1).
+      3. В запросе нет forwarded-заголовков, т.е. это не прокинутый снаружи
+         запрос. Без этой проверки схема «nginx на том же хосте → 127.0.0.1»
+         отдаёт админ-токен любому внешнему клиенту.
+    """
+    flag = str(os.environ.get("ADMIN_TOKEN_LOCAL_BOOTSTRAP", "1")).strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    client_host = request.client.host if request.client else ""
+    if client_host not in _LOOPBACK_HOSTS:
+        return False
+    return not any(h in request.headers for h in _FORWARDED_HEADERS)
+
+
 def _build_snapshot_payload(market: str) -> dict:
     df, err = safe_load_snapshot(market=market)
     if err:
@@ -983,12 +1019,24 @@ def slippage_estimate(
 @app.get("/api/admin-token")
 def get_admin_token(request: Request) -> dict:
     """
-    Отдать ADMIN_TOKEN фронтенду.
-    Разрешено только для localhost, чтобы токен не утек вовне.
+    Отдать ADMIN_TOKEN фронтенду — только для локального dev-запуска.
+
+    Проверка «client.host == 127.0.0.1» сама по себе НЕ защищает: при
+    reverse-proxy на том же хосте (nginx → 127.0.0.1:8006) любой внешний
+    запрос выглядит как локальный и получал бы полный доступ к торговому API.
+    Поэтому дополнительно требуем отсутствие forwarded-заголовков и даём
+    операторам жёсткий выключатель ADMIN_TOKEN_LOCAL_BOOTSTRAP=0.
+
+    В проде токен вводится вручную (Trading Admin → поле X-Admin-Token).
     """
-    client_host = request.client.host if request.client else ""
-    if client_host not in ("127.0.0.1", "localhost", "::1"):
-        raise HTTPException(status_code=403, detail="Forbidden: Localhost only")
+    if not _local_bootstrap_allowed(request):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "admin token bootstrap disabled: paste ADMIN_TOKEN manually "
+                "(Trading Admin → X-Admin-Token)"
+            ),
+        )
     return {"ok": True, "token": _ADMIN_TOKEN}
 
 
@@ -1948,6 +1996,7 @@ def density_watcher_status() -> dict:
 @app.post("/api/density/watcher/start")
 def density_watcher_start(
     symbols: str = Query("BTCUSDT,ETHUSDT", description="Символы через запятую"),
+    _: None = Depends(_require_admin_token),
 ) -> dict:
     """Запустить DensityWatcher с указанными символами."""
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
@@ -1957,7 +2006,7 @@ def density_watcher_start(
 
 
 @app.post("/api/density/watcher/stop")
-def density_watcher_stop() -> dict:
+def density_watcher_stop(_: None = Depends(_require_admin_token)) -> dict:
     """Остановить DensityWatcher."""
     _density_watcher.stop()
     return {"ok": True, "message": "DensityWatcher stopped"}
@@ -1978,8 +2027,8 @@ def _load_ai_config() -> dict:
 
 
 @app.post("/api/ai/chat")
-async def ai_chat(request: Request) -> dict:
-    """AI Trading Agent chat endpoint."""
+async def ai_chat(request: Request, _: None = Depends(_require_admin_token)) -> dict:
+    """AI Trading Agent chat endpoint (admin only — тратит внешнюю LLM-квоту)."""
     try:
         body = await request.json()
     except Exception:
@@ -2298,7 +2347,7 @@ def snapshot_multi(
 
 
 @app.get("/api/snapshot/stream")
-def snapshot_stream(
+async def snapshot_stream(
     request: Request,
     market: str = Query("spot", description="spot, futures или cross"),
     exchange: str = Query("mexc"),
@@ -2308,6 +2357,11 @@ def snapshot_stream(
 
     Заменяет поллинг с фронта: бэкенд сам проверяет кэш (который греется
     WS-фидами и префетчем) и пушит payload при смене loaded_at.
+
+    Генератор асинхронный: ожидание — через ``asyncio.sleep``, а блокирующая
+    сборка снимка уходит в threadpool. Синхронный вариант держал бы поток из
+    пула anyio (по умолчанию 40) на всё время жизни соединения, и десяток
+    открытых вкладок вешал бы весь API.
     """
     ex = (exchange or "").strip().lower()
     if ex not in _SUPPORTED_EXCHANGES:
@@ -2330,17 +2384,22 @@ def snapshot_stream(
         builder = lambda: _build_exchange_snapshot_payload(ex, m)  # noqa: E731
     ttl = _snapshot_ttl_for(ex)
 
-    def event_generator():
+    def _next_payload() -> dict:
+        _mark_snapshot_hot(cache_key, builder, ttl)
+        try:
+            return _get_snapshot_payload(
+                cache_key, bypass_cache=False, builder=builder, ttl=ttl
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    async def event_generator():
         last_sent = ""
         last_keepalive = time.monotonic()
         while True:
-            _mark_snapshot_hot(cache_key, builder, ttl)
-            try:
-                out = _get_snapshot_payload(
-                    cache_key, bypass_cache=False, builder=builder, ttl=ttl
-                )
-            except Exception as e:  # noqa: BLE001
-                out = {"ok": False, "error": str(e)}
+            if await request.is_disconnected():
+                break
+            out = await run_in_threadpool(_next_payload)
             marker = f"{out.get('loaded_at')}:{out.get('count')}:{out.get('ok')}"
             if marker != last_sent:
                 last_sent = marker
@@ -2349,7 +2408,7 @@ def snapshot_stream(
             elif time.monotonic() - last_keepalive > 15.0:
                 last_keepalive = time.monotonic()
                 yield ": keepalive\n\n"
-            time.sleep(interval_sec)
+            await asyncio.sleep(interval_sec)
 
     return StreamingResponse(
         event_generator(),
@@ -2798,14 +2857,14 @@ def spread_stats(
 
 
 @app.get("/api/spread/stream")
-def spread_stream(
+async def spread_stream(
+    request: Request,
     symbol: str = Query(..., min_length=2, max_length=40),
 ) -> StreamingResponse:
     """
     SSE (Server-Sent Events) поток обновлений спреда в реальном времени.
     Клиент подключается и получает с��бытия при каждом изменении bid/ask.
     """
-    import asyncio
     import queue
 
     sym = symbol.strip().upper()
@@ -2827,7 +2886,8 @@ def spread_stream(
 
     sb_subscribe(sym, on_tick)
 
-    def event_generator():
+    async def event_generator():
+        last_event = time.monotonic()
         try:
             # Отправляем последний известный тик сразу
             latest = sb_get_latest(sym)
@@ -2835,14 +2895,21 @@ def spread_stream(
                 data = json.dumps(_tick_to_dict(latest))
                 yield f"data: {data}\n\n"
             while True:
+                if await request.is_disconnected():
+                    break
                 try:
-                    tick = q.get(timeout=15.0)
+                    tick = q.get_nowait()
                 except queue.Empty:
-                    # Keepalive
-                    yield ": keepalive\n\n"
+                    # Пустая очередь: keepalive раз в 15 с, ожидание — на event loop,
+                    # без блокировки потока из пула anyio.
+                    if time.monotonic() - last_event > 15.0:
+                        last_event = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.05)
                     continue
                 if tick is None:
                     break
+                last_event = time.monotonic()
                 data = json.dumps(_tick_to_dict(tick))
                 yield f"data: {data}\n\n"
         finally:
@@ -2880,13 +2947,19 @@ def screener_opportunities(
 
 
 @app.get("/api/screener/stream")
-def screener_stream() -> StreamingResponse:
-    """SSE: push the ranked opportunities on every scan."""
+def screener_stream(request: Request) -> StreamingResponse:
+    """SSE: push the ranked opportunities on every scan.
+
+    Очередь наполняется из потока сканера, поэтому читаем её неблокирующе:
+    ``q.get(timeout=...)`` внутри async-генератора вешал бы event loop
+    целиком (до 15 с на каждое соединение).
+    """
     import queue as _queue
 
     q = _screener_engine.subscribe()
 
     async def event_generator():
+        last_event = time.monotonic()
         try:
             # Initial snapshot so the client doesn't wait for the next scan.
             status = _screener_engine.get_status()
@@ -2904,11 +2977,18 @@ def screener_stream() -> StreamingResponse:
             )
 
             while True:
+                if await request.is_disconnected():
+                    break
                 try:
-                    payload = q.get(timeout=15.0)
-                    yield "data: " + json.dumps(payload) + "\n\n"
+                    payload = q.get_nowait()
                 except _queue.Empty:
-                    yield ": keepalive\n\n"
+                    if time.monotonic() - last_event > 15.0:
+                        last_event = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.25)
+                    continue
+                last_event = time.monotonic()
+                yield "data: " + json.dumps(payload) + "\n\n"
         finally:
             _screener_engine.unsubscribe(q)
 
@@ -2968,14 +3048,21 @@ def _network_state() -> dict:
 
 
 @app.get("/api/network/config")
-def network_config_get() -> dict:
-    """Current exchange-proxy settings (default + per-exchange overrides)."""
+def network_config_get(_: None = Depends(_require_admin_token)) -> dict:
+    """Current exchange-proxy settings (default + per-exchange overrides).
+
+    Admin only: ответ содержит сами прокси-URL, а они обычно с креденшелами
+    (``socks5h://user:pass@host``).
+    """
     return {"ok": True, **_network_state()}
 
 
 @app.patch("/api/network/config")
-def network_config_update(payload: dict = Body(...)) -> dict:
-    """Set/clear proxies at runtime — default and/or per-exchange overrides.
+def network_config_update(
+    payload: dict = Body(...),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Set/clear proxies at runtime — default и/или per-exchange (admin only).
 
     Body (all fields optional):
     - ``default_proxy``: str — общий прокси ("" сбрасывает);
@@ -3003,11 +3090,16 @@ def network_config_update(payload: dict = Body(...)) -> dict:
 
 
 @app.get("/api/network/test")
-def network_test(exchange: str = Query("mexc")) -> dict:
+def network_test(
+    exchange: str = Query("mexc"),
+    _: None = Depends(_require_admin_token),
+) -> dict:
     """Probe one exchange's REST through its resolved proxy; report timing.
 
     Uses the same lightweight probe endpoints as /api/diagnostics/sources, so
     the result reflects exactly what smart routing does for that venue.
+
+    Admin only: ответ раскрывает эффективный прокси-URL.
     """
     from mexc_monitor.source_probes import probe_one  # noqa: PLC0415
 

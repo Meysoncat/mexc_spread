@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Globe, Wifi, WifiOff, Loader2, RotateCcw } from "lucide-react";
-import { apiUrl } from "../config";
+import { apiFetch } from "../config";
 import { proxyError } from "../lib/proxy";
 import { EXCHANGE_LABELS, type Exchange } from "../types";
 
@@ -33,7 +33,7 @@ export function NetworkPage() {
   const [err, setErr] = useState<string | null>(null);
 
   const load = () => {
-    fetch(apiUrl("/api/network/config"))
+    apiFetch("/api/network/config")
       .then((r) => r.json())
       .then((d: NetworkState) => {
         setState(d);
@@ -52,7 +52,7 @@ export function NetworkPage() {
   const patch = (body: Record<string, unknown>) => {
     setSaving(true);
     setErr(null);
-    return fetch(apiUrl("/api/network/config"), {
+    return apiFetch("/api/network/config", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -77,7 +77,7 @@ export function NetworkPage() {
 
   const runTest = (ex: string) => {
     setTesting(ex);
-    fetch(apiUrl(`/api/network/test?exchange=${ex}`))
+    apiFetch(`/api/network/test?exchange=${ex}`)
       .then((r) => r.json())
       .then((d) => setTests((prev) => ({ ...prev, [ex]: d })))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))

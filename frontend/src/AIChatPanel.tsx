@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { MessageSquare, Send, X, Bot, User, Wrench, ChevronDown, ChevronUp } from "lucide-react";
-import { apiUrl, adminAuthHeaders } from "./config";
+import { apiFetch } from "./config";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -35,9 +35,9 @@ export function AIChatPanel() {
     setLoading(true);
 
     try {
-      const r = await fetch(apiUrl("/api/ai/chat"), {
+      const r = await apiFetch("/api/ai/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...adminAuthHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg, autonomy }),
       });
       const d: AIResponse = await r.json();

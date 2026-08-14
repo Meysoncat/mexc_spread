@@ -1,27 +1,14 @@
 import { ExternalLink } from "lucide-react";
-import { apiUrl, apiFetch } from "../config";
+import { adminTokenReady, apiFetch, getAdminToken } from "../config";
 
-let adminToken = "";
-try {
-  adminToken = localStorage.getItem("mexc-admin-token") || "";
-} catch {
-  // ignore
-}
-
-async function _fetchAdminToken() {
-  if (adminToken) return adminToken;
-  try {
-    const res = await fetch(apiUrl("/api/admin-token"));
-    const data = await res.json();
-    if (data.ok && data.token) {
-      adminToken = data.token;
-      localStorage.setItem("mexc-admin-token", adminToken);
-      return adminToken;
-    }
-  } catch {
-    // ignore
-  }
-  return "";
+/**
+ * Токен берём из общего bootstrap в config.ts (localStorage + один
+ * dev-запрос), а не отдельным вызовом /api/admin-token: в проде этот
+ * эндпоинт выключен и токен вводится вручную в Trading Admin.
+ */
+async function _adminToken(): Promise<string> {
+  await adminTokenReady;
+  return getAdminToken() ?? "";
 }
 
 /**
@@ -35,7 +22,7 @@ async function _fetchAdminToken() {
  */
 export async function openInMetaScalp(ticker: string) {
   let metascalpUrl = `metascalp://open-ticker/${ticker}`;
-  const token = await _fetchAdminToken();
+  const token = await _adminToken();
 
   if (token) {
     try {

@@ -28,6 +28,11 @@ services:
       # the app tries to write a generated one to /app/.env, which fails on the
       # read-only image filesystem.
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env (see .env.docker.example)}
+      # Never hand the admin token out over HTTP in production. GET /api/admin-token
+      # is a localhost-only dev convenience, and behind a reverse proxy on the same
+      # host every request looks local — so keep the bootstrap off here and paste the
+      # token manually in the UI (Trading Admin -> X-Admin-Token).
+      ADMIN_TOKEN_LOCAL_BOOTSTRAP: ${ADMIN_TOKEN_LOCAL_BOOTSTRAP:-0}
       # SQLite lives on the mounted volume so history survives restarts.
       MEXC_HISTORY_DB_PATH: /app/data/spread_history.sqlite
       # Optional egress proxy for geo-blocked exchanges (Binance/MEXC/Bybit REST).
