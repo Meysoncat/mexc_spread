@@ -14,20 +14,15 @@ from __future__ import annotations
 
 import time
 
-from mexc_monitor.clock_skew import ClockSkewDetector
+from mexc_monitor.clock_skew import ClockSkewDetector, get_detector
 from mexc_monitor.spread_buffer import SpreadTick, get_latest
 
 DEFAULT_MAX_TICK_AGE_MS: float = 5000.0
-detector: ClockSkewDetector | None = None
 
 
 def _get_detector() -> ClockSkewDetector:
-    """Get global clock skew detector (lazy initialization)."""
-    global detector
-    if detector is None:
-        from mexc_monitor.backend.main import detector as global_detector
-        detector = global_detector
-    return detector
+    """Shared process-wide detector (see :mod:`mexc_monitor.clock_skew`)."""
+    return get_detector()
 
 
 def now_ms() -> int:

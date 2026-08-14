@@ -728,6 +728,26 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/diagnostics/clock-skew")
+def diagnostics_clock_skew() -> dict[str, Any]:
+    """Расхождение локальных часов с часами бирж (по заголовку ``Date``).
+
+    Замеры собираются пассивно на каждом HTTP-ответе. ``uncertainty_ms`` —
+    шум измерения (гранулярность ``Date`` 1 с + половина RTT); пока скос его
+    не превышает, он считается недостоверным и не применяется к таймстемпам
+    в freshness-проверках.
+    """
+    from mexc_monitor.clock_skew import get_detector
+
+    detector = get_detector()
+    status = detector.get_status()
+    return {
+        "ok": True,
+        "exchanges": status,
+        "skewed": [s["exchange"] for s in status if s.get("skewed")],
+    }
+
+
 @app.get("/api/diagnostics/sources")
 def diagnostics_sources(
     timeout_sec: float = Query(8.0, ge=1.0, le=30.0),

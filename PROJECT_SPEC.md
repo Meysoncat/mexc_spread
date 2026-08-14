@@ -42,8 +42,7 @@ mexc_spread_monitor/
 │   └── ...                         # Модальные окна, графики, таблицы
 ├── config/
 │   ├── external_apis.json          # URL MEXC, retry, WS, execution model
-│   ├── futures_arb.json            # Настройки спот-фьючерс арбитража
-│   └── network_dns_config.json     # DNS/сетевые настройки
+│   └── futures_arb.json            # Настройки спот-фьючерс арбитража
 ├── docs/                           # Документация (ARCHITECTURE, BUSINESS, TRADING)
 ├── mexc_monitor/                   # Ядро бизнес-логики
 │   ├── config.py                   # Settings dataclass + загрузка JSON/env
@@ -174,7 +173,6 @@ mexc_spread_monitor/
 ### 7.1. Файлы конфигурации
 - **`config/external_apis.json`** — URL MEXC, retry, WS-настройки, whitelist/blacklist, execution model
 - **`config/futures_arb.json`** — пороги базиса, плечо, лимиты exposure
-- **`config/network_dns_config.json`** — DNS-over-HTTPS, custom resolvers (опционально)
 
 ### 7.2. Переменные окружения (ключевые)
 
