@@ -1,0 +1,43 @@
+"""Domain routers extracted from backend/main.py."""
+
+from backend.routers import (
+    diagnostics,
+    market_info,
+    market_data,
+    density,
+    ai,
+    snapshot,
+    trading,
+    spread,
+    screener,
+    network,
+    capture,
+    aster,
+    alerts,
+    arbitrage,
+    portfolio_risk,
+    futures_arb,
+    lead_lag,
+    metascalp,
+)
+
+ALL_ROUTERS = [
+    diagnostics.router,
+    market_info.router,
+    market_data.router,
+    density.router,
+    ai.router,
+    snapshot.router,
+    trading.router,
+    spread.router,
+    screener.router,
+    network.router,
+    capture.router,
+    aster.router,
+    alerts.router,
+    arbitrage.router,
+    portfolio_risk.router,
+    futures_arb.router,
+    lead_lag.router,
+    metascalp.router,
+]
