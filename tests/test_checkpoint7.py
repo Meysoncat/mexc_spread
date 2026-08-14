@@ -132,7 +132,7 @@ def test_unknown_exchange_returns_400_klines_batch(client):
     assert "supported" in body
 
 
-def test_all_exchanges_not_400_snapshot(client):
+def test_all_exchanges_not_400_snapshot(client, stub_exchange_snapshots):
     """7. All 11 exchanges are accepted by /api/snapshot (no 400)."""
     exchanges = ["mexc", "asterdex", "lighter", "binance", "bybit", "okx", "gateio", "htx", "bitget", "dydx", "hyperliquid"]
     for ex in exchanges:
@@ -141,7 +141,7 @@ def test_all_exchanges_not_400_snapshot(client):
         assert response.status_code != 400, f"Exchange '{ex}' returned 400 unexpectedly"
 
 
-def test_all_exchanges_not_400_klines_batch(client):
+def test_all_exchanges_not_400_klines_batch(client, stub_exchange_snapshots):
     """8. All 11 exchanges are accepted by /api/klines/batch (no 400)."""
     exchanges = ["mexc", "asterdex", "lighter", "binance", "bybit", "okx", "gateio", "htx", "bitget", "dydx", "hyperliquid"]
     for ex in exchanges:
@@ -155,7 +155,7 @@ def test_all_exchanges_not_400_klines_batch(client):
         assert response.status_code != 400, f"Exchange '{ex}' returned 400 on klines/batch"
 
 
-def test_case_insensitive_exchange(client):
+def test_case_insensitive_exchange(client, stub_exchange_snapshots):
     """9. Exchange parameter is case-insensitive."""
     for ex in ["MEXC", "Binance", "BYBIT", "OKX"]:
         response = client.get("/api/snapshot", params={"exchange": ex, "nocache": "true"})

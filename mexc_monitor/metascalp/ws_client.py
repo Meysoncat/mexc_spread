@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 import websocket
 
-from .client import METASCALP_PORTS
+from .client import METASCALP_PORTS, loopback_port_is_open
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ class MetaScalpWebSocketClient:
 
     def _discover_port(self) -> str | None:
         for port in METASCALP_PORTS:
+            # Cheap TCP probe first: a full WS handshake per closed port cost
+            # up to 2s each (22s for the whole scan) when MetaScalp is down.
+            if not loopback_port_is_open(port):
+                continue
             url = f"ws://127.0.0.1:{port}"
             try:
                 ws = websocket.create_connection(url, timeout=2)

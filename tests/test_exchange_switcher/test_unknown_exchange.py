@@ -64,7 +64,7 @@ class TestUnknownExchangeValidation:
         body = response.json()
         assert exchange in body["error"]
 
-    def test_known_exchanges_do_not_return_400(self):
+    def test_known_exchanges_do_not_return_400(self, stub_exchange_snapshots):
         """Sanity check: valid exchanges should not return 400 (only checks status code)."""
         for ex in _SUPPORTED_EXCHANGES:
             response = client.get("/api/snapshot", params={"exchange": ex, "nocache": "true"})
@@ -78,10 +78,13 @@ class TestUnknownExchangeValidation:
         # Empty string after strip/lower is "" which is not in supported set
         assert response.status_code == 400
 
-    @given(exchange=st.sampled_from(["MEXC", "Mexc", "ASTERDEX", "AsterDex", "LIGHTER", "Lighter", "BINANCE", "Binance", "BYBIT", "OKX", "GATEIO", "HTX", "BITGET", "DYDX", "HYPERLIQUID"]))
-    @settings(max_examples=15, deadline=None)
-    def test_case_insensitive_valid_exchanges(self, exchange: str):
+    def test_case_insensitive_valid_exchanges(self, stub_exchange_snapshots):
         """Valid exchanges in different cases should NOT return 400 (case-insensitive)."""
-        response = client.get("/api/snapshot", params={"exchange": exchange, "nocache": "true"})
-        # The endpoint lowercases the input, so these should be valid
-        assert response.status_code != 400
+        for exchange in [
+            "MEXC", "Mexc", "ASTERDEX", "AsterDex", "LIGHTER", "Lighter",
+            "BINANCE", "Binance", "BYBIT", "OKX", "GATEIO", "HTX", "BITGET",
+            "DYDX", "HYPERLIQUID",
+        ]:
+            response = client.get("/api/snapshot", params={"exchange": exchange, "nocache": "true"})
+            # The endpoint lowercases the input, so these should be valid
+            assert response.status_code != 400

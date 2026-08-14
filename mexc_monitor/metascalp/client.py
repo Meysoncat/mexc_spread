@@ -7,6 +7,7 @@ then proxies requests to the local API.
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
 from typing import Any
@@ -34,6 +35,22 @@ DEFAULT_TIMEOUT = 5.0
 # via the portfolio risk manager's per-engine status polling. A success is
 # cached indefinitely (until the next request fails on that base_url).
 DISCOVERY_NEGATIVE_TTL_SEC = 60.0
+
+# Discovery only ever talks to loopback, where a closed port is refused
+# immediately. A full HTTP request per port cost up to 2s each (22s for the
+# whole scan) whenever the port was filtered rather than refused, so we probe
+# the TCP port first with a short timeout and only speak HTTP to open ports.
+DISCOVERY_PROBE_TIMEOUT_SEC = 0.25
+
+
+def loopback_port_is_open(port: int) -> bool:
+    """Cheap TCP probe: True if something is listening on 127.0.0.1:port."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(DISCOVERY_PROBE_TIMEOUT_SEC)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
 
 
 class MetaScalpClient:
@@ -91,6 +108,8 @@ class MetaScalpClient:
                 return self._base_url
 
             for port in METASCALP_PORTS:
+                if not loopback_port_is_open(port):
+                    continue
                 url = f"http://127.0.0.1:{port}"
                 try:
                     r = self._client.get(f"{url}/ping", timeout=2.0)

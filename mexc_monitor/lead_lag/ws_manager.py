@@ -46,6 +46,9 @@ _INITIAL_BACKOFF_SEC = 1.0
 # Backoff multiplier
 _BACKOFF_MULTIPLIER = 2.0
 
+# How long stop() waits for the background loop to become signallable
+_LOOP_READY_TIMEOUT_SEC = 5.0
+
 
 class ConnectionStatus(str, Enum):
     """Connection status for an exchange."""
@@ -103,6 +106,7 @@ class LeadLagWSManager:
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event: asyncio.Event | None = None
+        self._loop_ready = threading.Event()
         self._lock = threading.Lock()
 
         # Build exchange -> ws_url mapping
@@ -124,6 +128,7 @@ class LeadLagWSManager:
                 return
             self._running = True
 
+        self._loop_ready.clear()
         self._thread = threading.Thread(
             target=self._run_event_loop,
             daemon=True,
@@ -142,9 +147,20 @@ class LeadLagWSManager:
                 return
             self._running = False
 
+        # The background thread may not have created its loop yet: signalling
+        # before that point would be lost and stop() would block on join() for
+        # the full timeout while the manager keeps running.
+        if self._thread and self._thread.is_alive():
+            self._loop_ready.wait(timeout=_LOOP_READY_TIMEOUT_SEC)
+
         # Signal the event loop to stop
         if self._loop and self._stop_event:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
+            loop, stop_event = self._loop, self._stop_event
+            try:
+                loop.call_soon_threadsafe(stop_event.set)
+            except RuntimeError:
+                # Loop already closed - the thread is finishing on its own.
+                pass
 
         # Wait for the thread to finish
         if self._thread and self._thread.is_alive():
@@ -229,6 +245,7 @@ class LeadLagWSManager:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._stop_event = asyncio.Event()
+        self._loop_ready.set()
 
         try:
             self._loop.run_until_complete(self._main())
