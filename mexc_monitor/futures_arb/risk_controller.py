@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from mexc_monitor.futures_arb.models import (
     FuturesArbPosition,

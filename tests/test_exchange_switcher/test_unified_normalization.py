@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
@@ -24,7 +23,6 @@ from mexc_monitor.models import BookTickerRow
 from mexc_monitor.lighter.client import (
     LighterMarketInfo,
     lighter_snapshot_rows,
-    _round_price,
 )
 
 

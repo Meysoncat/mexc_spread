@@ -17,9 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -339,7 +338,6 @@ class SignalWorker:
         # Разослать алерты (только для кандидатов: стены + достаточный участник или просто много стен)
         if self._alert_service is not None:
             for c in combined:
-                enough_walls = c.walls_count >= alert_min_walls
                 enough_participant = bool(c.participant_direction) and c.participant_spike_vol_usdt >= alert_min_vol
                 # Шлём если: есть участник ИЛИ очень много стен (≥ 2× порога)
                 if not (enough_participant or c.walls_count >= max(alert_min_walls * 2, 2)):

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable
+from typing import Callable
 
 from mexc_monitor.density import detect_walls, compute_density_stats, wall_to_dict
 from mexc_monitor.density_buffer import (

@@ -5,17 +5,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlencode
 
-import httpx
 
-from mexc_monitor.trading.exchanges import OrderSide, OrderType
+from mexc_monitor.trading.exchanges import OrderType
 from mexc_monitor.trading.private_client_base import (
     BasePrivateClient,
     OrderRequest,
     OrderResponse,
-    PrivateApiError,
 )
 
 

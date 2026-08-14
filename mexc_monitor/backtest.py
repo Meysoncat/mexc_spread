@@ -8,7 +8,6 @@ Reads spread snapshots from SQLite and simulates a simple spread-capture strateg
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any

@@ -15,8 +15,6 @@ Tests cover:
 from __future__ import annotations
 
 import time
-import threading
-from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest

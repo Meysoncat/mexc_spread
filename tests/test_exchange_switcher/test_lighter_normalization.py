@@ -16,19 +16,16 @@ from __future__ import annotations
 
 import math
 
-import pytest
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
 from mexc_monitor.lighter.client import (
     LighterMarketInfo,
     LighterOrderbookSummary,
-    LighterPublicClient,
     lighter_snapshot_rows,
     _normalize_symbol,
     _round_price,
 )
-from mexc_monitor.models import BookTickerRow
 
 
 # --- Strategies ---
@@ -165,7 +162,6 @@ class TestLighterNormalizationProperty:
         # - orderbook_details() returns market info with volume
         # - orderbook_orders(market_id, limit) returns bids/asks
         # - funding_rates() returns empty list
-        from dataclasses import replace
         info_with_volume = LighterMarketInfo(
             market_id=info.market_id,
             symbol=info.symbol,

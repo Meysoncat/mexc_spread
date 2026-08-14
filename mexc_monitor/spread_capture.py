@@ -18,21 +18,19 @@ Spread Capture Engine — модуль для сбора спреда bid/ask в
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal
 
 from mexc_monitor.execution_model import ExecutionSimulator, ExecutionSettings
 from mexc_monitor.freshness import get_fresh_tick
 from mexc_monitor.order_executor import OrderExecutor, OrderTicket
 from mexc_monitor.reconciliation import reconcile_positions, ReconciliationResult, Discrepancy, ExpectedPosition, ActualPosition
-from mexc_monitor.spread_buffer import get_latest, get_stats, SpreadTick
+from mexc_monitor.spread_buffer import SpreadTick
 from mexc_monitor.state_store import StateStore
 
 logger = logging.getLogger(__name__)

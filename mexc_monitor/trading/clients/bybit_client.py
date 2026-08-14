@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import time
 from typing import Any, Literal
 from urllib.parse import urlencode

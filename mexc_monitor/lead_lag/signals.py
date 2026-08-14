@@ -22,7 +22,6 @@ from mexc_monitor.lead_lag.models import (
     LeadLagSignal,
     SignalDirection,
     SignalStatus,
-    SpreadSnapshot,
 )
 from mexc_monitor.lead_lag.price_buffer import PriceBuffer
 

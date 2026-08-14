@@ -25,7 +25,6 @@ from mexc_monitor.futures_arb.models import (
     FundingInfo,
     FuturesArbPosition,
     FuturesArbSettings,
-    FuturesArbStats,
 )
 
 logger = logging.getLogger(__name__)

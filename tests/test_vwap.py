@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from mexc_monitor.vwap import (
-    VwapResult,
     compute_depth_summary,
     compute_executable_notional,
     compute_vwap,

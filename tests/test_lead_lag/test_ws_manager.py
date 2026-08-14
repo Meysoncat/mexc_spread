@@ -11,12 +11,10 @@ import time
 import pytest
 
 from mexc_monitor.lead_lag.config import LeadLagConfig
-from mexc_monitor.lead_lag.models import PriceSnapshot
 from mexc_monitor.lead_lag.price_buffer import PriceBuffer
 from mexc_monitor.lead_lag.ws_manager import (
     ConnectionStatus,
     LeadLagWSManager,
-    _ExchangeState,
     _STALE_THRESHOLD_SEC,
 )
 

@@ -119,7 +119,7 @@ class OkxPublicClient:
             raise OkxApiError(f"OKX HTTP error: {type(e).__name__}: {e}") from e
 
         if r.status_code == 429:
-            raise OkxApiError(f"Rate limited by OKX: HTTP 429")
+            raise OkxApiError("Rate limited by OKX: HTTP 429")
 
         if r.status_code >= 400:
             raise OkxApiError(f"OKX HTTP {r.status_code}: {r.text[:300]}")

@@ -19,6 +19,7 @@ from .models import (
     MetaScalpClusterSnapshot,
     MetaScalpConnection,
     MetaScalpOrder,
+    MetaScalpOrderbookLevel,
     MetaScalpOrderbookSnapshot,
     MetaScalpPosition,
     MetaScalpSignalLevel,

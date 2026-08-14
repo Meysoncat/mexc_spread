@@ -80,8 +80,6 @@ class TestComputeMidSpreadDocstring:
     """Verify the docstring fix (P3.2): full spread, not half-spread."""
 
     def test_docstring_says_full(self):
-        import inspect
-        from mexc_monitor.metrics import compute_mid_spread
         doc = compute_mid_spread.__doc__ or ""
         assert "full" in doc.lower()
         assert "NOT half" in doc or "not half" in doc.lower()

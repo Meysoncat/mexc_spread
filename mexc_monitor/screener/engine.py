@@ -26,6 +26,7 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mexc_monitor.pipeline import safe_load_snapshot
 from mexc_monitor import trade_buffer
@@ -53,6 +54,9 @@ from mexc_monitor.screener.filters import (
 )
 from mexc_monitor.screener.models import Candidate, candidate_to_opportunity
 from mexc_monitor.screener.state import ScreenerState
+
+if TYPE_CHECKING:
+    from mexc_monitor.rest_trades_poller import RestTradesPoller
 
 logger = logging.getLogger(__name__)
 

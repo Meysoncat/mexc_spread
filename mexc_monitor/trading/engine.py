@@ -17,7 +17,6 @@ from mexc_monitor.trading.private_client import MexcPrivateClient, PrivateApiErr
 from mexc_monitor.trading.private_client_base import (
     BasePrivateClient,
     OrderRequest,
-    OrderResponse,
 )
 from mexc_monitor.trading.risk import RiskManager, RiskViolation
 

@@ -5,9 +5,7 @@ Unit tests for FundingTracker class.
 from __future__ import annotations
 
 import time
-import threading
-from collections import deque
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -16,7 +14,6 @@ from mexc_monitor.futures_arb.funding_tracker import (
     FundingRateEntry,
     MEXC_FUNDING_INTERVAL_HOURS,
     ASTERDEX_FUNDING_INTERVAL_HOURS,
-    _MAX_HISTORY_ENTRIES,
 )
 from mexc_monitor.futures_arb.models import FundingInfo, FuturesArbSettings
 

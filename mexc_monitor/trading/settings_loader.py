@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, TypeVar
+from typing import Callable, Literal, TypeVar
 
 from mexc_monitor.trading.exchange_config import EXCHANGE_CONFIGS
 from mexc_monitor.trading.exchanges import Exchange, Market

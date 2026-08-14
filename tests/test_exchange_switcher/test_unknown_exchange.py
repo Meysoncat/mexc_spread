@@ -11,7 +11,6 @@ Validates: Requirements 4.5, 10.3
 
 from __future__ import annotations
 
-import pytest
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 

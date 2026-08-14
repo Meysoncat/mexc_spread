@@ -93,7 +93,7 @@ class StateStore:
 
 def _json_default(obj: Any) -> Any:
     """JSON serializer for dataclasses and other common types."""
-    if is_dataclass(obj):
+    if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
     if isinstance(obj, set):
         return list(obj)
@@ -102,4 +102,7 @@ def _json_default(obj: Any) -> Any:
 
 def serialize_dataclass_list(items: list[Any]) -> list[dict[str, Any]]:
     """Convert a list of dataclass instances to a list of dicts."""
-    return [asdict(item) if is_dataclass(item) else dict(item) for item in items]
+    return [
+        asdict(item) if is_dataclass(item) and not isinstance(item, type) else dict(item)
+        for item in items
+    ]

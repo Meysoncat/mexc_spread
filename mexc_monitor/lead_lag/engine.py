@@ -16,10 +16,8 @@ from typing import Optional
 
 from mexc_monitor.lead_lag.config import LeadLagConfig, load_lead_lag_config, validate_config
 from mexc_monitor.lead_lag.models import (
-    LagEstimate,
     LeadLagSignal,
     LeadLagStats,
-    SignalStatus,
 )
 from mexc_monitor.lead_lag.price_buffer import PriceBuffer
 from mexc_monitor.lead_lag.detector import LagDetector

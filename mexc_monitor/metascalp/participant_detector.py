@@ -28,7 +28,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -201,11 +201,9 @@ class ParticipantDetector:
         if buy_spike >= sell_spike:
             dom_side = "buy"
             dom_vol_spike = buy_spike
-            other_vol_spike = sell_spike
         else:
             dom_side = "sell"
             dom_vol_spike = sell_spike
-            other_vol_spike = buy_spike
 
         total_spike = buy_spike + sell_spike
         dom_ratio = (dom_vol_spike / total_spike) if total_spike > 0 else 0.0

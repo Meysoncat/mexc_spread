@@ -5,14 +5,11 @@ Unit tests for futures_arb PositionManager.
 from __future__ import annotations
 
 import json
-import tempfile
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
-from mexc_monitor.futures_arb.models import FuturesArbPosition, FuturesArbStats
+from mexc_monitor.futures_arb.models import FuturesArbPosition
 from mexc_monitor.futures_arb.position_manager import PositionManager
 
 

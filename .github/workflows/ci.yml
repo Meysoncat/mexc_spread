@@ -17,6 +17,10 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: python -m ruff check backend mexc_monitor tests scripts
+      - name: Typecheck (mypy, core modules)
+        run: python -m mypy
       - name: Run tests
         run: python -m pytest tests -q
 

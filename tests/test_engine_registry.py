@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import os
 import threading
-from unittest.mock import patch
 
 import pytest
 
 from mexc_monitor.trading.engine import TradingEngine, TradingSettings
 from mexc_monitor.trading.engine_registry import EngineRegistry
-from mexc_monitor.trading.exchanges import Exchange, Market, OrderSide, OrderType
+from mexc_monitor.trading.exchanges import Exchange, Market
 
 
 @pytest.fixture(autouse=True)

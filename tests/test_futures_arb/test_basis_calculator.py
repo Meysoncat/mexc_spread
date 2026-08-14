@@ -12,7 +12,6 @@ Tests cover:
 from __future__ import annotations
 
 import time
-import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -21,9 +20,8 @@ from mexc_monitor.futures_arb.basis_calculator import (
     BasisCalculator,
     compute_basis_snapshot,
     _spread_buffer_key,
-    _LegData,
 )
-from mexc_monitor.futures_arb.models import BasisSnapshot, FuturesArbSettings
+from mexc_monitor.futures_arb.models import FuturesArbSettings
 
 
 class TestSpreadBufferKey:

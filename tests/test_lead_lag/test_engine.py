@@ -9,18 +9,14 @@ Requirements: 10.1, 10.2, 10.3
 from __future__ import annotations
 
 import time
-import threading
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import patch
 
-import pytest
 
 from mexc_monitor.lead_lag.config import LeadLagConfig
 from mexc_monitor.lead_lag.engine import (
     EngineStatus,
     LeadLagEngine,
-    _RECOVERY_DATA_SEC,
 )
-from mexc_monitor.lead_lag.ws_manager import ConnectionStatus
 
 
 def _make_config(**overrides) -> LeadLagConfig:

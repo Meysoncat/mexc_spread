@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from mexc_monitor.trading.exchanges import OrderSide, OrderType
+from mexc_monitor.trading.exchanges import OrderType
 from mexc_monitor.trading.private_client_base import (
     BasePrivateClient,
     OrderRequest,

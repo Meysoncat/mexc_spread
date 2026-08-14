@@ -1,7 +1,7 @@
 """Test Reconciliation integration for spread_capture."""
 
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 from mexc_monitor.spread_capture import SpreadCaptureEngine
 from mexc_monitor.order_executor import OrderTicket

@@ -26,7 +26,7 @@ from mexc_monitor.history_worker import start_history_worker, stop_history_worke
 from mexc_monitor.klines import fetch_klines_for_market
 from mexc_monitor.orderbook import fetch_orderbook_depth
 from mexc_monitor.pipeline import safe_load_snapshot
-from mexc_monitor.trading.engine import TradingEngine, load_trading_settings
+from mexc_monitor.trading.engine import TradingEngine
 from mexc_monitor.trading.engine_registry import EngineRegistry
 from mexc_monitor.trading.exchange_config import EXCHANGE_CONFIGS
 from mexc_monitor.trading.exchanges import Exchange, Market
@@ -63,7 +63,7 @@ _ENV_FILE = _ROOT / ".env"
 if not _ENV_FILE.exists():
     _generated_token = secrets.token_urlsafe(32)
     _ENV_FILE.write_text(f"ADMIN_TOKEN={_generated_token}\n", encoding="utf-8")
-    print(f"[auth] Generated new ADMIN_TOKEN in .env")
+    print("[auth] Generated new ADMIN_TOKEN in .env")
 
 load_dotenv(_ENV_FILE)
 _ADMIN_TOKEN = str(os.environ.get("ADMIN_TOKEN", "")).strip()
@@ -1356,7 +1356,7 @@ def _fetch_klines_for_exchange(exchange: str, market: str, symbol: str, interval
             return []
 
     elif exchange == "lighter":
-        from mexc_monitor.lighter.client import LighterPublicClient, LighterApiError
+        from mexc_monitor.lighter.client import LighterPublicClient
         resolution = _INTERVAL_TO_LIGHTER_RES.get(interval, "60")
         try:
             # Need to resolve symbol → market_id
@@ -3734,7 +3734,6 @@ def aster_ws_unsubscribe(
 # ─── Cross-Exchange Arbitrage Engine endpoints ─���───────────────────────────────
 
 from mexc_monitor.arbitrage.engine import ArbitrageEngine
-from mexc_monitor.arbitrage.models import ArbitrageSettings
 
 _arbitrage_engine = ArbitrageEngine()
 
@@ -4542,7 +4541,6 @@ def metascalp_open_spread(
     ticker = str(payload.get("ticker", "")).strip().upper()
     side = str(payload.get("side", "")).strip()
     notional = float(payload.get("notional", 0))
-    leverage = int(payload.get("leverage", 3))
     combo = str(payload.get("combo", "mexc_spot+mexc_futures"))
 
     if not conn_id or not ticker or not side or notional <= 0:

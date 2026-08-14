@@ -1,7 +1,6 @@
 """Test Reconciliation integration for futures_arb PositionManager."""
 
 import pytest
-from unittest.mock import Mock
 
 from mexc_monitor.futures_arb.position_manager import PositionManager
 

@@ -7,7 +7,6 @@ import pytest
 from mexc_monitor.order_executor import (
     OrderExecutor,
     OrderTicket,
-    FillResult,
 )
 from mexc_monitor.clock_skew import ClockSkewDetector
 

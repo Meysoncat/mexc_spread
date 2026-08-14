@@ -20,6 +20,33 @@ include = ["mexc_monitor*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# E9/F are the "this is a real bug" tier: syntax errors, undefined names,
+# unused imports/variables. Kept intentionally narrow so the gate stays
+# blocking without forcing a full style migration.
+select = ["E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = ["."]
+# Core, money-touching modules only; the rest of the tree is not typed yet.
+files = [
+  "mexc_monitor/config.py",
+  "mexc_monitor/clock_skew.py",
+  "mexc_monitor/freshness.py",
+  "mexc_monitor/spread_buffer.py",
+  "mexc_monitor/portfolio_risk.py",
+  "mexc_monitor/state_store.py",
+]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+strict_equality = true
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

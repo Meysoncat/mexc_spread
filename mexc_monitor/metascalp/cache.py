@@ -105,8 +105,7 @@ class MetaScalpCache:
             if ts is None:
                 return None
             ttl = ts - time.monotonic()
-            age = (ttl_sec := self._default_ttl) - ttl
-            return max(0.0, age)
+            return max(0.0, self._default_ttl - ttl)
 
     # ── Convenience typed accessors ───────────────────────────────────────────
 

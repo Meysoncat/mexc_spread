@@ -554,11 +554,11 @@ def _apply_env_overrides(s: Settings) -> Settings:
             _float_env("MEXC_FUTURES_WS_STALE_AFTER_SEC", s.futures_ws_stale_after_sec),
         )
     if os.environ.get("MEXC_FUTURES_WS_BOOTSTRAP_WAIT_SEC") is not None:
-        v = _float_env(
+        wait_sec = _float_env(
             "MEXC_FUTURES_WS_BOOTSTRAP_WAIT_SEC",
             s.futures_ws_bootstrap_wait_sec,
         )
-        kw["futures_ws_bootstrap_wait_sec"] = max(10.0, min(120.0, v))
+        kw["futures_ws_bootstrap_wait_sec"] = max(10.0, min(120.0, wait_sec))
     if os.environ.get("MEXC_SPOT_ORDERBOOK_WS_ENABLED") is not None:
         kw["spot_orderbook_ws_enabled"] = _bool_env(
             "MEXC_SPOT_ORDERBOOK_WS_ENABLED",

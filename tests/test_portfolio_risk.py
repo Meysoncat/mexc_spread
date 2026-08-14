@@ -7,7 +7,6 @@ import pytest
 from mexc_monitor.portfolio_risk import (
     PortfolioRiskManager,
     PortfolioRiskSettings,
-    PortfolioRiskStatus,
 )
 
 

@@ -5,8 +5,6 @@ Unit tests for futures_arb config loader and validation.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest

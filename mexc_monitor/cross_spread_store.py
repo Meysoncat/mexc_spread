@@ -8,9 +8,7 @@ Cross-Spread History Store — периодическая запись межб�
 from __future__ import annotations
 
 import logging
-import os
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -90,7 +88,7 @@ class CrossSpreadWorker:
         # MEXC: BTCUSDT или BTC_USDT
         # AsterDEX: ASTER:BTCUSDT
         aster_symbols = [s.replace("ASTER:", "") for s in tracked if s.startswith("ASTER:")]
-        mexc_symbols = [s for s in tracked if not s.startswith("ASTER:") and not s.startswith("CROSS:")]
+        [s for s in tracked if not s.startswith("ASTER:") and not s.startswith("CROSS:")]
 
         # Маппинг: для каждого aster символа найти соответствующий MEXC
         batch: list[CrossSpreadSnapshot] = []

@@ -7,14 +7,12 @@ and the no-duplicate-active-signal guarantee.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 
 from mexc_monitor.lead_lag.config import LeadLagConfig
 from mexc_monitor.lead_lag.detector import LagDetector
 from mexc_monitor.lead_lag.models import (
-    LagEstimate,
     SignalDirection,
     SignalStatus,
 )
@@ -135,7 +133,7 @@ class TestSignalGeneration:
             price_buffer.update("binance", "BTCUSDT", 50000.0, ts)
             # 10 bps spread: lagger = 50000 * (1 - 10/10000) = 49950
             price_buffer.update("mexc", "BTCUSDT", 49950.0, ts)
-            result = generator.tick()
+            generator.tick()
 
         active = generator.get_active_signals()
         assert len(active) == 1
@@ -402,7 +400,7 @@ class TestTheoreticalPnl:
 
         active = generator.get_active_signals()
         assert len(active) == 1
-        entry_spread = active[0].entry_spread_bps
+        active[0].entry_spread_bps
 
         # Resolve by bringing spread to zero
         for i in range(20):

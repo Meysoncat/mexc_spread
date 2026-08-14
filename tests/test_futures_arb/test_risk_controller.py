@@ -7,12 +7,10 @@ total exposure enforcement, and kill switch functionality.
 
 import time
 
-import pytest
 
 from mexc_monitor.futures_arb.models import (
     FuturesArbPosition,
     FuturesArbSettings,
-    RiskAlert,
 )
 from mexc_monitor.futures_arb.risk_controller import RiskController
 

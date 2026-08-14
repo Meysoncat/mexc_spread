@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 
@@ -11,7 +11,6 @@ from mexc_monitor.trading.private_client_base import (
     BasePrivateClient,
     OrderRequest,
     OrderResponse,
-    PrivateApiError,
 )
 
 

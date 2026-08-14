@@ -15,12 +15,11 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
 from mexc_monitor.arbitrage.models import (
-    ArbMode,
     ArbPosition,
     ArbStats,
     ArbTradeRecord,
@@ -29,7 +28,7 @@ from mexc_monitor.arbitrage.models import (
 from mexc_monitor.execution_model import ExecutionSimulator, ExecutionSettings
 from mexc_monitor.freshness import get_fresh_tick
 from mexc_monitor.order_executor import OrderExecutor, OrderTicket
-from mexc_monitor.spread_buffer import get_latest, SpreadTick
+from mexc_monitor.spread_buffer import SpreadTick
 from mexc_monitor.state_store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -489,7 +488,6 @@ class ArbitrageEngine:
 
             # Live-режим: polling статуса реальных ордеров
             if self._settings.mode == "live" and self._settings.use_real_orders and self._order_executor:
-                updated = False
 
                 # Poll buy ticket
                 if not pos.buy_leg_filled and pos.buy_ticket_id:
@@ -507,7 +505,6 @@ class ArbitrageEngine:
                         with self._lock:
                             self._positions[symbol].buy_leg_filled = True
                         self._append_event({"type": "buy_leg_filled", "symbol": symbol})
-                        updated = True
 
                 # Poll sell ticket
                 if not pos.sell_leg_filled and pos.sell_ticket_id:
@@ -525,7 +522,6 @@ class ArbitrageEngine:
                         with self._lock:
                             self._positions[symbol].sell_leg_filled = True
                         self._append_event({"type": "sell_leg_filled", "symbol": symbol})
-                        updated = True
 
                 with self._lock:
                     pos = self._positions.get(symbol)

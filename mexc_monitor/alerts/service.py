@@ -151,7 +151,7 @@ class AlertService:
             return False
 
         parts: list[str] = [
-            f"🎯 <b>Density Signal</b>\n",
+            "🎯 <b>Density Signal</b>\n",
             f"Тикер: <code>{ticker}</code>\n",
             f"Плотности: <b>{walls_count}</b> (макс {max_wall_notional_usdt:.0f} USDT)\n",
             f"Спред: <b>{spread_bps:.1f} bps</b>",

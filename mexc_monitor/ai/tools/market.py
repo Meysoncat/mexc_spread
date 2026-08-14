@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from ..agent import ToolResult
 
 
 def get_market_data(symbol: str, exchange: str = "mexc", market: str = "futures") -> dict[str, Any]:
@@ -13,7 +11,7 @@ def get_market_data(symbol: str, exchange: str = "mexc", market: str = "futures"
     import httpx
     try:
         r = httpx.get(
-            f"http://127.0.0.1:8006/api/snapshot",
+            "http://127.0.0.1:8006/api/snapshot",
             params={"market": market, "exchange": exchange},
             timeout=10,
         )
@@ -43,7 +41,7 @@ def get_funding_rates(exchange: str = "binance") -> dict[str, Any]:
     import httpx
     try:
         r = httpx.get(
-            f"http://127.0.0.1:8006/api/snapshot",
+            "http://127.0.0.1:8006/api/snapshot",
             params={"market": "futures", "exchange": exchange},
             timeout=10,
         )
@@ -71,7 +69,7 @@ def get_density_walls(symbol: str, exchange: str = "binance") -> dict[str, Any]:
     import httpx
     try:
         r = httpx.get(
-            f"http://127.0.0.1:8006/api/density/walls",
+            "http://127.0.0.1:8006/api/density/walls",
             params={"symbol": symbol, "market": "spot", "multiplier": 5, "min_notional": 50000},
             timeout=15,
         )

@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 

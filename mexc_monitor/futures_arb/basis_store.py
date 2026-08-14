@@ -10,13 +10,12 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
 from mexc_monitor.futures_arb.basis_calculator import BasisCalculator
-from mexc_monitor.futures_arb.models import BasisSnapshot, FuturesArbSettings
+from mexc_monitor.futures_arb.models import BasisSnapshot
 
 logger = logging.getLogger(__name__)
 

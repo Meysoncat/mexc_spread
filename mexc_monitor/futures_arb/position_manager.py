@@ -477,7 +477,6 @@ class PositionManager:
             ReconciliationResult,
             ExpectedPosition,
             ActualPosition,
-            reconcile_positions,
         )
 
         result = ReconciliationResult()

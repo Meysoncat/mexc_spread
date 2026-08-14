@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any
 
 from .client import MetaScalpClient
@@ -114,7 +113,6 @@ class MetaScalpAutoTrader:
 
     def _process_connection(self, conn_id: str) -> None:
         """Process triggered levels for a single connection."""
-        cfg = self.get_config()
 
         # Get all signal levels for all tickers is expensive,
         # so we rely on the triggered-only endpoint or check per-ticker

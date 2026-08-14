@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from urllib.parse import urlencode
 
-import pytest
 
-from mexc_monitor.trading.exchanges import OrderSide, OrderType
-from mexc_monitor.trading.private_client import MexcPrivateClient, PrivateApiError
+from mexc_monitor.trading.private_client import MexcPrivateClient
 from mexc_monitor.trading.private_client_base import (
     BasePrivateClient,
-    OrderRequest,
-    OrderResponse,
 )
 
 

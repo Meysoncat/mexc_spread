@@ -8,7 +8,6 @@ import pytest
 from mexc_monitor.execution_model import (
     ExecutionSimulator,
     ExecutionSettings,
-    FillOutcome,
 )
 
 

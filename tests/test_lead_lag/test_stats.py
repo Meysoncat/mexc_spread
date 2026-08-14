@@ -9,7 +9,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -20,7 +19,7 @@ from mexc_monitor.lead_lag.models import (
     SignalDirection,
     SignalStatus,
 )
-from mexc_monitor.lead_lag.stats import LagDistribution, StatsEngine, SymbolStats
+from mexc_monitor.lead_lag.stats import StatsEngine
 from mexc_monitor.lead_lag.store import LeadLagStore
 
 

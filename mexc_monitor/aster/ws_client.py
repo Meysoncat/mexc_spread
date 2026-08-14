@@ -207,7 +207,6 @@ class AsterWebSocketClient:
             # Записываем basis как "спред" в CROSS: буфер
             # bid = mexc_mid, ask = aster_mid (для визуализации разницы)
             # spread_bps будет = basis_bps
-            basis_bps_val = 10_000 * (aster_mid - mexc_mid) / mexc_mid
             # Используем push_tick с фиктивными bid/ask для хранения basis
             # bid = min(mexc_mid, aster_mid), ask = max(mexc_mid, aster_mid)
             push_tick(

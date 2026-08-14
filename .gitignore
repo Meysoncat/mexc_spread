@@ -76,3 +76,4 @@ conf/
 .agents/skills/*
 !.agents/skills/web-user-sim/
 
+_cm.txt  

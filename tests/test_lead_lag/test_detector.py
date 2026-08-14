@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from mexc_monitor.lead_lag.detector import LagDetector, _MIN_OBSERVATIONS
 from mexc_monitor.lead_lag.models import LeadLagConfig, LagEstimate
