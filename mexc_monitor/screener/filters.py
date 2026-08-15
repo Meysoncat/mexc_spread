@@ -17,6 +17,43 @@ def _is_nan(v) -> bool:
     return isinstance(v, float) and math.isnan(v)
 
 
+_LEVERAGED_SUFFIXES = (
+    "3LUSDT", "3SUSDT", "5LUSDT", "5SUSDT", "BULLUSDT", "BEARUSDT",
+)
+
+
+def is_leveraged_token(symbol: str) -> bool:
+    """Leveraged tokens (3L/3S/5L/5S/BULL/BEAR) have structurally wide
+    spread noise — their "spread" is a rebalancing artefact, not an
+    arbitrage opportunity."""
+    sym = symbol.strip().upper()
+    return sym.endswith(_LEVERAGED_SUFFIXES)
+
+
+def passes_basic_floors(c: Candidate, cfg: ScreenerConfig) -> bool:
+    """Absolute sanity floors only (no percentile/z-score/lifetime gates).
+
+    Used to build the *clean universe* for the adaptive percentile cutoff:
+    dead/illiquid/stale rows would otherwise drag the regime reference and
+    make the calibration meaningless.
+    """
+    if c.spread_bps is None or c.net_spread_bps is None:
+        return False
+    if c.symbol.upper() in cfg.symbol_blacklist:
+        return False
+    if cfg.leveraged_tokens_filter and is_leveraged_token(c.symbol):
+        return False
+    if c.spread_bps > cfg.max_spread_bps:
+        return False
+    if c.l1_notional < cfg.min_l1_notional_usdt:
+        return False
+    if cfg.volume_gate_mode != "soft" and c.volume_24h_quote < cfg.min_volume_24h_usdt:
+        return False
+    if c.tick_age_ms > cfg.max_tick_age_ms:
+        return False
+    return True
+
+
 def compute_percentile_cutoff(values: list[float], pct: float) -> float:
     """Return the value at ``pct`` (0..100) of the distribution.
 
@@ -42,6 +79,7 @@ def passes_gates(
     c: Candidate,
     cfg: ScreenerConfig,
     adaptive_ctx: dict | None = None,
+    hysteresis_bps: float = 0.0,
 ) -> tuple[bool, list[str]]:
     """Hard-cut gate filters. Returns (passed, reasons) where ``reasons`` lists
     every failed gate (useful for debugging / "why not" tooltips).
@@ -50,8 +88,14 @@ def passes_gates(
     spread-size decision can be regime-relative. Absolute safety floors
     (max spread, volume, liquidity, lifetime, freshness, blacklist) always
     apply; the percentile / z-score gates run only when their toggles are on.
+
+    ``hysteresis_bps`` relaxes the net-spread floor and the percentile cutoff
+    for shortlist incumbents so a coin hovering at the edge doesn't flap
+    in/out of the top on every scan (which spams enter/exit history and
+    feed re-subscriptions).
     """
     reasons: list[str] = []
+    hyst = max(0.0, hysteresis_bps)
 
     if c.spread_bps is None or c.net_spread_bps is None:
         return False, ["no spread data"]
@@ -60,9 +104,13 @@ def passes_gates(
     if c.symbol.upper() in cfg.symbol_blacklist:
         reasons.append("blacklisted")
 
-    if c.net_spread_bps < cfg.min_net_spread_bps:
+    if cfg.leveraged_tokens_filter and is_leveraged_token(c.symbol):
+        reasons.append("leveraged token")
+
+    min_net = cfg.min_net_spread_bps - hyst
+    if c.net_spread_bps < min_net:
         reasons.append(
-            f"net_spread {c.net_spread_bps:.1f} < floor {cfg.min_net_spread_bps}"
+            f"net_spread {c.net_spread_bps:.1f} < floor {min_net:.1f}"
         )
 
     if c.spread_bps > cfg.max_spread_bps:
@@ -91,10 +139,12 @@ def passes_gates(
     # ── Adaptive gates (regime-relative) ─────────────────────────────────────
     if cfg.adaptive_mode and adaptive_ctx is not None:
         cutoff = adaptive_ctx.get("percentile_cutoff")
-        if cutoff is not None and c.net_spread_bps < cutoff:
-            reasons.append(
-                f"net_spread {c.net_spread_bps:.1f} < percentile cutoff {cutoff:.1f}"
-            )
+        if cutoff is not None:
+            cutoff_eff = cutoff - hyst
+            if c.net_spread_bps < cutoff_eff:
+                reasons.append(
+                    f"net_spread {c.net_spread_bps:.1f} < percentile cutoff {cutoff_eff:.1f}"
+                )
 
     if cfg.use_spread_zscore:
         if c.spread_zscore is None or c.spread_zscore < cfg.min_spread_zscore:
@@ -149,12 +199,27 @@ def score_candidate(
     life_term = cfg.w_life * math.log1p(max(c.lifetime_sec, 0.0))
     stab_term = cfg.w_stab * (max(c.pct_time_above, 0.0) / 100.0)
     vol_term = -cfg.w_vol * (c.spread_std if c.spread_std is not None else 0.0)
+    # Staleness is snapshot-global (identical for every row), so it never
+    # discriminates between candidates — kept in the breakdown for
+    # diagnostics only, default weight is 0.
     stale_term = -cfg.w_stale * (max(c.tick_age_ms, 0.0) / 1000.0)
     z_term = cfg.w_zscore * min(max(z, 0.0), cfg.zscore_cap)
     # 24h volume reward — ranks liquid coins higher (soft signal, never a kill).
     vol24_term = cfg.w_volume24h * math.log1p(
         max(c.volume_24h_quote, 0.0) / cfg.volume_ref_usdt
     )
+    # Order-flow imbalance: buy_quote/sell_quote over the trades window.
+    # Sustained buy pressure is what closes a spread — a direct predictor of
+    # the edge being realized. 0 when the trades poller has no data.
+    flow_term = 0.0
+    if c.buy_sell_ratio is not None:
+        flow_term = cfg.w_flow * max(-1.0, min(1.0, c.buy_sell_ratio - 1.0))
+    # Recent traded turnover (60s window) — micro-liquidity now, not 24h ago.
+    tv_term = 0.0
+    if c.trade_volume_quote_60s is not None:
+        tv_term = cfg.w_trade_vol * math.log1p(
+            max(c.trade_volume_quote_60s, 0.0) / cfg.trade_vol_ref_usdt
+        )
 
     breakdown = {
         "ev": ev_term,
@@ -166,6 +231,8 @@ def score_candidate(
         "staleness": stale_term,
         "zscore": z_term,
         "volume24h": vol24_term,
+        "flow": flow_term,
+        "trade_volume": tv_term,
         "activity_factor": round(activity, 3),
     }
     score = (
@@ -178,5 +245,7 @@ def score_candidate(
         + stale_term
         + z_term
         + vol24_term
+        + flow_term
+        + tv_term
     )
     return score, breakdown

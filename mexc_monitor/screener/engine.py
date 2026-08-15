@@ -22,7 +22,7 @@ import math
 import queue
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +49,7 @@ from mexc_monitor.screener.config import (
 )
 from mexc_monitor.screener.filters import (
     compute_percentile_cutoff,
+    passes_basic_floors,
     passes_gates,
     score_candidate,
 )
@@ -122,11 +123,18 @@ def _calibrate_step(
     Too many opportunities → raise the percentile (stricter cutoff → fewer
     pass); too few → lower it; in-band → unchanged. Clamps to the configured
     ``[spread_percentile_min, spread_percentile_max]`` range.
+
+    The step is proportional to how far the median sits outside the target
+    band (in units of band width), so a badly mis-tuned percentile converges
+    quickly while a near-band one nudges gently instead of oscillating.
     """
+    band = max(1.0, float(cfg.target_opportunity_max - cfg.target_opportunity_min))
     if median_count > cfg.target_opportunity_max:
-        nxt = current_percentile + cfg.calibration_step
+        excess = (median_count - cfg.target_opportunity_max) / band
+        nxt = current_percentile + cfg.calibration_step * max(1.0, excess)
     elif median_count < cfg.target_opportunity_min:
-        nxt = current_percentile - cfg.calibration_step
+        deficit = (cfg.target_opportunity_min - median_count) / band
+        nxt = current_percentile - cfg.calibration_step * max(1.0, deficit)
     else:
         nxt = current_percentile
     return max(
@@ -148,6 +156,8 @@ class ScreenerEngine:
         self._history_db_path = history_db_path
         self._rest_trades_poller = rest_trades_poller
         self._prev_opp_symbols: set[str] = set()
+        self._prev_top_symbols: set[str] = set()  # shortlist incumbents (hysteresis)
+        self._reject_reasons_top: list[list] = []  # [[reason, count], ...]
         self._opps: list[dict] = []
         self._scanned_at_iso: str | None = None
         self._total_universe = 0
@@ -183,6 +193,7 @@ class ScreenerEngine:
             except Exception:
                 logger.warning("Screener: close_all_open history failed", exc_info=True)
         self._prev_opp_symbols = set()
+        self._prev_top_symbols = set()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="spread-screener"
@@ -286,6 +297,7 @@ class ScreenerEngine:
                 "calibrated_at": self._calibrated_at_iso,
                 "target_opportunity_min": cfg.target_opportunity_min,
                 "target_opportunity_max": cfg.target_opportunity_max,
+                "reject_reasons_top": [list(r) for r in self._reject_reasons_top],
             }
 
     # ── SSE pub/sub ──────────────────────────────────────────────────────────
@@ -385,7 +397,10 @@ class ScreenerEngine:
             )
 
             if is_new_snapshot:
-                self._state.update(sym, spread_bps, threshold, now_ms)
+                # Lifetime / pct-above must measure the *net* spread against
+                # the net floor — comparing gross to a net threshold inflates
+                # persistence whenever a non-zero fee is configured.
+                self._state.update(sym, net, threshold, now_ms)
 
             lifetime = self._state.get_lifetime(sym, now_ms)
             pct_above, spread_std = self._state.get_rolling(sym, threshold)
@@ -425,7 +440,10 @@ class ScreenerEngine:
                 trade_volume_quote_60s=trade_vol_60,
             )
             candidates.append(c)
-            if net is not None:
+            # Clean universe for the percentile gate: only sane, tradeable
+            # rows feed the regime reference — dead/illiquid/stale junk must
+            # not drag the cutoff the calibration steers.
+            if net is not None and passes_basic_floors(c, cfg):
                 all_nets.append(net)
 
         if is_new_snapshot:
@@ -443,11 +461,20 @@ class ScreenerEngine:
             percentile_cutoff = None
             adaptive_ctx = None
 
-        # Phase C — gate + score.
+        # Phase C — gate + score. Shortlist incumbents get a small hysteresis
+        # margin so a coin hovering at the gate edge doesn't flap in/out of
+        # the top on every scan.
+        with self._lock:
+            prev_top = set(self._prev_top_symbols)
+        reject_counts: Counter[str] = Counter()
         scored: list[tuple[float, Candidate]] = []
         for c in candidates:
-            passed, _reasons = passes_gates(c, cfg, adaptive_ctx)
+            hyst = cfg.exit_hysteresis_bps if c.symbol in prev_top else 0.0
+            passed, reasons = passes_gates(c, cfg, adaptive_ctx, hysteresis_bps=hyst)
             if not passed:
+                # Count the first (primary) reason per candidate.
+                if reasons:
+                    reject_counts[reasons[0].split(" ")[0]] += 1
                 continue
             score, breakdown = score_candidate(c, cfg)
             scored.append((score, replace(c, score=score, score_breakdown=breakdown)))
@@ -484,6 +511,10 @@ class ScreenerEngine:
             self._total_universe = len(active)
             self._percentile_cutoff = percentile_cutoff
             self._count_history.append(len(opportunities))
+            self._prev_top_symbols = {c.symbol for _, c in top}
+            self._reject_reasons_top = [
+                [reason, count] for reason, count in reject_counts.most_common(5)
+            ]
 
         self._record_history(opportunities, scanned_at)
 

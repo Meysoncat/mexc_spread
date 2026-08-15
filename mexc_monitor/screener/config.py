@@ -49,6 +49,13 @@ class ScreenerConfig:
     min_lifetime_sec: float = 8.0  # spread must persist above threshold
     max_tick_age_ms: float = 10_000.0
     symbol_blacklist: tuple[str, ...] = field(default_factory=_default_blacklist)
+    # Leveraged tokens (3L/3S/5L/5S/BULL/BEAR) carry structurally wide spread
+    # noise from rebalancing — filtered out unless explicitly disabled.
+    leveraged_tokens_filter: bool = True
+    # Shortlist membership hysteresis: an incumbent stays in the top until its
+    # net spread falls this many bps below the entry floor / percentile cutoff
+    # (stops enter/exit flapping at the gate edge → history spam + re-subs).
+    exit_hysteresis_bps: float = 1.0
 
     # ── Economics ────────────────────────────────────────────────────────────
     # Round-trip maker fee in bps (MEXC spot = 0). net_spread = spread - this.
@@ -66,13 +73,18 @@ class ScreenerConfig:
     w_life: float = 0.8
     w_stab: float = 0.5
     w_vol: float = 0.4
-    w_stale: float = 0.05
+    # Staleness is snapshot-global (same tick_age for every row), so it never
+    # discriminates between candidates — diagnostic only, weight 0.
+    w_stale: float = 0.0
     w_zscore: float = 0.3
     w_volume24h: float = 0.3  # 24h-volume reward weight (soft mode ranking signal)
+    w_flow: float = 0.2  # order-flow imbalance (buy_sell_ratio − 1, clipped ±1)
+    w_trade_vol: float = 0.2  # recent traded turnover reward (60s window)
     # Scorer normalizers
     spread_cap_bps: float = 50.0  # cap on spread reward
     liq_ref_usdt: float = 1000.0  # log1p(l1_notional / liq_ref)
     volume_ref_usdt: float = 50_000.0  # log1p(volume_24h / volume_ref)
+    trade_vol_ref_usdt: float = 5_000.0  # log1p(trade_volume_60s / trade_vol_ref)
     zscore_cap: float = 4.0  # cap on z-score reward
 
     # ── Adaptive thresholds ──────────────────────────────────────────────────
@@ -180,7 +192,7 @@ def _apply_env_overrides(cfg: ScreenerConfig) -> ScreenerConfig:
 
 def apply_config_patch(cfg: ScreenerConfig, patch: dict) -> ScreenerConfig:
     """Return a new config with a validated patch applied (used by PATCH endpoint)."""
-    bool_fields = {"adaptive_mode", "use_spread_zscore"}
+    bool_fields = {"adaptive_mode", "use_spread_zscore", "leveraged_tokens_filter"}
     str_fields = {"volume_gate_mode"}
     int_fields = {
         "top_limit",

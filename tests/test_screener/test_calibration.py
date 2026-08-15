@@ -31,9 +31,10 @@ def test_median_even():
 
 
 def test_calibrate_raises_percentile_when_too_many():
-    # default target 2..5; count 20 → stricter (percentile up)
+    # default target 2..5 (band width 3); count 20 → excess (20-5)/3 = 5 →
+    # proportional step 1.0 * 5 = +5, clamped at max 99.
     nxt = _calibrate_step(95.0, 20.0, _cfg())
-    assert nxt == pytest.approx(96.0)
+    assert nxt == pytest.approx(99.0)
 
 
 def test_calibrate_lowers_percentile_when_too_few():
@@ -59,7 +60,8 @@ def test_calibrate_clamps_to_min():
 
 def test_calibrate_respects_custom_step():
     cfg = _cfg(calibration_step=2.5)
-    assert _calibrate_step(90.0, 100.0, cfg) == pytest.approx(92.5)
+    # Just outside the band (excess < band) → exactly one step.
+    assert _calibrate_step(90.0, 6.0, cfg) == pytest.approx(92.5)
 
 
 def test_calibrate_respects_custom_target_band():
@@ -70,7 +72,16 @@ def test_calibrate_respects_custom_target_band():
     assert _calibrate_step(95.0, 10.0, cfg) == pytest.approx(95.0)
 
 
-def test_calibrate_step_size_only_changes_by_one_step():
+def test_calibrate_step_scales_with_excess():
     cfg = _cfg(calibration_step=1.0)
-    # A huge count still moves the percentile by exactly one step.
-    assert _calibrate_step(90.0, 1_000_000.0, cfg) == pytest.approx(91.0)
+    # One band-width above the band (8 = 5 + 3) → 1 step; two widths (11) → 2.
+    assert _calibrate_step(90.0, 8.0, cfg) == pytest.approx(91.0)
+    assert _calibrate_step(90.0, 11.0, cfg) == pytest.approx(92.0)
+    # Below the band works symmetrically (-1 → deficit (2-(-1))/3 = 1 → 1 step).
+    assert _calibrate_step(90.0, -1.0, cfg) == pytest.approx(89.0)
+
+
+def test_calibrate_never_less_than_one_step():
+    cfg = _cfg(calibration_step=1.0)
+    # A count barely outside the band still moves by a full step (no dead zone).
+    assert _calibrate_step(90.0, 5.5, cfg) == pytest.approx(91.0)

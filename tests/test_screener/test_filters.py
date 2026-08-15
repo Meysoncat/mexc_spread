@@ -241,6 +241,8 @@ def test_score_breakdown_has_all_terms():
         "staleness",
         "zscore",
         "volume24h",
+        "flow",
+        "trade_volume",
         "activity_factor",
     }
     assert breakdown["volatility"] <= 0
@@ -281,9 +283,46 @@ def test_volatility_penalizes():
 
 
 def test_staleness_penalizes():
+    # w_stale defaults to 0 (tick_age is snapshot-global, never discriminates);
+    # opt in explicitly to check the term still works when enabled.
     fresh = _candidate(tick_age_ms=500.0)
     stale = _candidate(tick_age_ms=9_000.0)
-    assert score_candidate(fresh, _cfg())[0] > score_candidate(stale, _cfg())[0]
+    cfg = _cfg(w_stale=0.05)
+    assert score_candidate(fresh, cfg)[0] > score_candidate(stale, cfg)[0]
+
+
+def test_staleness_default_weight_is_neutral():
+    fresh = _candidate(tick_age_ms=500.0)
+    stale = _candidate(tick_age_ms=9_000.0)
+    assert score_candidate(fresh, _cfg())[0] == score_candidate(stale, _cfg())[0]
+
+
+# ── order-flow / traded-volume terms ────────────────────────────────────────
+
+
+def test_buy_pressure_scores_higher():
+    buy = _candidate(buy_sell_ratio=1.8)
+    sell = _candidate(buy_sell_ratio=0.4)
+    neutral = _candidate(buy_sell_ratio=None)
+    cfg = _cfg()
+    assert score_candidate(buy, cfg)[0] > score_candidate(neutral, cfg)[0]
+    assert score_candidate(sell, cfg)[0] < score_candidate(neutral, cfg)[0]
+
+
+def test_flow_term_clipped_at_plus_minus_one():
+    extreme = _candidate(buy_sell_ratio=100.0)
+    cfg = _cfg(w_flow=0.2)
+    _, breakdown = score_candidate(extreme, cfg)
+    assert breakdown["flow"] == pytest.approx(0.2)
+
+
+def test_trade_volume_scores_higher():
+    busy = _candidate(trade_volume_quote_60s=50_000.0)
+    quiet = _candidate(trade_volume_quote_60s=10.0)
+    none = _candidate(trade_volume_quote_60s=None)
+    cfg = _cfg()
+    assert score_candidate(busy, cfg)[0] > score_candidate(quiet, cfg)[0]
+    assert score_candidate(none, cfg)[1]["trade_volume"] == 0.0
 
 
 def test_higher_zscore_scores_higher():
@@ -356,3 +395,71 @@ def test_zscore_reward_capped():
     _, b1 = score_candidate(_candidate(spread_zscore=2.0), cfg)
     _, b2 = score_candidate(_candidate(spread_zscore=10.0), cfg)
     assert b1["zscore"] == pytest.approx(b2["zscore"])
+
+
+# ── leveraged-token filter ──────────────────────────────────────────────────
+
+
+def test_leveraged_tokens_rejected():
+    for sym in ("BTC3LUSDT", "ETH3SUSDT", "SOL5LUSDT", "ADA5SUSDT", "XRPBULLUSDT", "DOGEBEARUSDT"):
+        passed, reasons = passes_gates(_candidate(symbol=sym), _cfg())
+        assert not passed, sym
+        assert any("leveraged" in r for r in reasons), sym
+
+
+def test_leveraged_filter_can_be_disabled():
+    passed, _ = passes_gates(
+        _candidate(symbol="BTC3LUSDT"), _cfg(leveraged_tokens_filter=False)
+    )
+    assert passed
+
+
+def test_normal_symbol_not_flagged_as_leveraged():
+    assert passes_gates(_candidate(symbol="BULLPUMPUSDT"), _cfg())[0]
+
+
+# ── shortlist hysteresis ────────────────────────────────────────────────────
+
+
+def test_hysteresis_relaxes_net_floor_for_incumbent():
+    # floor 3.0, net 2.5: rejected normally, passes with 1.0 bps hysteresis.
+    c = _candidate(net_spread_bps=2.5, spread_bps=2.5, spread_zscore=5.0)
+    assert not passes_gates(c, _cfg(min_net_spread_bps=3.0, adaptive_mode=False))[0]
+    assert passes_gates(
+        c, _cfg(min_net_spread_bps=3.0, adaptive_mode=False), hysteresis_bps=1.0
+    )[0]
+
+
+def test_hysteresis_relaxes_percentile_cutoff():
+    c = _candidate(net_spread_bps=9.5, spread_bps=9.5, spread_zscore=5.0)
+    cfg = _cfg(min_net_spread_bps=3.0)
+    ctx = {"percentile_cutoff": 10.0}
+    assert not passes_gates(c, cfg, ctx)[0]
+    assert passes_gates(c, cfg, ctx, hysteresis_bps=1.0)[0]
+
+
+def test_hysteresis_does_not_relax_safety_floors():
+    # Illiquid junk stays out even with hysteresis.
+    c = _candidate(spread_bps=500.0, net_spread_bps=500.0, spread_zscore=5.0)
+    assert not passes_gates(c, _cfg(), hysteresis_bps=100.0)[0]
+
+
+# ── clean universe for the percentile cutoff ────────────────────────────────
+
+
+def test_basic_floors_exclude_junk_from_universe():
+    from mexc_monitor.screener.filters import passes_basic_floors
+
+    assert passes_basic_floors(_candidate(), _cfg())
+    # stale row
+    assert not passes_basic_floors(_candidate(tick_age_ms=60_000.0), _cfg())
+    # illiquid wide spread
+    assert not passes_basic_floors(_candidate(spread_bps=500.0), _cfg())
+    # thin L1
+    assert not passes_basic_floors(_candidate(l1_notional=1.0), _cfg())
+    # blacklisted
+    assert not passes_basic_floors(_candidate(symbol="USDCUSDT"), _cfg())
+    # leveraged token
+    assert not passes_basic_floors(_candidate(symbol="BTC3LUSDT"), _cfg())
+    # low net spread is FINE — the percentile gate itself decides that
+    assert passes_basic_floors(_candidate(net_spread_bps=0.5), _cfg())
