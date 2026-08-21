@@ -291,10 +291,12 @@ def test_staleness_penalizes():
     assert score_candidate(fresh, cfg)[0] > score_candidate(stale, cfg)[0]
 
 
-def test_staleness_default_weight_is_neutral():
+def test_staleness_default_weight_discriminates():
+    # Default w_stale=0.05 again: tick_age_ms is per-symbol now, so fresh
+    # ticks must rank above stale ones out of the box.
     fresh = _candidate(tick_age_ms=500.0)
     stale = _candidate(tick_age_ms=9_000.0)
-    assert score_candidate(fresh, _cfg())[0] == score_candidate(stale, _cfg())[0]
+    assert score_candidate(fresh, _cfg())[0] > score_candidate(stale, _cfg())[0]
 
 
 # ── order-flow / traded-volume terms ────────────────────────────────────────

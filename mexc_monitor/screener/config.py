@@ -73,9 +73,9 @@ class ScreenerConfig:
     w_life: float = 0.8
     w_stab: float = 0.5
     w_vol: float = 0.4
-    # Staleness is snapshot-global (same tick_age for every row), so it never
-    # discriminates between candidates — diagnostic only, weight 0.
-    w_stale: float = 0.0
+    # tick_age_ms is per-symbol (live-feed tick timestamp where available),
+    # so staleness genuinely discriminates between candidates again.
+    w_stale: float = 0.05
     w_zscore: float = 0.3
     w_volume24h: float = 0.3  # 24h-volume reward weight (soft mode ranking signal)
     w_flow: float = 0.2  # order-flow imbalance (buy_sell_ratio − 1, clipped ±1)

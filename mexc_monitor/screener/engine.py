@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mexc_monitor.pipeline import safe_load_snapshot
+from mexc_monitor.spread_buffer import get_latest as sb_get_latest
 from mexc_monitor import trade_buffer
 from mexc_monitor.ws_spot_orderbook import (
     get_book_update_rate,
@@ -419,6 +420,17 @@ class ScreenerEngine:
             buy_sell_ratio = tstat.buy_sell_ratio if tstat else None
             trade_vol_60 = tstat.volume_quote if tstat else None
 
+            # Per-symbol freshness: when the symbol is on a live feed, its
+            # own last-tick timestamp decides freshness instead of the
+            # snapshot-global age (which was identical for every row).
+            sym_age_ms = tick_age_ms
+            try:
+                _tick = sb_get_latest(sym)
+            except Exception:
+                _tick = None
+            if _tick is not None:
+                sym_age_ms = max(0.0, now_ms - float(_tick.timestamp_ms))
+
             c = Candidate(
                 symbol=sym,
                 bid=bid,
@@ -428,7 +440,7 @@ class ScreenerEngine:
                 net_spread_bps=net,
                 l1_notional=l1_notional,
                 volume_24h_quote=vol24,
-                tick_age_ms=tick_age_ms,
+                tick_age_ms=sym_age_ms,
                 observed_at_iso=observed_at,
                 lifetime_sec=lifetime,
                 pct_time_above=pct_above,

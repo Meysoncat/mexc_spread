@@ -16,8 +16,9 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from mexc_monitor.cross_screener.symbols import cross_pairs
 from mexc_monitor.orm import CrossSpreadSnapshot, create_schema, get_engine
-from mexc_monitor.spread_buffer import get_latest, get_tracked_symbols
+from mexc_monitor.spread_buffer import get_latest, get_tracked_symbols  # noqa: F401  (re-exported to routers)
 
 logger = logging.getLogger(__name__)
 
@@ -82,29 +83,11 @@ class CrossSpreadWorker:
     def _snapshot_tick(self) -> None:
         """Один цикл: собрать данные, записать, почистить."""
         now_iso = datetime.now(timezone.utc).isoformat()
-        tracked = get_tracked_symbols()
 
-        # Найти символы с данными на обеих биржах
-        # MEXC: BTCUSDT или BTC_USDT
-        # AsterDEX: ASTER:BTCUSDT
-        aster_symbols = [s.replace("ASTER:", "") for s in tracked if s.startswith("ASTER:")]
-        [s for s in tracked if not s.startswith("ASTER:") and not s.startswith("CROSS:")]
-
-        # Маппинг: для каждого aster символа найти соответствующий MEXC
+        # Маппинг MEXC (BTCUSDT / BTC_USDT) ↔ AsterDEX (ASTER:BTCUSDT)
+        # централизован в cross_screener.symbols.cross_pairs.
         batch: list[CrossSpreadSnapshot] = []
-        for aster_sym in aster_symbols:
-            aster_tick = get_latest(f"ASTER:{aster_sym}")
-            if aster_tick is None:
-                continue
-
-            # Try MEXC spot (BTCUSDT) or futures (BTC_USDT)
-            mexc_tick = get_latest(aster_sym)
-            if mexc_tick is None:
-                fut_sym = aster_sym.replace("USDT", "_USDT") if "USDT" in aster_sym and "_" not in aster_sym else None
-                if fut_sym:
-                    mexc_tick = get_latest(fut_sym)
-            if mexc_tick is None:
-                continue
+        for aster_sym, mexc_tick, aster_tick in cross_pairs("mexc", "aster"):
 
             # Compute basis
             aster_mid = (aster_tick.bid + aster_tick.ask) / 2

@@ -199,9 +199,8 @@ def score_candidate(
     life_term = cfg.w_life * math.log1p(max(c.lifetime_sec, 0.0))
     stab_term = cfg.w_stab * (max(c.pct_time_above, 0.0) / 100.0)
     vol_term = -cfg.w_vol * (c.spread_std if c.spread_std is not None else 0.0)
-    # Staleness is snapshot-global (identical for every row), so it never
-    # discriminates between candidates — kept in the breakdown for
-    # diagnostics only, default weight is 0.
+    # tick_age_ms is per-symbol (live-feed tick where available), so this
+    # term discriminates between candidates again.
     stale_term = -cfg.w_stale * (max(c.tick_age_ms, 0.0) / 1000.0)
     z_term = cfg.w_zscore * min(max(z, 0.0), cfg.zscore_cap)
     # 24h volume reward — ranks liquid coins higher (soft signal, never a kill).

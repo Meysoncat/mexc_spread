@@ -264,6 +264,15 @@ _screener_engine = ScreenerEngine(
     rest_trades_poller=_rest_trades_poller,
 )
 
+from mexc_monitor.cross_screener import CrossScreenerEngine
+_cross_screener_engine = CrossScreenerEngine(
+    history_db_path=(
+        resolve_history_db_path(DEFAULT_SETTINGS)
+        if DEFAULT_SETTINGS.history_enabled
+        else None
+    ),
+)
+
 
 def _resolve_engine(
     exchange: str | None = None, market: str | None = None
@@ -304,6 +313,7 @@ def _startup_prefetch_futures_ws() -> None:
     start_history_worker()
     _portfolio_risk.start()
     _screener_engine.start()
+    _cross_screener_engine.start()
     if DEFAULT_SETTINGS.rest_trades_poller_enabled:
         _rest_trades_poller.start()
     _metascalp_poller.start()
@@ -334,6 +344,7 @@ def _shutdown_workers() -> None:
     stop_ws_booktickers()
     _portfolio_risk.stop()
     _screener_engine.stop()
+    _cross_screener_engine.stop()
     _registry.shutdown_all()
     stop_history_worker()
     stop_futures_depth_book_ws()
