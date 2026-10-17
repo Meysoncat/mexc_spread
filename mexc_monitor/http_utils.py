@@ -8,31 +8,17 @@ from typing import Any, Iterator
 
 import httpx
 
-from mexc_monitor.clock_skew_middleware import ClockSkewClient
 from mexc_monitor.config import Settings
 
 
 @contextmanager
 def mexc_httpx_client(settings: Settings, exchange: str = "generic") -> Iterator[httpx.Client]:
-    """Контекстный httpx.Client с интеграцией clock skew detection.
-
-    Parameters
-    ----------
-    settings
-        Настройки для httpx-клиента.
-    exchange
-        Имя биржи для clock skew detection (mexc, binance, etc.).
-
-    Yields
-    ------
-    httpx.Client
-        Клиент с clock skew detection.
-    """
+    """Контекстный httpx.Client с таймаутом и заголовками из настроек."""
     kwargs: dict[str, Any] = {"timeout": settings.timeout_sec}
     if settings.http_extra_headers:
         kwargs["headers"] = dict(settings.http_extra_headers)
 
-    with ClockSkewClient(**kwargs, exchange=exchange) as client:
+    with httpx.Client(**kwargs) as client:
         yield client
 
 

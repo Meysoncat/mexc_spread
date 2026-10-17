@@ -3,8 +3,6 @@ import { Outlet } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { MobileDrawer } from "./MobileDrawer";
-import { PortfolioRiskWidget } from "./PortfolioRiskWidget";
-import { PnlWidget } from "./PnlWidget";
 import { AlertToggle } from "./AlertToggle";
 import { FeedsStatusWidget } from "./FeedsStatusWidget";
 
@@ -54,15 +52,13 @@ export function Layout() {
 
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Desktop top bar with feed status, PnL and risk widgets */}
+        {/* Desktop top bar with feed status and alert toggle */}
         <header className="hidden h-10 shrink-0 items-center justify-between border-b border-line px-4 md:flex">
           <span className="text-xs font-semibold text-ink-muted">
             MEXC Spread Monitor
           </span>
           <div className="flex items-center gap-2">
             <FeedsStatusWidget />
-            <PnlWidget />
-            <PortfolioRiskWidget />
             <AlertToggle />
           </div>
         </header>
@@ -80,7 +76,7 @@ export function Layout() {
             MEXC Monitor
           </span>
           <div className="ml-auto">
-            <PortfolioRiskWidget />
+            <FeedsStatusWidget />
           </div>
         </header>
 

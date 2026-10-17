@@ -2,7 +2,9 @@
 venv/
 __pycache__/
 *.pyc
-.streamlit/secrets.toml
+.idea/
+*.egg-info/
+.pytest_cache/
 node_modules/
 frontend/node_modules/
 frontend/dist/

@@ -1,17 +1,9 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
-  ArrowUpDown,
   Columns3,
-  Bell,
-  ChartCandlestick,
-  ChartLine,
   ChevronsLeft,
   ChevronsRight,
-  Download,
-  Shield,
-  TrendingUp,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { useNavBadges } from "../hooks/useNavBadges";
@@ -29,28 +21,10 @@ export interface NavGroup {
 
 export const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Мониторинг",
+    label: "Скринер",
     items: [
       { path: "/", label: "Spread Monitor", icon: Activity },
-      { path: "/spread-history", label: "История спреда", icon: ChartCandlestick },
-      { path: "/lead-lag", label: "Lead-Lag", icon: TrendingUp },
-    ],
-  },
-  {
-    label: "Арбитраж",
-    items: [
-      { path: "/arbitrage", label: "Арбитраж", icon: ArrowUpDown },
       { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
-      { path: "/futures-arb", label: "Futures Arb", icon: ChartLine },
-      { path: "/asterdex", label: "AsterDEX", icon: Zap },
-    ],
-  },
-  {
-    label: "Торговля",
-    items: [
-      { path: "/spread-capture", label: "Spread Capture", icon: Download },
-      { path: "/trading", label: "Trading Admin", icon: Shield },
-      { path: "/alerts", label: "Алерты", icon: Bell },
     ],
   },
 ];
