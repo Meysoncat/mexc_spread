@@ -3,7 +3,7 @@ import { Outlet } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { MobileDrawer } from "./MobileDrawer";
-import { AlertToggle } from "./AlertToggle";
+import { SetupAlertToggle } from "./SetupAlertToggle";
 import { FeedsStatusWidget } from "./FeedsStatusWidget";
 
 const NAV_COLLAPSED_STORAGE_KEY = "mexc-ui-nav-collapsed";
@@ -55,11 +55,11 @@ export function Layout() {
         {/* Desktop top bar with feed status and alert toggle */}
         <header className="hidden h-10 shrink-0 items-center justify-between border-b border-line px-4 md:flex">
           <span className="text-xs font-semibold text-ink-muted">
-            MEXC Spread Monitor
+            Screener · Setups
           </span>
           <div className="flex items-center gap-2">
             <FeedsStatusWidget />
-            <AlertToggle />
+            <SetupAlertToggle />
           </div>
         </header>
 
@@ -73,7 +73,7 @@ export function Layout() {
             <Menu className="h-5 w-5" />
           </button>
           <span className="ml-3 text-sm font-semibold text-ink">
-            MEXC Monitor
+            Screener
           </span>
           <div className="ml-auto">
             <FeedsStatusWidget />

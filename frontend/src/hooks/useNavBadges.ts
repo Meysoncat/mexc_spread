@@ -1,8 +1,11 @@
+import { useSetupStream } from "../setups/useSetupStream";
+
 interface BadgeMap {
   [path: string]: { count: number; level: "info" | "warning" | "critical" };
 }
 
-/** Бейджи навигации. Торговых движков больше нет — бейджей пока нет. */
+/** Бейджи навигации: число активных сетапов у пункта «Сетапы». */
 export function useNavBadges(): BadgeMap {
-  return {};
+  const { active } = useSetupStream();
+  return active.length > 0 ? { "/": { count: active.length, level: "info" } } : {};
 }

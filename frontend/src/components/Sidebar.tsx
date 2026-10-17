@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
   Columns3,
+  Lightbulb,
   ChevronsLeft,
   ChevronsRight,
   type LucideIcon,
@@ -21,10 +22,14 @@ export interface NavGroup {
 
 export const NAV_GROUPS: NavGroup[] = [
   {
+    label: "Идеи",
+    items: [{ path: "/", label: "Сетапы", icon: Lightbulb }],
+  },
+  {
     label: "Скринер",
     items: [
-      { path: "/", label: "Spread Monitor", icon: Activity },
-      { path: "/multi-exchange", label: "Мультибиржа", icon: Columns3 },
+      { path: "/screener", label: "Все биржи", icon: Columns3 },
+      { path: "/spread-monitor", label: "Spread Monitor", icon: Activity },
     ],
   },
 ];
@@ -52,7 +57,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate }: SidebarProp
       <div className="flex h-12 shrink-0 items-center border-b border-line px-3">
         {!collapsed && (
           <span className="ml-1 truncate text-sm font-semibold text-ink">
-            MEXC Monitor
+            Screener
           </span>
         )}
         <button
