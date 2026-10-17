@@ -56,6 +56,7 @@ class PerpQuote:
     bid_qty: float | None  # монет базового актива на лучшей цене; None — неизвестно
     ask_qty: float | None
     age_sec: float  # возраст данных источника
+    price_mult: float = 1.0  # цена инструмента = bid/ask × price_mult
     indicative: bool = False  # цены не из стакана (например, impact-цены)
     funding_rate: float | None = None
     funding_interval_h: float = 8.0
@@ -100,10 +101,16 @@ class SpotQuote:
     ask_qty: float | None
     age_sec: float
     volume_24h_usd: float | None = None
+    price_mult: float = 1.0
 
     @property
     def mid(self) -> float:
         return (self.bid + self.ask) / 2
+
+    @property
+    def spread_bps(self) -> float:
+        m = self.mid
+        return (self.ask - self.bid) / m * 1e4 if m > 0 else 0.0
 
     @property
     def bid_notional(self) -> float | None:

@@ -1,0 +1,37 @@
+{
+  "_comment": "Настройки генератора сетапов. Указывайте только то, что меняете: файл мёржится поверх значений по умолчанию (mexc_monitor/setups/config.py).",
+  "_fees": "Комиссии taker в bps. По умолчанию — базовый тариф (VIP0). Поставьте свои, иначе edge будет занижен или завышен.",
+  "perp_taker_bps": {
+    "binance": 5.0,
+    "bybit": 5.5,
+    "okx": 5.0,
+    "gateio": 5.0,
+    "bitget": 6.0,
+    "htx": 5.0,
+    "mexc": 2.0,
+    "asterdex": 3.5,
+    "dydx": 5.0,
+    "hyperliquid": 4.5,
+    "lighter": 0.0
+  },
+  "spot_taker_bps": {
+    "binance": 10.0,
+    "bybit": 10.0,
+    "okx": 10.0,
+    "gateio": 10.0,
+    "bitget": 10.0,
+    "htx": 20.0,
+    "mexc": 5.0
+  },
+  "kline_venues": ["binance", "bybit", "mexc"],
+  "kline_universe": 150,
+  "min_score": 0,
+  "cross_perp": { "open_edge_bps": 10, "keep_edge_bps": 3, "min_l1_usd": 200 },
+  "funding_arb": { "open_apr_pct": 30, "max_breakeven_h": 24 },
+  "basis": { "open_edge_bps": 15, "allow_reverse": false },
+  "lead_lag": { "leaders": ["binance"], "move_bps": 20, "window_sec": 2 },
+  "breakout": { "lookback": 60, "volume_ratio": 3 },
+  "momentum": { "window": 5, "move_pct": 3, "extreme_pct": 6 },
+  "funding_squeeze": { "funding_8h_pct": 0.1, "oi_change_pct": 5 },
+  "btc_lag": { "venue": "binance", "btc_move_pct": 0.8, "min_corr": 0.6 }
+}

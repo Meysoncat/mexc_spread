@@ -340,6 +340,7 @@ class MarketHub:
                         bid_qty=bq * to_base if bq and to_base > 0 else None,
                         ask_qty=aq * to_base if aq and to_base > 0 else None,
                         age_sec=age,
+                        price_mult=mult,
                         indicative=indicative,
                     )
                     if st is not None:
@@ -378,6 +379,7 @@ class MarketHub:
                             ask_qty=aq * mult if aq else None,
                             age_sec=age,
                             volume_24h_usd=vol,
+                            price_mult=mult,
                         )
                     )
         return view
