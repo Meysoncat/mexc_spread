@@ -246,6 +246,11 @@ class SetupRegistry:
         with self._lock:
             return list(self._active.values())
 
+    def snapshot(self) -> tuple[int, list[dict[str, Any]]]:
+        """(seq, активные сетапы) атомарно: события с seq ≤ этого уже учтены в списке."""
+        with self._lock:
+            return self._seq, [s.to_dict() for s in self._active.values()]
+
     def get(self, key: str) -> Setup | None:
         with self._lock:
             return self._active.get(key)

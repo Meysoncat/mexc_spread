@@ -35,6 +35,22 @@ _METRICS_REF_SRC = _ROOT / "frontend" / "src" / "data" / "metrics-reference.json
 
 app = FastAPI(title="MEXC Spread Screener API", version="0.3.0")
 
+from backend.api_v1 import router as api_v1_router, ws_router as api_v1_ws_router  # noqa: E402
+from backend.screener import start_runtime, stop_runtime  # noqa: E402
+
+app.include_router(api_v1_router)
+app.include_router(api_v1_ws_router)
+
+
+@app.on_event("startup")
+def _startup_screener() -> None:
+    start_runtime()
+
+
+@app.on_event("shutdown")
+def _shutdown_screener() -> None:
+    stop_runtime()
+
 
 @app.on_event("startup")
 def _startup_prefetch_futures_ws() -> None:
