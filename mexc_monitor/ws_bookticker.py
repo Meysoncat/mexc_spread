@@ -19,6 +19,11 @@ from __future__ import annotations
 
 import gzip
 import json
+
+try:  # orjson разбирает сообщения в разы быстрее — заметно на !bookTicker Binance
+    from orjson import loads as _loads
+except ImportError:  # pragma: no cover
+    _loads = json.loads
 import logging
 import threading
 import time
@@ -178,7 +183,7 @@ class _Feed:
                         except OSError:
                             continue
                     try:
-                        msg = json.loads(raw)
+                        msg = _loads(raw)
                     except (json.JSONDecodeError, ValueError, TypeError):
                         continue
                     if self.control is not None:

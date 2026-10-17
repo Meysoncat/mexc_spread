@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,7 +34,37 @@ _ROOT = Path(__file__).resolve().parent.parent
 _METRICS_REF_PUBLIC = _ROOT / "frontend" / "public" / "metrics-reference.json"
 _METRICS_REF_SRC = _ROOT / "frontend" / "src" / "data" / "metrics-reference.json"
 
-app = FastAPI(title="MEXC Spread Screener API", version="0.3.0")
+# Хуки старта/остановки регистрируются по ходу модуля и выполняются из lifespan
+# (on_event в FastAPI устарел). Остановка — в обратном порядке.
+_startup_hooks: list = []
+_shutdown_hooks: list = []
+
+
+def _on_startup(fn):
+    _startup_hooks.append(fn)
+    return fn
+
+
+def _on_shutdown(fn):
+    _shutdown_hooks.append(fn)
+    return fn
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    for fn in _startup_hooks:
+        fn()
+    try:
+        yield
+    finally:
+        for fn in reversed(_shutdown_hooks):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — остановить остальное важнее
+                logger.exception("shutdown hook %s failed", fn.__name__)
+
+
+app = FastAPI(title="MEXC Spread Screener API", version="0.3.0", lifespan=_lifespan)
 
 from backend.api_v1 import router as api_v1_router, ws_router as api_v1_ws_router  # noqa: E402
 from backend.screener import start_runtime, stop_runtime  # noqa: E402
@@ -42,17 +73,17 @@ app.include_router(api_v1_router)
 app.include_router(api_v1_ws_router)
 
 
-@app.on_event("startup")
+@_on_startup
 def _startup_screener() -> None:
     start_runtime()
 
 
-@app.on_event("shutdown")
+@_on_shutdown
 def _shutdown_screener() -> None:
     stop_runtime()
 
 
-@app.on_event("startup")
+@_on_startup
 def _startup_prefetch_futures_ws() -> None:
     ensure_started_from_settings(DEFAULT_SETTINGS)
     ensure_futures_orderbook_ws_started(DEFAULT_SETTINGS)
@@ -62,7 +93,7 @@ def _startup_prefetch_futures_ws() -> None:
     start_history_worker()
 
 
-@app.on_event("shutdown")
+@_on_shutdown
 def _shutdown_workers() -> None:
     from mexc_monitor.ws_bookticker import stop_all as stop_ws_booktickers
 
@@ -141,7 +172,7 @@ def _mark_snapshot_hot(cache_key: str, builder, ttl: float) -> None:
         _snapshot_hot_keys[cache_key] = (time.monotonic(), builder, ttl)
 
 
-@app.on_event("startup")
+@_on_startup
 def _startup_snapshot_prefetch() -> None:
     global _snapshot_prefetch_thread
     if not _SNAPSHOT_PREFETCH_ENABLED:
@@ -163,7 +194,7 @@ def _startup_snapshot_prefetch() -> None:
         logger.warning("ws feed warmup failed: %s", e)
 
 
-@app.on_event("shutdown")
+@_on_shutdown
 def _shutdown_snapshot_prefetch() -> None:
     _snapshot_prefetch_stop.set()
 
@@ -1067,7 +1098,7 @@ def snapshot(
 
 
 @app.get("/api/snapshot/stream")
-def snapshot_stream(
+async def snapshot_stream(
     request: Request,
     market: str = Query("spot", description="spot, futures или cross"),
     exchange: str = Query("mexc"),
@@ -1099,26 +1130,38 @@ def snapshot_stream(
         builder = lambda: _build_exchange_snapshot_payload(ex, m)  # noqa: E731
     ttl = _snapshot_ttl_for(ex)
 
-    def event_generator():
+    def _poll(last_sent: str) -> tuple[str, str | None]:
+        """Синхронная часть (кэш/сборка снимка + сериализация) — в пуле потоков."""
+        _mark_snapshot_hot(cache_key, builder, ttl)
+        try:
+            out = _get_snapshot_payload(cache_key, bypass_cache=False, builder=builder, ttl=ttl)
+        except Exception as e:  # noqa: BLE001
+            out = {"ok": False, "error": str(e)}
+        marker = f"{out.get('loaded_at')}:{out.get('count')}:{out.get('ok')}"
+        if marker == last_sent:
+            return marker, None
+        return marker, f"data: {json.dumps(out)}\n\n"
+
+    async def event_generator():
+        # Асинхронный генератор: между опросами соединение не держит поток
+        # из пула (раньше каждая вкладка блокировала поток на time.sleep).
+        import asyncio
+
+        from starlette.concurrency import run_in_threadpool
+
         last_sent = ""
         last_keepalive = time.monotonic()
         while True:
-            _mark_snapshot_hot(cache_key, builder, ttl)
-            try:
-                out = _get_snapshot_payload(
-                    cache_key, bypass_cache=False, builder=builder, ttl=ttl
-                )
-            except Exception as e:  # noqa: BLE001
-                out = {"ok": False, "error": str(e)}
-            marker = f"{out.get('loaded_at')}:{out.get('count')}:{out.get('ok')}"
-            if marker != last_sent:
-                last_sent = marker
+            if await request.is_disconnected():
+                return
+            last_sent, chunk = await run_in_threadpool(_poll, last_sent)
+            if chunk is not None:
                 last_keepalive = time.monotonic()
-                yield f"data: {json.dumps(out)}\n\n"
+                yield chunk
             elif time.monotonic() - last_keepalive > 15.0:
                 last_keepalive = time.monotonic()
                 yield ": keepalive\n\n"
-            time.sleep(interval_sec)
+            await asyncio.sleep(interval_sec)
 
     return StreamingResponse(
         event_generator(),
@@ -1256,53 +1299,52 @@ def spread_stats(
 
 
 @app.get("/api/spread/stream")
-def spread_stream(
+async def spread_stream(
+    request: Request,
     symbol: str = Query(..., min_length=2, max_length=40),
 ) -> StreamingResponse:
     """
     SSE (Server-Sent Events) поток обновлений спреда в реальном времени.
     Клиент подключается и получает события при каждом изменении bid/ask.
+
+    Асинхронный: соединение не занимает поток из пула, тики из WS-потока
+    передаются через call_soon_threadsafe; при переполнении старые
+    отбрасываются (клиенту важна свежая цена, а не каждый тик).
     """
     import asyncio
-    import queue
 
     sym = symbol.strip().upper()
-    q: queue.Queue[SpreadTick | None] = queue.Queue(maxsize=500)
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue[SpreadTick] = asyncio.Queue(maxsize=500)
+
+    def _offer(tick: SpreadTick) -> None:
+        if q.full():
+            q.get_nowait()
+        q.put_nowait(tick)
 
     def on_tick(_symbol: str, tick: SpreadTick) -> None:
         try:
-            q.put_nowait(tick)
-        except queue.Full:
-            # Отбрасываем старые если клиент не успевает
-            try:
-                q.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                q.put_nowait(tick)
-            except queue.Full:
-                pass
+            loop.call_soon_threadsafe(_offer, tick)
+        except RuntimeError:  # цикл закрыт
+            pass
 
     sb_subscribe(sym, on_tick)
 
-    def event_generator():
+    async def event_generator():
         try:
             # Отправляем последний известный тик сразу
             latest = sb_get_latest(sym)
             if latest:
-                data = json.dumps(_tick_to_dict(latest))
-                yield f"data: {data}\n\n"
+                yield f"data: {json.dumps(_tick_to_dict(latest))}\n\n"
             while True:
                 try:
-                    tick = q.get(timeout=15.0)
-                except queue.Empty:
-                    # Keepalive
+                    tick = await asyncio.wait_for(q.get(), 15.0)
+                except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        return
                     yield ": keepalive\n\n"
                     continue
-                if tick is None:
-                    break
-                data = json.dumps(_tick_to_dict(tick))
-                yield f"data: {data}\n\n"
+                yield f"data: {json.dumps(_tick_to_dict(tick))}\n\n"
         finally:
             sb_unsubscribe(sym, on_tick)
 
@@ -1315,7 +1357,6 @@ def spread_stream(
             "X-Accel-Buffering": "no",
         },
     )
-
 
 
 # ─── Spread Capture Engine endpoints ───────────────────────────────────────────

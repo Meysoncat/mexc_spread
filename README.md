@@ -1,25 +1,60 @@
-# MEXC Spread Monitor
+# Screener · Setups
 
-Спот и фьючерсы MEXC: bid/ask, спред (bps), **оценка чистого спреда** (модель taker-комиссий), **L1-объём**, объёмы 24h, funding, whitelist/blacklist пар, опциональная **история в SQLite** (SQLAlchemy), фильтры, CSV, автообновление.
+Скринер криптовалютных рынков и генератор торговых идей («сетапов») для
+внешних систем исполнения. Собирает данные 11 бирж в память, ищет
+арбитражные и направленные возможности и публикует их в едином формате
+`setup/v1` по REST, SSE и WebSocket.
 
-## Два интерфейса
+**Биржи:**
+- CEX: Binance, Bybit, OKX, Gate.io, Bitget, HTX, MEXC;
+- DEX: Aster, dYdX, Hyperliquid, Lighter.
 
-| Вариант | Стек | Запуск |
-|--------|------|--------|
-| **Классический** | Streamlit | `run_app.bat` → [http://localhost:8501](http://localhost:8501) |
-| **Современный UI** | FastAPI + React + Vite + TypeScript + Tailwind | `run_modern.bat` → [http://localhost:5173](http://localhost:5173) (нужен [Node.js](https://nodejs.org/) LTS) |
+## Что генерируется
 
-Бизнес-логика общая: пакет `mexc_monitor`, фильтры в `mexc_monitor/filters.py` (Streamlit вызывает их из Python; веб-UI дублирует правила в `frontend/src/filters.ts` для мгновенной фильтрации в браузере).
+| Категория | Тип | Идея |
+|---|---|---|
+| Арбитраж | `cross_perp` | Купить perp на одной бирже, продать на другой. Edge считается после комиссий обеих ног и за вычетом обычной разницы цен этих бирж |
+| | `funding_arb` | Long там, где funding ниже, short там, где выше. Ставки нормированы на час, есть окупаемость входа |
+| | `basis` | Спот ↔ perp (cash-and-carry), с учётом funding |
+| Направленные | `lead_lag` | Лидер (Binance) сдвинулся, отстающая биржа ещё нет |
+| | `breakout` | Пробой диапазона на всплеске объёма |
+| | `momentum` | Резкое движение: продолжение или откат от экстремума |
+| | `funding_squeeze` | Перекошенный funding и растущий OI, а цена за толпой не идёт |
+| | `btc_lag` | Коррелированная с BTC монета не отыграла его движение |
 
-## Документация
-
-- **[Бизнес-процессы и трейдерская логика](docs/BUSINESS.md)** — что измеряется, метрики, ограничения, типовые сценарии (без углубления в код).
-- **[Архитектура](docs/ARCHITECTURE.md)** — модули, конфигурация, REST/WebSocket, ORM, API, современный стек.
-- **[Автоторговля: процесс и функционал](docs/TRADING.md)** — режимы `paper/live`, риск-ограничения, env-параметры, API управления и порядок запуска.
-- **[Запуск](docs/ZAPUSK.md)** — Streamlit, FastAPI+Vite, типичные ошибки.
+У направленных идей есть вход, стоп и цели. Каждая отслеживается до стопа,
+цели или конца срока, поэтому по каждому типу копится реальная статистика:
+win rate и средний R.
 
 ## Быстрый старт
 
-- Только Python: `run_app.bat`
-- Современный интерфейс: установите Node.js, затем `run_modern.bat` — **одно окно** консоли для API и Vite (или вручную: `npm run dev:modern` из корня проекта).
-"# mexc_spread" 
+```bash
+pip install -r requirements.txt
+cd frontend && npm install && npm run build && cd ..
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+- UI: http://127.0.0.1:8000 — страницы «Сетапы», «Скринер» (все биржи) и «Spread Monitor».
+- Поток сетапов: `curl -N http://127.0.0.1:8000/api/v1/setups/stream`.
+- Состояние бирж и движка: http://127.0.0.1:8000/api/v1/health.
+
+Без доступа к биржам можно запустить демо на синтетическом рынке:
+`python scripts/demo_market.py`.
+
+На Windows то же самое делает `run_modern.bat` (API и Vite в одном окне, UI на :5173).
+
+## Документация
+
+- [Интеграция](docs/INTEGRATION.md) — контракт `setup/v1`, REST/SSE/WebSocket, пример потребителя.
+- [Архитектура](docs/ARCHITECTURE.md) — откуда данные, как устроены хаб, детекторы и реестр.
+- [Запуск](docs/ZAPUSK.md) — установка, настройка, типичные проблемы.
+- [Метрики спреда](docs/BUSINESS.md) — что показывает Spread Monitor.
+
+## Настройка
+
+`config/setups.json`: **ваши комиссии** по биржам и пороги детекторов (см. [INTEGRATION.md](docs/INTEGRATION.md#настройка)).
+
+Переменные окружения:
+- `SCREENER_API_KEY` — ключ доступа к `/api/v1`;
+- `SCREENER_ENABLED=0` — выключить генератор;
+- `SETUPS_CONFIG` — путь к конфигу.

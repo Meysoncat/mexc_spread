@@ -8,6 +8,11 @@
 from __future__ import annotations
 
 import json
+
+try:  # orjson разбирает сообщения в разы быстрее — заметно на !bookTicker Binance
+    from orjson import loads as _loads
+except ImportError:  # pragma: no cover
+    _loads = json.loads
 import logging
 import threading
 import time
@@ -197,7 +202,7 @@ class _WsWorker:
                     if not raw or raw in ("pong", "ping"):
                         continue
                     try:
-                        msg = json.loads(raw)
+                        msg = _loads(raw)
                     except (ValueError, TypeError):
                         continue
                     updates = self.parse(msg)

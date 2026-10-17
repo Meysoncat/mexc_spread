@@ -53,8 +53,8 @@ class Settings:
     futures_orderbook_ws_stale_after_sec: float = 3.0
     # REST contract/ticker не отдаёт объёмы L1 — добираем из contract/depth (см. futures_l1_qty).
     futures_rest_l1_qty_enrich: bool = True
-    futures_rest_l1_qty_max_symbols: int = 500
-    futures_rest_l1_qty_max_workers: int = 24
+    futures_rest_l1_qty_max_symbols: int = 200
+    futures_rest_l1_qty_max_workers: int = 8
     futures_rest_l1_qty_depth_limit: int = 5
 
     spot_symbols_whitelist: tuple[str, ...] = ()

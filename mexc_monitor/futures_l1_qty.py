@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -11,6 +13,15 @@ if TYPE_CHECKING:
 
     from mexc_monitor.config import Settings
     from mexc_monitor.models import BookTickerRow
+
+
+# symbol -> (monotonic, (bid_qty, ask_qty)). Объёмы L1 меняются быстро, но для
+# скринера точность «на 30 секунд» достаточна, а полный обход стаканов на
+# каждой пересборке снимка (~раз в 3 с) упирался в лимиты MEXC.
+_cache: dict[str, tuple[float, tuple[float, float]]] = {}
+_cache_lock = threading.Lock()
+_CACHE_TTL_SEC = 30.0
+_REFRESH_PER_CALL = 15
 
 
 def enrich_futures_bid_ask_qty_from_rest_depth(
@@ -29,23 +40,21 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
         return rows
 
     limit = max(5, int(settings.futures_rest_l1_qty_depth_limit))
-    slice_rows = rows[:cap]
-
-    uniq: list[str] = []
-    seen: set[str] = set()
-    for r in slice_rows:
-        if r.symbol not in seen:
-            seen.add(r.symbol)
-            uniq.append(r.symbol)
+    # Обновляем только самые устаревшие символы из топа по объёму, остальное — из кэша
+    top = sorted(rows, key=lambda r: -(r.volume_24h_quote or 0.0))[:cap]
+    now = time.monotonic()
+    with _cache_lock:
+        ages = {r.symbol: now - _cache[r.symbol][0] if r.symbol in _cache else float("inf") for r in top}
+    stale = sorted((s for s, age in ages.items() if age > _CACHE_TTL_SEC), key=lambda s: -ages[s])
+    uniq = stale[:_REFRESH_PER_CALL]
 
     if not uniq:
-        return rows
+        return _apply_cached(rows)
 
     workers = max(
         1,
         min(int(settings.futures_rest_l1_qty_max_workers), len(uniq)),
     )
-    qty_by_symbol: dict[str, tuple[float, float] | None] = {}
 
     def _one(sym: str) -> tuple[str, tuple[float, float] | None]:
         try:
@@ -67,14 +76,21 @@ def enrich_futures_bid_ask_qty_from_rest_depth(
         futs = [pool.submit(_one, s) for s in uniq]
         for fut in as_completed(futs):
             sym, pair = fut.result()
-            qty_by_symbol[sym] = pair
+            if pair is not None:
+                with _cache_lock:
+                    _cache[sym] = (time.monotonic(), pair)
+    return _apply_cached(rows)
 
+
+def _apply_cached(rows: list[BookTickerRow]) -> list[BookTickerRow]:
+    now = time.monotonic()
     out: list[BookTickerRow] = []
-    for r in rows:
-        pair = qty_by_symbol.get(r.symbol)
-        if pair is None:
-            out.append(r)
-        else:
-            bq, aq = pair
-            out.append(replace(r, bid_qty=bq, ask_qty=aq))
+    with _cache_lock:
+        for r in rows:
+            hit = _cache.get(r.symbol)
+            if hit is None or now - hit[0] > 3 * _CACHE_TTL_SEC:
+                out.append(r)
+            else:
+                bq, aq = hit[1]
+                out.append(replace(r, bid_qty=bq, ask_qty=aq))
     return out
